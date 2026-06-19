@@ -19,7 +19,7 @@
     "test": "node --test test/*.test.js",
     "proxy": "node bin/cc-proxy.js",
     "sync-version": "node scripts/sync-version.mjs",
-    "version": "node scripts/sync-version.mjs && git add plugins/cc-proxy/.claude-plugin/plugin.json .claude-plugin/marketplace.json"
+    "version": "node scripts/sync-version.mjs && git add .claude-plugin/plugin.json"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9"

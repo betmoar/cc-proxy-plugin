@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { describe, it } from "node:test";
-import { formatStatusReport, parseRoutingLines } from "../plugins/cc-proxy/scripts/status.js";
+import { formatStatusReport, parseRoutingLines } from "../scripts/status.js";
 
 describe("status.js parseRoutingLines", () => {
 	const log = [

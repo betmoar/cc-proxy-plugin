@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 const SCRIPT = path.resolve(
 	path.dirname(fileURLToPath(import.meta.url)),
-	"../plugins/cc-proxy/scripts/statusline.js",
+	"../scripts/statusline.js",
 );
 
 function run(input, env = {}) {

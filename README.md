@@ -22,8 +22,8 @@ Claude Code → cc-proxy (:4000) → GLM | OpenRouter | Claude
 ## Install
 
 ```bash
-claude plugin marketplace add betmoar/cc-proxy-plugin
-claude plugin install cc-proxy@cc-proxy-plugin
+claude plugin marketplace add betmoar/ccp-market
+claude plugin install cc-proxy@betmoar
 ```
 
 ## Setup
@@ -98,7 +98,7 @@ pnpm test && pnpm lint
 {
   "statusLine": {
     "type": "command",
-    "command": "node ~/.claude/plugins/marketplaces/cc-proxy-plugin/plugins/cc-proxy/scripts/statusline.js"
+    "command": "node ~/.claude/plugins/cache/betmoar/cc-proxy/<version>/scripts/statusline.js"
   }
 }
 ```

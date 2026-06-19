@@ -1,11 +1,7 @@
 import { strict as assert } from "node:assert";
 import net from "node:net";
 import { after, before, describe, it } from "node:test";
-import {
-	checkPort,
-	ensureProxyRunning,
-	waitReady,
-} from "../plugins/cc-proxy/hooks/proxy-lifecycle.js";
+import { checkPort, ensureProxyRunning, waitReady } from "../hooks/proxy-lifecycle.js";
 
 // Pick a high random port so this test doesn't collide with a real proxy.
 function listenOn(port) {

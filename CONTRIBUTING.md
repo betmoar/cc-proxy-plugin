@@ -50,7 +50,7 @@ Steps:
    `test/router.test.js` (routing). Live integration tests gate on the key being
    present (`{ skip: !process.env.MYPROVIDER_API_KEY }`).
 6. **Optional: statusline.** Add a quota/credits fetch in
-   `plugins/cc-proxy/scripts/statusline.js`, opt-in on the key, cached like the
+   `scripts/statusline.js`, opt-in on the key, cached like the
    existing GLM/OpenRouter sections.
 
 ## Conventions
