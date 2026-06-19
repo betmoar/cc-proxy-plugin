@@ -13,12 +13,12 @@ Follow these steps **exactly**. Do not skip any.
 
 ### 1. Determine `PROXY_PATH`
 
-Check these locations in order and use the first one that exists:
+Check these locations in order and use the first one that exists. The plugin is the whole repo, so `bin/cc-proxy.js` ships inside the versioned cache dir:
 
-1. `~/.claude/plugins/marketplaces/cc-proxy-plugin/bin/cc-proxy.js` (marketplace install — the normal case)
+1. `~/.claude/plugins/cache/betmoar/cc-proxy/*/bin/cc-proxy.js` (marketplace install — the normal case; glob the `*` version segment and take the newest if there is more than one)
 2. `~/dev/cc-proxy-plugin/bin/cc-proxy.js` (dev-repo fallback, if the user cloned source)
 
-If neither exists, ask the user where `cc-proxy.js` is located and use that absolute path.
+Resolve the glob to a concrete absolute path before writing it. If neither exists, ask the user where `cc-proxy.js` is located and use that absolute path.
 
 ### 2. Collect provider API keys
 
@@ -66,12 +66,12 @@ If yes, merge this **top-level** key into `~/.claude/settings.json` (it is *not*
 {
   "statusLine": {
     "type": "command",
-    "command": "node <PROXY_DIR>/plugins/cc-proxy/scripts/statusline.js"
+    "command": "node <PROXY_DIR>/scripts/statusline.js"
   }
 }
 ```
 
-Derive `<PROXY_DIR>` from the `PROXY_PATH` chosen in step 1 by stripping the trailing `/bin/cc-proxy.js` (e.g. `~/.claude/plugins/marketplaces/cc-proxy-plugin`). The statusline command runs outside plugin context, so `${CLAUDE_PLUGIN_ROOT}` is unavailable — an absolute path is required here. If the user already has a `statusLine` configured, show them the command and let them decide rather than overwriting it.
+Derive `<PROXY_DIR>` from the `PROXY_PATH` chosen in step 1 by stripping the trailing `/bin/cc-proxy.js` (e.g. `~/.claude/plugins/cache/betmoar/cc-proxy/<version>`). The statusline command runs outside plugin context, so `${CLAUDE_PLUGIN_ROOT}` is unavailable — an absolute path is required here. If the user already has a `statusLine` configured, show them the command and let them decide rather than overwriting it.
 
 ### 5. Inform the user
 

@@ -1,6 +1,6 @@
 {
   "name": "cc-proxy",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Z.ai and OpenRouter proxy for Claude Code — stateless local router with manual /model switching and per-provider auth.",
   "author": {
     "name": "betmoar"

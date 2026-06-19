@@ -82,7 +82,8 @@ From Z.ai's official plugin: `TOKENS_LIMIT` = the 5-hour coding quota (what the 
 ## Repository layout
 
 ```
-cc-proxy-plugin/
+cc-proxy-plugin/                    ← the plugin IS the repo root; the marketplace caches the whole tree
+├── .claude-plugin/plugin.json      plugin manifest (root, per Claude Code convention)
 ├── bin/cc-proxy.js                 CLI entry point (loads .env, starts server)
 ├── src/
 │   ├── config.js                   env loader → { port, providers }
@@ -91,17 +92,16 @@ cc-proxy-plugin/
 │   ├── proxy.js                    upstream forwarding (transparent pipe)
 │   ├── server.js                   HTTP server, overflow conversion, /_status
 │   └── sanitize.js                 strips thinking blocks from history
-├── plugins/cc-proxy/               ← marketplace caches only this subtree
-│   ├── .claude-plugin/plugin.json
-│   ├── hooks/                      SessionStart proxy auto-start
-│   ├── scripts/statusline.js       quota / credits / proxy-down indicator
-│   └── skills/setup/SKILL.md       /cc-proxy:setup
-├── .claude-plugin/marketplace.json
+├── hooks/                          SessionStart proxy auto-start
+├── scripts/statusline.js           quota / credits / proxy-down indicator
+├── skills/setup/SKILL.md           /cc-proxy:setup
+├── commands/                       /cc-proxy:status, /cc-proxy:ask
+├── agents/                         glm-* offload subagents
 ├── test/                           node --test suite
 └── docs/                           ARCHITECTURE.md, OPERATIONS.md
 ```
 
-The proxy entry (`bin/cc-proxy.js`) lives at the repo root, outside the cached plugin subtree, so it is referenced by absolute path via `PROXY_PATH`.
+The marketplace manifest lives in a separate repo ([`betmoar/ccp-market`](https://github.com/betmoar/ccp-market)) and points at this repo by github source. Because the plugin is now the repo root, `bin/cc-proxy.js` is inside the cached tree, but it is still referenced by absolute path via `PROXY_PATH`: the SessionStart hook spawns the proxy detached, and the statusline runs outside plugin context where `${CLAUDE_PLUGIN_ROOT}` is unavailable.
 
 ## Out of scope
 

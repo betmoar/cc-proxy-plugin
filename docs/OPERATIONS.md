@@ -8,10 +8,10 @@ Runtime facts, known traps, and debugging. For design rationale, see [`ARCHITECT
 
 | Path | Contents | Updates via |
 | --- | --- | --- |
-| `~/.claude/plugins/marketplaces/cc-proxy-plugin/` | full git clone (repo root) | `claude plugin marketplace update cc-proxy-plugin` |
-| `~/.claude/plugins/cache/cc-proxy-plugin/cc-proxy/<version>/` | only the `plugins/cc-proxy/` subtree | `claude plugin update cc-proxy@cc-proxy-plugin` |
+| `~/.claude/plugins/marketplaces/betmoar/` | marketplace clone (`betmoar/ccp-market`) | `claude plugin marketplace update betmoar` |
+| `~/.claude/plugins/cache/betmoar/cc-proxy/<version>/` | full plugin tree (the whole `cc-proxy-plugin` repo) | `claude plugin update cc-proxy@betmoar` |
 
-**The cache contains only `plugins/cc-proxy/`** — `src/` and `bin/` are not in it. Hooks can import siblings inside the cache (`./proxy-lifecycle.js`); the proxy entry point is referenced by absolute path via `PROXY_PATH` because it lives at the repo root.
+**The plugin is the repo root**, so the cache holds the whole tree — `src/`, `bin/`, hooks, scripts, skills, commands, and agents. Hooks import siblings inside the cache (`./proxy-lifecycle.js`); the proxy entry point (`bin/cc-proxy.js`) is still referenced by absolute path via `PROXY_PATH` because the statusline runs outside plugin context, where `${CLAUDE_PLUGIN_ROOT}` is unavailable.
 
 **Cache key = `plugin.json` version.** A new cache dir is created only when the `version` string changes. Bump it to force end users to pick up new hook/skill content.
 
@@ -32,7 +32,7 @@ Runtime facts, known traps, and debugging. For design rationale, see [`ARCHITECT
 
 ## Hooks
 
-`SessionStart` runs `plugins/cc-proxy/hooks/session-start.js`, which calls `ensureProxyRunning()` from the shared `proxy-lifecycle.js`: TCP-probe `PROXY_PORT`; if dead, spawn the proxy detached (stdio → `PROXY_LOG`) and poll readiness up to `PROXY_READY_TIMEOUT_MS` (3s). Skipped cleanly if `PROXY_PATH` is unset.
+`SessionStart` runs `hooks/session-start.js`, which calls `ensureProxyRunning()` from the shared `proxy-lifecycle.js`: TCP-probe `PROXY_PORT`; if dead, spawn the proxy detached (stdio → `PROXY_LOG`) and poll readiness up to `PROXY_READY_TIMEOUT_MS` (3s). Skipped cleanly if `PROXY_PATH` is unset.
 
 The proxy is spawned **detached** (`spawn + unref`), so it survives the hook exiting. If it dies mid-session, recovery needs a new session (`/exit` + `/resume`) to re-trigger SessionStart; the statusline shows `proxy down` until then.
 
