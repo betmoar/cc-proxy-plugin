@@ -323,6 +323,87 @@ describe("server end-to-end routing", () => {
 		},
 	);
 
+	it(
+		"streaming upstream that stalls mid-response destroys the client (no leak)",
+		{ timeout: 5000 },
+		async () => {
+			const saved = process.env.PROXY_UPSTREAM_TIMEOUT_MS;
+			process.env.PROXY_UPSTREAM_TIMEOUT_MS = "200";
+			// Upstream sends headers + a first SSE chunk, then stalls (never ends).
+			// The inactivity timeout fires after headers are already sent to the
+			// client, so the proxy cannot send a 502 — it must destroy the client
+			// connection instead of leaving it hanging.
+			const stalling = http.createServer((req, res) => {
+				req.on("data", () => {});
+				req.on("end", () => {
+					res.writeHead(200, { "content-type": "text/event-stream" });
+					res.write('event: message_start\ndata: {"type":"message_start"}\n\n');
+					// then stall: never res.end()
+				});
+			});
+			await new Promise((r) => stalling.listen(0, "127.0.0.1", r));
+			const stallPort = /** @type {any} */ (stalling.address()).port;
+			try {
+				claude = await startBackend(() => ({
+					status: 200,
+					headers: { "content-type": "application/json" },
+					body: NORMAL_200,
+				}));
+				const providers = buildProviders({ GLM_API_KEY: "glm-test" }, "claude");
+				providers.find((p) => p.id === "glm").baseUrl = `http://127.0.0.1:${stallPort}`;
+				providers.find((p) => p.id === "claude").baseUrl = claude.baseUrl;
+				proxy = await startProxy({ port: 0, providers });
+
+				const start = Date.now();
+				const outcome = await new Promise((resolve, reject) => {
+					const payload = JSON.stringify({
+						model: "glm-5.2",
+						stream: true,
+						messages: [{ role: "user", content: "hi" }],
+					});
+					const req = http.request(
+						{
+							hostname: "127.0.0.1",
+							port: proxy.port,
+							path: "/v1/messages",
+							method: "POST",
+							headers: {
+								"content-type": "application/json",
+								"content-length": Buffer.byteLength(payload),
+								authorization: "Bearer x",
+							},
+							timeout: 4000,
+						},
+						(res) => {
+							res.on("data", () => {});
+							res.on("end", () => resolve("end"));
+							res.on("aborted", () => resolve("aborted"));
+							res.on("error", () => resolve("error"));
+						},
+					);
+					req.on("error", () => resolve("req-error"));
+					req.on("timeout", () => {
+						req.destroy();
+						reject(new Error("client hung — connection leaked"));
+					});
+					req.write(payload);
+					req.end();
+				});
+				const elapsed = Date.now() - start;
+				// The client connection is terminated (aborted/error), not left open.
+				assert.ok(
+					outcome === "aborted" || outcome === "error" || outcome === "req-error",
+					`client connection terminated, got: ${outcome}`,
+				);
+				assert.ok(elapsed < 3000, `terminated promptly, elapsed=${elapsed}ms`);
+			} finally {
+				await close(stalling);
+				if (saved === undefined) process.env.PROXY_UPSTREAM_TIMEOUT_MS = "";
+				else process.env.PROXY_UPSTREAM_TIMEOUT_MS = saved;
+			}
+		},
+	);
+
 	it("claude request uses OAuth passthrough (Authorization kept, no x-api-key)", async () => {
 		await wire(
 			() => ({ status: 200, headers: { "content-type": "application/json" }, body: NORMAL_200 }),

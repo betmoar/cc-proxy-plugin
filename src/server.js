@@ -64,6 +64,11 @@ function onUpstreamError(clientRes) {
 	return (err) => {
 		if (!clientRes.headersSent) {
 			sendJson(clientRes, 502, { error: { message: `Upstream error: ${err.message}` } });
+		} else if (!clientRes.writableEnded) {
+			// Headers already sent (e.g. a >1MB passthrough that then stalled) — can't
+			// send a 502. Destroy the client so the aborted upstream doesn't leak an
+			// open downstream connection.
+			clientRes.destroy();
 		}
 	};
 }

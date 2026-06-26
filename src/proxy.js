@@ -50,6 +50,10 @@ export function forward(clientReq, clientRes, provider, bodyBuffer) {
 		if (!clientRes.headersSent) {
 			clientRes.writeHead(502, { "content-type": "application/json" });
 			clientRes.end(JSON.stringify({ error: { message: `Upstream error: ${err.message}` } }));
+		} else if (!clientRes.writableEnded) {
+			// Headers already sent (mid-stream) — can't send a 502. Destroy the
+			// client so a stalled/aborted upstream doesn't leak an open connection.
+			clientRes.destroy();
 		}
 	});
 
