@@ -2,7 +2,11 @@
 import http from "node:http";
 import https from "node:https";
 import { pickAgent, upstreamTimeoutMs } from "./agents.js";
-import { isContextLimitByStopReason } from "./fallback.js";
+import {
+	RATE_LIMIT_RETRY_AFTER_SECONDS,
+	isContextLimitByStopReason,
+	isRateLimitError,
+} from "./fallback.js";
 import { buildUpstreamHeaders, defaultProvider } from "./providers.js";
 import { forward } from "./proxy.js";
 import { resolve } from "./router.js";
@@ -119,6 +123,20 @@ function forwardBuffered(clientReq, clientRes, provider, outboundBuffer, inbound
 						message: `${inboundModel}: context window exceeded`,
 					},
 				});
+				return;
+			}
+			// GLM 1302 rate limit (429): inject Retry-After so Claude Code's client
+			// backs off instead of surfacing a hard error. Stateless — the proxy
+			// does not wait or replay. Body and status pass through unchanged.
+			if (status === 429 && isRateLimitError(parseMaybeJson(bodyBuf))) {
+				console.log(
+					`[rate-limit] ${inboundModel} 429 1302 -> Retry-After: ${RATE_LIMIT_RETRY_AFTER_SECONDS}`,
+				);
+				const headers = {
+					...upstreamRes.headers,
+					"retry-after": String(RATE_LIMIT_RETRY_AFTER_SECONDS),
+				};
+				writeBufferedResponse(clientRes, status, headers, bodyBuf);
 				return;
 			}
 			writeBufferedResponse(clientRes, status, upstreamRes.headers, bodyBuf);
