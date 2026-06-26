@@ -99,12 +99,14 @@ Create `src/agents.js`:
 import http from "node:http";
 import https from "node:https";
 
-// Shared keep-alive agents for all upstream calls. Without these, every request
-// to api.z.ai / api.anthropic.com / openrouter.ai opens a fresh TCP + TLS
-// handshake and closes it — ~100-300ms of handshake per request, paid again on
-// every parallel subagent call. Reusing pooled connections removes that cost.
-// maxSockets caps concurrent upstream connections so heavy fan-out across
-// sessions can't exhaust file descriptors; maxFreeSockets bounds the idle pool.
+// Shared, explicitly-bounded agents for all upstream calls. Node >=19 already
+// defaults globalAgent to keepAlive:true, so connection reuse is NOT what this
+// buys — the real value is a BOUNDED pool: maxSockets caps concurrent upstream
+// connections (globalAgent's default is Infinity) so heavy parallel subagent
+// fan-out can't exhaust file descriptors, and owning the agent means the proxy
+// doesn't depend on a runtime default that could change. maxFreeSockets bounds
+// the idle pool. (The genuinely-new throughput behavior in this plan is the
+// per-request inactivity timeout below, which globalAgent does not provide.)
 const KEEP_ALIVE = { keepAlive: true, maxSockets: 128, maxFreeSockets: 16 };
 
 export const httpAgent = new http.Agent(KEEP_ALIVE);
@@ -159,7 +161,7 @@ git commit -m "feat: shared keep-alive upstream agents + timeout helper"
 
 **Files:**
 - Modify: `src/proxy.js:16-50` (the `forward` function)
-- Test: `test/server.test.js` (add a streaming-path connection-reuse test AND a streaming-path inactivity-timeout test to the existing e2e suite — `forward` is exercised through `createServer`)
+- Test: `test/server.test.js` (add a streaming-path shared-agent test AND a streaming-path inactivity-timeout test to the existing e2e suite — `forward` is exercised through `createServer`)
 
 **Interfaces:**
 - Consumes: `pickAgent`, `upstreamTimeoutMs` from `src/agents.js` (Task 1).
@@ -167,29 +169,28 @@ git commit -m "feat: shared keep-alive upstream agents + timeout helper"
 
 - [ ] **Step 1: Write the failing tests**
 
-Add **both** of these tests inside the `describe("server end-to-end routing", ...)` block in `test/server.test.js`, after the existing `"streaming glm passes straight through"` test. The first proves keep-alive reuse (two sequential streaming requests reuse one upstream TCP connection — without keep-alive the backend sees 2). The second proves the streaming path's inactivity timeout: a `stream: true` request to a black-hole upstream that never responds is surfaced as a prompt 502, not left hanging with a pinned socket. (The streaming path lives in `src/proxy.js`, separate code from the buffered path in `src/server.js` — it needs its own timeout test or a miswired/omitted timeout there ships silently.)
+Add **both** of these tests inside the `describe("server end-to-end routing", ...)` block in `test/server.test.js`, after the existing `"streaming glm passes straight through"` test. The first proves the streaming path routes through OUR explicit shared agent (not Node's globalAgent). The second proves the streaming path's inactivity timeout: a `stream: true` request to a black-hole upstream that never responds is surfaced as a prompt 502, not left hanging with a pinned socket. (The streaming path lives in `src/proxy.js`, separate code from the buffered path in `src/server.js` — it needs its own timeout test or a miswired/omitted timeout there ships silently.)
+
+**Why not a connection-count test:** Node ≥19 defaults `http.globalAgent` to `keepAlive: true`, so asserting "two requests reuse one upstream connection" passes *with or without* our `agent: pickAgent(proto)` wiring — a non-discriminating test that gives no regression signal. Instead, assert on the **imported `httpAgent` singleton**: after a streaming request through the proxy, our agent holds exactly one free socket. Remove the `agent:` wiring and traffic falls to globalAgent, leaving our agent empty — the test fails. That is a true discriminator (verified: 20/20 deterministic on Node 22). Two requirements make it reliable: (a) add `import { httpAgent } from "../src/agents.js";` to the test file's imports; (b) call `httpAgent.destroy()` at the start of the test to clear sockets pooled by earlier tests — `httpAgent` is a process-wide singleton and `afterEach` does not reset it, so without this a leftover free socket pollutes the count.
 
 The timeout test carries an explicit per-test `{ timeout: 5000 }` so that in Step 2 — run before the timeout is wired — it fails by hitting that ceiling instead of hanging the whole suite forever against the silent upstream.
 
 ```js
-	it("streaming requests reuse one upstream connection (keep-alive)", async () => {
-		const sseBody =
-			'event: message_start\ndata: {"type":"message_start"}\n\nevent: message_stop\ndata: {"type":"message_stop"}\n\n';
+	it("streaming path routes through the shared keep-alive agent", async () => {
 		await wire(() => ({
 			status: 200,
 			headers: { "content-type": "text/event-stream" },
-			body: sseBody,
+			body: 'event: message_stop\ndata: {"type":"message_stop"}\n\n',
 		}));
-		const upstreamConns = [];
-		glm.server.on("connection", (s) => upstreamConns.push(s));
-
-		const body = { model: "glm-5.2", stream: true, messages: [{ role: "user", content: "hi" }] };
-		const a = await post(proxy.port, body);
-		const b = await post(proxy.port, body);
-
-		assert.equal(a.status, 200);
-		assert.equal(b.status, 200);
-		assert.equal(upstreamConns.length, 1, "second request reused the pooled upstream socket");
+		httpAgent.destroy(); // clear sockets pooled by earlier tests (shared singleton)
+		await post(proxy.port, {
+			model: "glm-5.2",
+			stream: true,
+			messages: [{ role: "user", content: "hi" }],
+		});
+		await new Promise((r) => setImmediate(r)); // let the socket return to the pool
+		const free = Object.values(httpAgent.freeSockets).reduce((n, a) => n + a.length, 0);
+		assert.equal(free, 1, "upstream socket landed in our shared agent, not Node's globalAgent");
 	});
 
 	it("streaming upstream that never responds is timed out as a 502", { timeout: 5000 }, async () => {
@@ -230,7 +231,9 @@ The timeout test carries an explicit per-test `{ timeout: 5000 }` so that in Ste
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `node --test test/server.test.js`
-Expected: BOTH new tests FAIL — the reuse test sees `upstreamConns.length === 2` (no shared keep-alive agent yet); the streaming-timeout test hits its `{ timeout: 5000 }` ceiling and fails (no upstream timeout wired, so the request to the silent upstream never returns). The other server tests still pass.
+Expected: BOTH new tests FAIL — the shared-agent test asserts `free === 1` but our agent is empty (the streaming path still uses globalAgent, so `httpAgent.freeSockets` has nothing), giving `0 !== 1`; the streaming-timeout test hits its `{ timeout: 5000 }` ceiling and fails (no upstream timeout wired, so the request to the silent upstream never returns). The other server tests still pass.
+
+Also confirm the new test-file import is present (add it if your harness doesn't have it yet): at the top of `test/server.test.js`, alongside the existing imports, `import { httpAgent } from "../src/agents.js";`.
 
 - [ ] **Step 3: Write minimal implementation**
 
@@ -278,7 +281,7 @@ Then change the `options` object and the `upstream` request handling in `forward
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `node --test test/server.test.js`
-Expected: PASS — the reuse test now sees `upstreamConns.length === 1`; the streaming-timeout test returns `502` in well under 2s (and well under its 5s ceiling); all previously-passing server tests stay green.
+Expected: PASS — the shared-agent test now sees `free === 1` (the upstream socket landed in our `httpAgent`); the streaming-timeout test returns `502` in well under 2s (and well under its 5s ceiling); all previously-passing server tests stay green.
 
 - [ ] **Step 5: Lint**
 
@@ -298,7 +301,7 @@ git commit -m "feat: keep-alive + inactivity timeout on streaming forward path"
 
 **Files:**
 - Modify: `src/server.js:40-58` (the `upstreamRequestOptions` helper) and `src/server.js:77-122` (`forwardBuffered`, to attach the timeout listener)
-- Test: `test/server.test.js` (add a non-streaming reuse test and an upstream-timeout test)
+- Test: `test/server.test.js` (add a non-streaming shared-agent test and an upstream-timeout test)
 
 **Interfaces:**
 - Consumes: `pickAgent`, `upstreamTimeoutMs` from `src/agents.js` (Task 1).
@@ -306,25 +309,24 @@ git commit -m "feat: keep-alive + inactivity timeout on streaming forward path"
 
 - [ ] **Step 1: Write the failing tests**
 
-Add these two tests inside the `describe("server end-to-end routing", ...)` block in `test/server.test.js`. The first proves keep-alive reuse on the buffered (non-streaming) path; the second proves the inactivity timeout converts a black-hole upstream into a 502 quickly. The timeout test builds its own silent upstream rather than using `wire()` (whose `startBackend` always sends a response), and carries an explicit `{ timeout: 5000 }` so the Step 2 pre-implementation run fails by hitting that ceiling rather than hanging the suite.
+Add these two tests inside the `describe("server end-to-end routing", ...)` block in `test/server.test.js`. The first proves the buffered (non-streaming) path routes through OUR shared agent — same discriminating design and rationale as the streaming version in Task 2 (assert on the imported `httpAgent` singleton, `httpAgent.destroy()` first to clear cross-test pollution; a connection-count test would be non-discriminating because Node ≥19 globalAgent already pools). It assumes `import { httpAgent } from "../src/agents.js";` is already in the test file's imports from Task 2. The second proves the inactivity timeout converts a black-hole upstream into a 502 quickly; it builds its own silent upstream rather than using `wire()` (whose `startBackend` always sends a response), and carries an explicit `{ timeout: 5000 }` so the Step 2 pre-implementation run fails by hitting that ceiling rather than hanging the suite.
 
 ```js
-	it("non-stream requests reuse one upstream connection (keep-alive)", async () => {
+	it("buffered path routes through the shared keep-alive agent", async () => {
 		await wire(() => ({
 			status: 200,
 			headers: { "content-type": "application/json" },
 			body: NORMAL_200,
 		}));
-		const upstreamConns = [];
-		glm.server.on("connection", (s) => upstreamConns.push(s));
-
-		const body = { model: "glm-5.2", stream: false, messages: [{ role: "user", content: "hi" }] };
-		const a = await post(proxy.port, body);
-		const b = await post(proxy.port, body);
-
-		assert.equal(a.status, 200);
-		assert.equal(b.status, 200);
-		assert.equal(upstreamConns.length, 1, "second request reused the pooled upstream socket");
+		httpAgent.destroy(); // clear sockets pooled by earlier tests (shared singleton)
+		await post(proxy.port, {
+			model: "glm-5.2",
+			stream: false,
+			messages: [{ role: "user", content: "hi" }],
+		});
+		await new Promise((r) => setImmediate(r)); // let the socket return to the pool
+		const free = Object.values(httpAgent.freeSockets).reduce((n, a) => n + a.length, 0);
+		assert.equal(free, 1, "upstream socket landed in our shared agent, not Node's globalAgent");
 	});
 
 	it("non-stream upstream that never responds is timed out as a 502", { timeout: 5000 }, async () => {
@@ -365,7 +367,7 @@ Add these two tests inside the `describe("server end-to-end routing", ...)` bloc
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `node --test test/server.test.js`
-Expected: BOTH new tests FAIL — the reuse test sees `2` connections (no shared agent yet); the timeout test hits its `{ timeout: 5000 }` ceiling and fails (no upstream timeout wired, so the request to the silent upstream never returns). Confirm both new tests fail for these reasons.
+Expected: BOTH new tests FAIL — the shared-agent test asserts `free === 1` but the buffered path still uses globalAgent, so `httpAgent.freeSockets` is empty (`0 !== 1`); the timeout test hits its `{ timeout: 5000 }` ceiling and fails (no upstream timeout wired, so the request to the silent upstream never returns). Confirm both new tests fail for these reasons.
 
 - [ ] **Step 3: Write minimal implementation**
 
@@ -413,14 +415,14 @@ In `forwardBuffered`, add a `timeout` listener on `upstream` right before the ex
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `node --test test/server.test.js`
-Expected: PASS — reuse test sees `1` connection; timeout test returns `502` in well under 2s; all previously-passing server tests stay green.
+Expected: PASS — shared-agent test sees `free === 1`; timeout test returns `502` in well under 2s; all previously-passing server tests stay green.
 
 - [ ] **Step 5: Run the whole suite + lint**
 
 Run: `node --test test/*.test.js 2>&1 | grep -E "^# (tests|pass|fail)"`
 
 Gate (name-based, not a hard total — see "Baseline integrity" below):
-- The new tests from Tasks 1–3 are all present and passing: in `test/agents.test.js` (the `agents` suite) and the four new `test/server.test.js` cases — `streaming requests reuse one upstream connection (keep-alive)`, `streaming upstream that never responds is timed out as a 502`, `non-stream requests reuse one upstream connection (keep-alive)`, and `non-stream upstream that never responds is timed out as a 502`.
+- The new tests from Tasks 1–3 are all present and passing: in `test/agents.test.js` (the `agents` suite) and the four new `test/server.test.js` cases — `streaming path routes through the shared keep-alive agent`, `streaming upstream that never responds is timed out as a 502`, `buffered path routes through the shared keep-alive agent`, and `non-stream upstream that never responds is timed out as a 502`.
 - The `# fail` line shows exactly **1**, and the only failing test is `test/statusline.test.js › "shows OpenRouter credits when key is set"` (the pre-existing live-network test).
 
 To confirm the failing test is the expected one (and nothing new joined it):
@@ -657,3 +659,7 @@ Each load-bearing finding was checked against the real code / Node 22 runtime, n
 - **S6 — keep-alive reuse flake → NOT REPRODUCED, no change.** Ran the exact assertion (2 sequential awaited requests, fresh agent per trial) ×200 on Node 22: 0 trials saw ≠1 connection. The microtask-deferred-freeSockets flake does not occur when `post()` awaits the full response `end` before the next request, which it does. No settle-yield added (it would be cargo-culting against a non-failure).
 - **S1 — queued-request (129th socket) head-of-line timeout gap → DEFERRED.** Real in principle (`socket.setTimeout` applies only once a socket is assigned), but it bites only above `maxSockets: 128` concurrent in-flight upstream calls to one host — far beyond this workload's ~dozen. Noted, not fixed; revisit if `maxSockets` is ever lowered.
 - **C1 (no `--host` CLI flag), C2 (`0.0.0.0` non-clickable log), C7 (`env=""` vs delete) — DECLINED.** Cosmetic / symmetry-only; no behavior impact. C4 (HTTPS-agent path untested) accepted as low-risk: the same `KEEP_ALIVE` literal builds both agents, so a miswire would fail the HTTP test too.
+
+### Mid-execution finding (discovered during Task 2 review)
+
+**Reuse tests were non-discriminating → redesigned (this revision).** During Task 2's review it surfaced (and was confirmed empirically on Node 22.21.1) that `http.globalAgent` defaults to `keepAlive: true` since Node 19. The original "two requests reuse one upstream connection" tests therefore passed *with or without* the `agent: pickAgent(proto)` wiring — they gave no regression signal. They are replaced (both paths) with a discriminating test that asserts on the imported `httpAgent` singleton: after a proxied request, our agent holds exactly one free socket (`httpAgent.destroy()` first to clear cross-test pollution from the shared singleton; verified 20/20 deterministic on both the streaming and buffered paths). This also corrected the plan's framing: keep-alive is **not** a latency win here (globalAgent already pools); the explicit agent's value is the bounded `maxSockets` and not depending on a runtime default, and the genuinely-new behavior is the timeout. Human decision (recorded): keep all four tasks; make the tests discriminating. Task 2 was already committed with the old test, so its test is amended via a fix step during execution rather than re-running the task.
