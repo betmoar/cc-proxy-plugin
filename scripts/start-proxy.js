@@ -21,7 +21,14 @@ function settingsEnv() {
 	try {
 		const json = JSON.parse(fs.readFileSync(file, "utf8"));
 		const env = json?.env;
-		return env && typeof env === "object" && !Array.isArray(env) ? { ...env } : {};
+		if (!env || typeof env !== "object" || Array.isArray(env)) return {};
+		// spawn() requires string env values; coerce so a number/boolean/null in a
+		// hand-edited settings.json can't throw. Drop null/undefined entirely.
+		const out = {};
+		for (const [k, v] of Object.entries(env)) {
+			if (v != null) out[k] = String(v);
+		}
+		return out;
 	} catch {
 		return {};
 	}

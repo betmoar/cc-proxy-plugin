@@ -11,7 +11,12 @@ const POLL_INTERVAL_MS = 100;
 // Before each spawn, if it has passed this cap, rotate it to a single `.1`
 // backup so the live log starts fresh. One generation is enough — this is a
 // debug breadcrumb, not an audit trail.
-export const LOG_MAX_BYTES = Number(process.env.PROXY_LOG_MAX_BYTES) || 5 * 1024 * 1024;
+const DEFAULT_LOG_MAX_BYTES = 5 * 1024 * 1024;
+const envLogMax = Number(process.env.PROXY_LOG_MAX_BYTES);
+// Only honor a finite, positive override; a negative/0/NaN value would disable
+// rotation (size <= cap always true) or be meaningless, so fall back to default.
+export const LOG_MAX_BYTES =
+	Number.isFinite(envLogMax) && envLogMax > 0 ? envLogMax : DEFAULT_LOG_MAX_BYTES;
 
 /**
  * Rotate `logPath` to `logPath.1` if it exists and exceeds `maxBytes`. Replaces
@@ -23,6 +28,10 @@ export const LOG_MAX_BYTES = Number(process.env.PROXY_LOG_MAX_BYTES) || 5 * 1024
 export function rotateLogIfLarge(logPath, maxBytes = LOG_MAX_BYTES) {
 	try {
 		if (fs.statSync(logPath).size <= maxBytes) return;
+		// rename onto an existing destination throws EEXIST on Windows (POSIX
+		// overwrites), which would swallow here and leave the log unrotated
+		// forever. Remove the prior backup first so rename always succeeds.
+		fs.rmSync(`${logPath}.1`, { force: true });
 		fs.renameSync(logPath, `${logPath}.1`);
 	} catch {
 		// Log absent (statSync throws) or rename failed — nothing to rotate.

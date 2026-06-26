@@ -200,5 +200,19 @@ s.listen(${port}, "127.0.0.1", () => {
 		it("exports a sane default cap (>=1MB)", () => {
 			assert.ok(LOG_MAX_BYTES >= 1024 * 1024, `cap ${LOG_MAX_BYTES}`);
 		});
+
+		// The env guard runs at import, so vary it in a child process. A negative
+		// PROXY_LOG_MAX_BYTES would disable rotation (size <= cap always true), so
+		// it must fall back to the 5 MB default, not pass through.
+		it("falls back to the default cap for a negative PROXY_LOG_MAX_BYTES", async () => {
+			const { execFileSync } = await import("node:child_process");
+			const mod = new URL("../hooks/proxy-lifecycle.js", import.meta.url).pathname;
+			const out = execFileSync(
+				process.execPath,
+				["-e", `import(${JSON.stringify(mod)}).then((m) => console.log(m.LOG_MAX_BYTES))`],
+				{ env: { ...process.env, PROXY_LOG_MAX_BYTES: "-1" }, encoding: "utf8" },
+			);
+			assert.equal(Number(out.trim()), 5 * 1024 * 1024);
+		});
 	});
 });

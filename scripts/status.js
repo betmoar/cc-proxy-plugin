@@ -56,10 +56,11 @@ export function formatStatusReport(data) {
 	if (glm) {
 		const stale = glm.stale ? " (stale)" : "";
 		const pct = typeof glm.pct === "number" ? `${glm.pct}% used` : "n/a";
-		const reset =
-			typeof glm.resetMs === "number"
-				? ` (resets ${new Date(glm.resetMs).toISOString().replace(/\.\d{3}Z$/, "Z")})`
-				: "";
+		// Number.isFinite, not typeof === "number": a NaN resetMs would pass the
+		// looser check and throw a RangeError from Date#toISOString.
+		const reset = Number.isFinite(glm.resetMs)
+			? ` (resets ${new Date(glm.resetMs).toISOString().replace(/\.\d{3}Z$/, "Z")})`
+			: "";
 		lines.push(`glm[${glm.level || "?"}]:     ${pct} of 5h coding quota${stale}${reset}`);
 	}
 	if (openrouter) {

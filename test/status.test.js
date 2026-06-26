@@ -63,4 +63,15 @@ describe("status.js formatStatusReport", () => {
 		});
 		assert.match(out, /\(stale\)/);
 	});
+
+	it("omits the reset stamp for a NaN resetMs without throwing", () => {
+		// new Date(NaN).toISOString() throws RangeError; a corrupt upstream
+		// nextResetTime must not crash /cc-proxy:status rendering.
+		const out = formatStatusReport({
+			status: { up: true, port: 4000, defaultBackend: "claude", providers: ["glm"] },
+			glm: { level: "pro", pct: 5, resetMs: Number.NaN },
+		});
+		assert.match(out, /glm\[pro\]:\s+5% used/);
+		assert.doesNotMatch(out, /resets/);
+	});
 });
