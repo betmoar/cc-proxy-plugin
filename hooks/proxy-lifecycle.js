@@ -6,6 +6,29 @@ import net from "node:net";
 export const PORT = Number(process.env.PROXY_PORT || 4000);
 const POLL_INTERVAL_MS = 100;
 
+// The proxy log is append-only and never truncated by the proxy itself, so it
+// grows unbounded over the life of the machine (~1 routing line per request).
+// Before each spawn, if it has passed this cap, rotate it to a single `.1`
+// backup so the live log starts fresh. One generation is enough — this is a
+// debug breadcrumb, not an audit trail.
+export const LOG_MAX_BYTES = Number(process.env.PROXY_LOG_MAX_BYTES) || 5 * 1024 * 1024;
+
+/**
+ * Rotate `logPath` to `logPath.1` if it exists and exceeds `maxBytes`. Replaces
+ * any prior `.1` (single-generation). Best-effort: any fs error is swallowed so
+ * a rotation problem never blocks spawning the proxy.
+ * @param {string} logPath
+ * @param {number} [maxBytes]
+ */
+export function rotateLogIfLarge(logPath, maxBytes = LOG_MAX_BYTES) {
+	try {
+		if (fs.statSync(logPath).size <= maxBytes) return;
+		fs.renameSync(logPath, `${logPath}.1`);
+	} catch {
+		// Log absent (statSync throws) or rename failed — nothing to rotate.
+	}
+}
+
 /**
  * Non-blocking TCP probe to 127.0.0.1:port. Resolves true if a connection
  * succeeds within the default socket timeout, false otherwise.
@@ -45,6 +68,7 @@ export async function waitReady(port, deadline) {
  * @param {string} logPath
  */
 export function spawnProxy(proxyPath, logPath) {
+	rotateLogIfLarge(logPath);
 	const logFd = fs.openSync(logPath, "a");
 	try {
 		const child = spawn(process.execPath, [proxyPath], {

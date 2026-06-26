@@ -1,7 +1,16 @@
 import { strict as assert } from "node:assert";
+import fs from "node:fs";
 import net from "node:net";
+import os from "node:os";
+import path from "node:path";
 import { after, before, describe, it } from "node:test";
-import { checkPort, ensureProxyRunning, waitReady } from "../hooks/proxy-lifecycle.js";
+import {
+	LOG_MAX_BYTES,
+	checkPort,
+	ensureProxyRunning,
+	rotateLogIfLarge,
+	waitReady,
+} from "../hooks/proxy-lifecycle.js";
 
 // Pick a high random port so this test doesn't collide with a real proxy.
 function listenOn(port) {
@@ -96,6 +105,53 @@ describe("proxy-lifecycle", () => {
 				if (saved === undefined) process.env.PROXY_PATH = undefined;
 				else process.env.PROXY_PATH = saved;
 			}
+		});
+	});
+
+	describe("rotateLogIfLarge", () => {
+		let dir;
+		before(() => {
+			dir = fs.mkdtempSync(path.join(os.tmpdir(), "cc-proxy-log-"));
+		});
+		after(() => {
+			fs.rmSync(dir, { recursive: true, force: true });
+		});
+
+		it("no-op when the log does not exist", () => {
+			const logPath = path.join(dir, "absent.log");
+			rotateLogIfLarge(logPath, 10);
+			assert.equal(fs.existsSync(logPath), false);
+			assert.equal(fs.existsSync(`${logPath}.1`), false);
+		});
+
+		it("no-op when the log is under the cap", () => {
+			const logPath = path.join(dir, "small.log");
+			fs.writeFileSync(logPath, "tiny");
+			rotateLogIfLarge(logPath, 1024);
+			assert.equal(fs.existsSync(`${logPath}.1`), false);
+			assert.equal(fs.readFileSync(logPath, "utf8"), "tiny");
+		});
+
+		it("rotates to .1 when the log exceeds the cap", () => {
+			const logPath = path.join(dir, "big.log");
+			fs.writeFileSync(logPath, "x".repeat(2048));
+			rotateLogIfLarge(logPath, 1024);
+			// Original moved aside; live log no longer present (spawn reopens it).
+			assert.equal(fs.existsSync(`${logPath}.1`), true);
+			assert.equal(fs.readFileSync(`${logPath}.1`, "utf8").length, 2048);
+			assert.equal(fs.existsSync(logPath), false);
+		});
+
+		it("overwrites a prior .1 on the next rotation (single generation)", () => {
+			const logPath = path.join(dir, "gen.log");
+			fs.writeFileSync(`${logPath}.1`, "OLD");
+			fs.writeFileSync(logPath, "y".repeat(2048));
+			rotateLogIfLarge(logPath, 1024);
+			assert.equal(fs.readFileSync(`${logPath}.1`, "utf8").length, 2048);
+		});
+
+		it("exports a sane default cap (>=1MB)", () => {
+			assert.ok(LOG_MAX_BYTES >= 1024 * 1024, `cap ${LOG_MAX_BYTES}`);
 		});
 	});
 });
