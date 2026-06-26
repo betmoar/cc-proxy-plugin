@@ -92,6 +92,12 @@ pnpm test && pnpm lint
 
 `bin/cc-proxy.js` loads `.env` from the repo root (Node 22 `process.loadEnvFile`); vars already in the environment win, so the plugin flow (settings.json `env`) is unaffected. `.env` is gitignored.
 
+To load this checkout as a plugin without going through the marketplace, launch Claude Code with the repo as a plugin dir:
+
+```bash
+claude --plugin-dir .
+```
+
 ## Statusline (optional)
 
 ```json
