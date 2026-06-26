@@ -38,7 +38,7 @@ It merges these into `~/.claude/settings.json` `env` and registers `glm-5.2[1m]`
 
 | Key | Purpose |
 | --- | --- |
-| `ANTHROPIC_BASE_URL=http://localhost:4000` | Route API calls through the proxy |
+| `ANTHROPIC_BASE_URL=http://127.0.0.1:4000` | Route API calls through the proxy |
 | `GLM_API_KEY` | Your Z.ai key (forwarded as `x-api-key`) |
 | `PROXY_PATH` | Absolute path to `bin/cc-proxy.js` (SessionStart hook spawns it) |
 
@@ -92,6 +92,12 @@ pnpm test && pnpm lint
 
 `bin/cc-proxy.js` loads `.env` from the repo root (Node 22 `process.loadEnvFile`); vars already in the environment win, so the plugin flow (settings.json `env`) is unaffected. `.env` is gitignored.
 
+To load this checkout as a plugin without going through the marketplace, launch Claude Code with the repo as a plugin dir:
+
+```bash
+claude --plugin-dir .
+```
+
 ## Statusline (optional)
 
 ```json
@@ -109,11 +115,13 @@ Shows Claude 5h quota, GLM coding quota, and OpenRouter credits (`or:$N.NN`, whe
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `ANTHROPIC_BASE_URL` | — | Set by setup to `http://localhost:4000` |
+| `ANTHROPIC_BASE_URL` | — | Set by setup to `http://127.0.0.1:4000` |
 | `GLM_API_KEY` | — | Z.ai API key |
 | `OPENROUTER_API_KEY` | — | Enable OpenRouter (slash-namespaced models) |
 | `PROXY_PATH` | — | Absolute path to `bin/cc-proxy.js` (SessionStart hook) |
 | `PROXY_PORT` | `4000` | Proxy listen port |
+| `PROXY_HOST` | `127.0.0.1` | Interface the proxy binds to (loopback by default) |
+| `PROXY_UPSTREAM_TIMEOUT_MS` | `120000` | Upstream socket-inactivity timeout; raise for 1M-context cold calls |
 | `DEFAULT_BACKEND` | `claude` | Backend when no model prefix matches |
 | `PROXY_READY_TIMEOUT_MS` | `3000` | Hook readiness-poll ceiling after spawn |
 | `PROXY_LOG` | `/tmp/cc-proxy.log` | Proxy stdout/stderr file |
@@ -121,6 +129,7 @@ Shows Claude 5h quota, GLM coding quota, and OpenRouter credits (`or:$N.NN`, whe
 
 ## Troubleshooting
 
+- **`localhost` vs the loopback bind** — the proxy binds `127.0.0.1` by default. On an IPv6-first host `localhost` resolves to `::1` before `127.0.0.1`; Node ≥20's happy-eyeballs normally falls back to `127.0.0.1` so `ANTHROPIC_BASE_URL=http://localhost:4000` still works, but new setups write `http://127.0.0.1:4000` directly to avoid depending on that fallback. If you do hit `ECONNREFUSED` to `:4000` on an older `localhost` config, switch it to `http://127.0.0.1:4000`, or set `PROXY_HOST=0.0.0.0` to bind all interfaces.
 - **API errors after setup** — proxy not up yet. `/exit` + `/resume` to trigger the SessionStart hook.
 - **`400 model: String should have at most 256 characters`** — a `"model": "glm-..."` default in settings.json with the proxy not running. Pick the model with `/model` instead, or start the proxy.
 - **Port 4000 in use** — set `PROXY_PORT` in `env`.

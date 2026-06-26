@@ -1,6 +1,7 @@
 // @ts-check
 import http from "node:http";
 import https from "node:https";
+import { pickAgent, upstreamTimeoutMs } from "./agents.js";
 import { buildUpstreamHeaders } from "./providers.js";
 
 /**
@@ -30,6 +31,8 @@ export function forward(clientReq, clientRes, provider, bodyBuffer) {
 		path: url.pathname,
 		method: clientReq.method,
 		headers,
+		agent: pickAgent(proto),
+		timeout: upstreamTimeoutMs(),
 	};
 
 	const upstream = proto.request(options, (upstreamRes) => {
@@ -38,10 +41,19 @@ export function forward(clientReq, clientRes, provider, bodyBuffer) {
 		upstreamRes.pipe(clientRes);
 	});
 
+	// Inactivity timeout: a stalled upstream would otherwise pin a socket for the
+	// life of the long-running proxy. Destroying with an error routes into the
+	// handler below (502 if nothing was sent yet; otherwise the stream just ends).
+	upstream.on("timeout", () => upstream.destroy(new Error("upstream timeout")));
+
 	upstream.on("error", (err) => {
 		if (!clientRes.headersSent) {
 			clientRes.writeHead(502, { "content-type": "application/json" });
 			clientRes.end(JSON.stringify({ error: { message: `Upstream error: ${err.message}` } }));
+		} else if (!clientRes.writableEnded) {
+			// Headers already sent (mid-stream) — can't send a 502. Destroy the
+			// client so a stalled/aborted upstream doesn't leak an open connection.
+			clientRes.destroy();
 		}
 	});
 
