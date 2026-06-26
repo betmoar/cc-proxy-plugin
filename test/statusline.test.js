@@ -68,7 +68,12 @@ describe("statusline.js", () => {
 		{ skip: !process.env.OPENROUTER_API_KEY },
 		async () => {
 			const { stdout } = await run({}, { GLM_API_KEY: "" });
-			assert.ok(stdout.includes("or:$"), `Expected openrouter section, got: ${stdout}`);
+			// Strip ANSI color codes: the script emits `or:<color>$<amount><reset>`,
+			// so a color code sits between `or:` and `$` on a live (non-stale) run.
+			// ESC built via fromCharCode to avoid a literal control char in the regex.
+			const ansi = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
+			const plain = stdout.replace(ansi, "");
+			assert.match(plain, /or:\$\d/, `Expected openrouter section, got: ${stdout}`);
 		},
 	);
 });
