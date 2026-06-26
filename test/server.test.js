@@ -212,6 +212,64 @@ describe("server end-to-end routing", () => {
 		assert.equal(claude.calls.length, 0);
 	});
 
+	it("streaming requests reuse one upstream connection (keep-alive)", async () => {
+		const sseBody =
+			'event: message_start\ndata: {"type":"message_start"}\n\nevent: message_stop\ndata: {"type":"message_stop"}\n\n';
+		await wire(() => ({
+			status: 200,
+			headers: { "content-type": "text/event-stream" },
+			body: sseBody,
+		}));
+		const upstreamConns = [];
+		glm.server.on("connection", (s) => upstreamConns.push(s));
+
+		const body = { model: "glm-5.2", stream: true, messages: [{ role: "user", content: "hi" }] };
+		const a = await post(proxy.port, body);
+		const b = await post(proxy.port, body);
+
+		assert.equal(a.status, 200);
+		assert.equal(b.status, 200);
+		assert.equal(upstreamConns.length, 1, "second request reused the pooled upstream socket");
+	});
+
+	it(
+		"streaming upstream that never responds is timed out as a 502",
+		{ timeout: 5000 },
+		async () => {
+			const saved = process.env.PROXY_UPSTREAM_TIMEOUT_MS;
+			process.env.PROXY_UPSTREAM_TIMEOUT_MS = "200";
+			// Black-hole upstream: accepts the request, never responds.
+			const silent = http.createServer(() => {});
+			await new Promise((r) => silent.listen(0, "127.0.0.1", r));
+			const silentPort = /** @type {any} */ (silent.address()).port;
+			try {
+				claude = await startBackend(() => ({
+					status: 200,
+					headers: { "content-type": "application/json" },
+					body: NORMAL_200,
+				}));
+				const providers = buildProviders({ GLM_API_KEY: "glm-test" }, "claude");
+				providers.find((p) => p.id === "glm").baseUrl = `http://127.0.0.1:${silentPort}`;
+				providers.find((p) => p.id === "claude").baseUrl = claude.baseUrl;
+				proxy = await startProxy({ port: 0, providers });
+
+				const start = Date.now();
+				const res = await post(proxy.port, {
+					model: "glm-5.2",
+					stream: true,
+					messages: [{ role: "user", content: "hi" }],
+				});
+				const elapsed = Date.now() - start;
+				assert.equal(res.status, 502);
+				assert.ok(elapsed < 2000, `timed out promptly, elapsed=${elapsed}ms`);
+			} finally {
+				await close(silent);
+				if (saved === undefined) process.env.PROXY_UPSTREAM_TIMEOUT_MS = "";
+				else process.env.PROXY_UPSTREAM_TIMEOUT_MS = saved;
+			}
+		},
+	);
+
 	it("claude request uses OAuth passthrough (Authorization kept, no x-api-key)", async () => {
 		await wire(
 			() => ({ status: 200, headers: { "content-type": "application/json" }, body: NORMAL_200 }),

@@ -1,6 +1,7 @@
 // @ts-check
 import http from "node:http";
 import https from "node:https";
+import { pickAgent, upstreamTimeoutMs } from "./agents.js";
 import { buildUpstreamHeaders } from "./providers.js";
 
 /**
@@ -30,6 +31,8 @@ export function forward(clientReq, clientRes, provider, bodyBuffer) {
 		path: url.pathname,
 		method: clientReq.method,
 		headers,
+		agent: pickAgent(proto),
+		timeout: upstreamTimeoutMs(),
 	};
 
 	const upstream = proto.request(options, (upstreamRes) => {
@@ -37,6 +40,11 @@ export function forward(clientReq, clientRes, provider, bodyBuffer) {
 		upstreamRes.on("error", () => clientRes.destroy());
 		upstreamRes.pipe(clientRes);
 	});
+
+	// Inactivity timeout: a stalled upstream would otherwise pin a socket for the
+	// life of the long-running proxy. Destroying with an error routes into the
+	// handler below (502 if nothing was sent yet; otherwise the stream just ends).
+	upstream.on("timeout", () => upstream.destroy(new Error("upstream timeout")));
 
 	upstream.on("error", (err) => {
 		if (!clientRes.headersSent) {
