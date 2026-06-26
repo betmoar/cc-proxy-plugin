@@ -8,8 +8,11 @@
 // The proxy reads config from process.env only (loadEnvFile loads repo .env,
 // not settings.json). On a first-run setup nothing has injected settings.json's
 // env block into *this* process yet, so we read it ourselves and merge it over
-// process.env before spawning — GLM_API_KEY especially, without which the proxy
-// exits 1. Already-up is a no-op; missing-path/unreachable print guidance.
+// process.env — both for the spawned child's env (GLM_API_KEY especially,
+// without which the proxy exits 1) AND to derive ensureProxyRunning's own
+// PROXY_PATH/PROXY_PORT/PROXY_LOG/timeout opts, which it would otherwise pull
+// from this process's env where they don't yet exist (→ wrong port or
+// missing-path). Already-up is a no-op; missing-path/unreachable print guidance.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -36,7 +39,22 @@ function settingsEnv() {
 
 async function main() {
 	const env = { ...process.env, ...settingsEnv() };
-	const state = await ensureProxyRunning({ env });
+
+	// ensureProxyRunning reads proxyPath/port/logPath/readyTimeout from
+	// process.env by default — but on a first-run setup those live ONLY in
+	// settings.json, not yet in this process. Derive them from the merged env
+	// and pass explicitly, or the spawn targets the wrong path/port (or returns
+	// missing-path) even though the child env is correct.
+	const port = Number(env.PROXY_PORT) || undefined;
+	const readyTimeoutMs = Number(env.PROXY_READY_TIMEOUT_MS);
+	const state = await ensureProxyRunning({
+		env,
+		proxyPath: env.PROXY_PATH,
+		port,
+		logPath: env.PROXY_LOG,
+		readyTimeoutMs:
+			Number.isFinite(readyTimeoutMs) && readyTimeoutMs > 0 ? readyTimeoutMs : undefined,
+	});
 
 	if (state === "already-up") {
 		process.stdout.write("cc-proxy already up — no action.\n");
