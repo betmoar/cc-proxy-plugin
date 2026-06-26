@@ -90,7 +90,7 @@ Claude Code's picker rejects unknown ids unless injected via `ANTHROPIC_CUSTOM_M
 
 ### Statusline quota mapping
 
-From Z.ai's official plugin: `TOKENS_LIMIT` = the 5-hour coding quota (what the statusline shows). OpenRouter exposes remaining credits at `/api/v1/credits`.
+From Z.ai's official plugin: `TOKENS_LIMIT` = the 5-hour coding quota (what the statusline shows). Its `nextResetTime` (epoch ms) drives the reset countdown next to the gauge (`~4h41m` in the statusline, an absolute UTC stamp in `/cc-proxy:status`). OpenRouter exposes remaining credits at `/api/v1/credits`.
 
 ## Repository layout
 
@@ -105,8 +105,10 @@ cc-proxy-plugin/                    ← the plugin IS the repo root; the marketp
 │   ├── proxy.js                    upstream forwarding (transparent pipe)
 │   ├── server.js                   HTTP server, overflow conversion, /_status
 │   └── sanitize.js                 strips thinking blocks from history
-├── hooks/                          SessionStart proxy auto-start
+├── hooks/                          SessionStart proxy auto-start (proxy-lifecycle.js)
 ├── scripts/statusline.js           quota / credits / proxy-down indicator
+├── scripts/status.js               /cc-proxy:status report builder
+├── scripts/start-proxy.js          /cc-proxy:setup proxy starter (idempotent)
 ├── skills/setup/SKILL.md           /cc-proxy:setup
 ├── commands/                       /cc-proxy:status, /cc-proxy:ask
 ├── agents/                         glm-* offload subagents
