@@ -268,6 +268,61 @@ describe("server end-to-end routing", () => {
 		},
 	);
 
+	it("buffered path routes through the shared keep-alive agent", async () => {
+		await wire(() => ({
+			status: 200,
+			headers: { "content-type": "application/json" },
+			body: NORMAL_200,
+		}));
+		httpAgent.destroy(); // clear sockets pooled by earlier tests (shared singleton)
+		await post(proxy.port, {
+			model: "glm-5.2",
+			stream: false,
+			messages: [{ role: "user", content: "hi" }],
+		});
+		await new Promise((r) => setImmediate(r)); // let the socket return to the pool
+		const free = Object.values(httpAgent.freeSockets).reduce((n, a) => n + a.length, 0);
+		assert.equal(free, 1, "upstream socket landed in our shared agent, not Node's globalAgent");
+	});
+
+	it(
+		"non-stream upstream that never responds is timed out as a 502",
+		{ timeout: 5000 },
+		async () => {
+			const saved = process.env.PROXY_UPSTREAM_TIMEOUT_MS;
+			process.env.PROXY_UPSTREAM_TIMEOUT_MS = "200";
+			// Black-hole upstream: accepts the request, never responds.
+			const silent = http.createServer(() => {});
+			await new Promise((r) => silent.listen(0, "127.0.0.1", r));
+			const silentPort = /** @type {any} */ (silent.address()).port;
+			try {
+				claude = await startBackend(() => ({
+					status: 200,
+					headers: { "content-type": "application/json" },
+					body: NORMAL_200,
+				}));
+				const providers = buildProviders({ GLM_API_KEY: "glm-test" }, "claude");
+				providers.find((p) => p.id === "glm").baseUrl = `http://127.0.0.1:${silentPort}`;
+				providers.find((p) => p.id === "claude").baseUrl = claude.baseUrl;
+				proxy = await startProxy({ port: 0, providers });
+
+				const start = Date.now();
+				const res = await post(proxy.port, {
+					model: "glm-5.2",
+					stream: false,
+					messages: [{ role: "user", content: "hi" }],
+				});
+				const elapsed = Date.now() - start;
+				assert.equal(res.status, 502);
+				assert.ok(elapsed < 2000, `timed out promptly, elapsed=${elapsed}ms`);
+			} finally {
+				await close(silent);
+				if (saved === undefined) process.env.PROXY_UPSTREAM_TIMEOUT_MS = "";
+				else process.env.PROXY_UPSTREAM_TIMEOUT_MS = saved;
+			}
+		},
+	);
+
 	it("claude request uses OAuth passthrough (Authorization kept, no x-api-key)", async () => {
 		await wire(
 			() => ({ status: 200, headers: { "content-type": "application/json" }, body: NORMAL_200 }),

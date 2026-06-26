@@ -1,6 +1,7 @@
 // @ts-check
 import http from "node:http";
 import https from "node:https";
+import { pickAgent, upstreamTimeoutMs } from "./agents.js";
 import { isContextLimitByStopReason } from "./fallback.js";
 import { buildUpstreamHeaders, defaultProvider } from "./providers.js";
 import { forward } from "./proxy.js";
@@ -53,6 +54,8 @@ function upstreamRequestOptions(clientReq, provider, outboundBuffer) {
 				outboundBuffer.length,
 				url.hostname,
 			),
+			agent: pickAgent(proto),
+			timeout: upstreamTimeoutMs(),
 		},
 	};
 }
@@ -116,6 +119,7 @@ function forwardBuffered(clientReq, clientRes, provider, outboundBuffer, inbound
 			writeBufferedResponse(clientRes, status, upstreamRes.headers, bodyBuf);
 		});
 	});
+	upstream.on("timeout", () => upstream.destroy(new Error("upstream timeout")));
 	upstream.on("error", onUpstreamError(clientRes));
 	upstream.write(outboundBuffer);
 	upstream.end();
