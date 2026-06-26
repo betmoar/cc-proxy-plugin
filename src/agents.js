@@ -2,12 +2,14 @@
 import http from "node:http";
 import https from "node:https";
 
-// Shared keep-alive agents for all upstream calls. Without these, every request
-// to api.z.ai / api.anthropic.com / openrouter.ai opens a fresh TCP + TLS
-// handshake and closes it — ~100-300ms of handshake per request, paid again on
-// every parallel subagent call. Reusing pooled connections removes that cost.
-// maxSockets caps concurrent upstream connections so heavy fan-out across
-// sessions can't exhaust file descriptors; maxFreeSockets bounds the idle pool.
+// Shared, explicitly-bounded agents for all upstream calls. Node >=19 already
+// defaults globalAgent to keepAlive:true, so connection reuse is NOT what this
+// buys — the real value is a BOUNDED pool: maxSockets caps concurrent upstream
+// connections (globalAgent's default is Infinity) so heavy parallel subagent
+// fan-out can't exhaust file descriptors, and owning the agent means the proxy
+// doesn't depend on a runtime default that could change. maxFreeSockets bounds
+// the idle pool. (The genuinely-new throughput behavior is the per-request
+// inactivity timeout wired alongside this agent, which globalAgent does not set.)
 const KEEP_ALIVE = { keepAlive: true, maxSockets: 128, maxFreeSockets: 16 };
 
 export const httpAgent = new http.Agent(KEEP_ALIVE);
