@@ -1,6 +1,7 @@
 import { strict as assert } from "node:assert";
 import http from "node:http";
 import { afterEach, describe, it } from "node:test";
+import { httpAgent } from "../src/agents.js";
 import { buildProviders } from "../src/providers.js";
 import { createServer } from "../src/server.js";
 
@@ -212,24 +213,21 @@ describe("server end-to-end routing", () => {
 		assert.equal(claude.calls.length, 0);
 	});
 
-	it("streaming requests reuse one upstream connection (keep-alive)", async () => {
-		const sseBody =
-			'event: message_start\ndata: {"type":"message_start"}\n\nevent: message_stop\ndata: {"type":"message_stop"}\n\n';
+	it("streaming path routes through the shared keep-alive agent", async () => {
 		await wire(() => ({
 			status: 200,
 			headers: { "content-type": "text/event-stream" },
-			body: sseBody,
+			body: 'event: message_stop\ndata: {"type":"message_stop"}\n\n',
 		}));
-		const upstreamConns = [];
-		glm.server.on("connection", (s) => upstreamConns.push(s));
-
-		const body = { model: "glm-5.2", stream: true, messages: [{ role: "user", content: "hi" }] };
-		const a = await post(proxy.port, body);
-		const b = await post(proxy.port, body);
-
-		assert.equal(a.status, 200);
-		assert.equal(b.status, 200);
-		assert.equal(upstreamConns.length, 1, "second request reused the pooled upstream socket");
+		httpAgent.destroy(); // clear sockets pooled by earlier tests (shared singleton)
+		await post(proxy.port, {
+			model: "glm-5.2",
+			stream: true,
+			messages: [{ role: "user", content: "hi" }],
+		});
+		await new Promise((r) => setImmediate(r)); // let the socket return to the pool
+		const free = Object.values(httpAgent.freeSockets).reduce((n, a) => n + a.length, 0);
+		assert.equal(free, 1, "upstream socket landed in our shared agent, not Node's globalAgent");
 	});
 
 	it(
