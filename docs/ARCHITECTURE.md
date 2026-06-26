@@ -80,6 +80,10 @@ The one case the proxy actively handles: a **non-streaming** GLM overflow return
 
 There is no automatic replay and no circuit breaker. Recovery is the user's responsibility: switch model, `/clear`, or `/compact`. With `glm-5.2[1m]` (1M window) overflow is rare.
 
+### Rate-limit handling
+
+The second active normalization, same spirit as overflow: GLM's `1302` request-rate-limit response is HTTP `429` but carries **no** `Retry-After` header, so Claude Code surfaces it as a hard error instead of backing off. The proxy detects the `1302` body (on both forward paths) and injects `Retry-After: 30`, letting Claude Code's own client retry handle the wait. This keeps the [stateless invariant](#invariants) — no in-proxy sleep or replay, which would hold the client connection open and could collide with the client's own backoff. The detection is gated strictly on code `1302`: the sibling `1113` (insufficient balance) and every other `429` pass through untouched, so a non-retryable error never gets a misleading retry hint (avoiding the documented infinite-cooldown loop other clients hit by treating all `429`s alike). On the streaming path a `429` is a small JSON body (the limit short-circuits before any SSE), so the proxy buffers only `429` responses to inspect them — real SSE streams stay a pure pipe.
+
 ### Registering models in `/model`
 
 Claude Code's picker rejects unknown ids unless injected via `ANTHROPIC_CUSTOM_MODEL_OPTION` (exactly one slot; validation skipped). `/cc-proxy:setup` registers `glm-5.2[1m]`.

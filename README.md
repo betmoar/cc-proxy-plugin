@@ -17,6 +17,7 @@ Claude Code → cc-proxy (:4000) → GLM | OpenRouter | Claude
 ```
 
 - **Context overflow.** A non-streaming GLM overflow is returned as a `400` the user sees; a streaming overflow surfaces as Claude Code's own context-limit message (synthesized from the SSE `stop_reason`). The proxy does not retry or reroute — manage context at the session level: switch model, `/clear`, or `/compact`.
+- **Rate limits.** GLM's `1302` rate-limit response (HTTP `429`) carries no `Retry-After`, so Claude Code surfaces it as a hard error. The proxy injects `Retry-After: 30` (on both the streaming and buffered paths) so the client backs off and retries on its own. It stays stateless — no in-proxy wait or replay. The sibling `1113` (insufficient balance) and other `429`s are passed through untouched, so they get no misleading retry hint.
 - **Thinking blocks stripped** from history so backends don't reject each other's signatures when you switch mid-session.
 
 ## Install
@@ -125,6 +126,7 @@ Shows Claude 5h quota, GLM coding quota, and OpenRouter credits (`or:$N.NN`, whe
 | `DEFAULT_BACKEND` | `claude` | Backend when no model prefix matches |
 | `PROXY_READY_TIMEOUT_MS` | `3000` | Hook readiness-poll ceiling after spawn |
 | `PROXY_LOG` | `/tmp/cc-proxy.log` | Proxy stdout/stderr file |
+| `PROXY_LOG_MAX_BYTES` | `5242880` | Rotate the log to `<log>.1` past this size (single generation) |
 | `PROXY_DEBUG` | — | `1` logs per-request metadata |
 
 ## Troubleshooting
