@@ -43,3 +43,6 @@ Thumbs.db
 # Plugin-specific
 .claude/
 .remember/
+
+# Implementation plans / specs (kept local, not shipped)
+docs/superpowers/
