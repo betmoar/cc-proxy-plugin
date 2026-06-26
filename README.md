@@ -38,7 +38,7 @@ It merges these into `~/.claude/settings.json` `env` and registers `glm-5.2[1m]`
 
 | Key | Purpose |
 | --- | --- |
-| `ANTHROPIC_BASE_URL=http://localhost:4000` | Route API calls through the proxy |
+| `ANTHROPIC_BASE_URL=http://127.0.0.1:4000` | Route API calls through the proxy |
 | `GLM_API_KEY` | Your Z.ai key (forwarded as `x-api-key`) |
 | `PROXY_PATH` | Absolute path to `bin/cc-proxy.js` (SessionStart hook spawns it) |
 
@@ -109,7 +109,7 @@ Shows Claude 5h quota, GLM coding quota, and OpenRouter credits (`or:$N.NN`, whe
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `ANTHROPIC_BASE_URL` | — | Set by setup to `http://localhost:4000` |
+| `ANTHROPIC_BASE_URL` | — | Set by setup to `http://127.0.0.1:4000` |
 | `GLM_API_KEY` | — | Z.ai API key |
 | `OPENROUTER_API_KEY` | — | Enable OpenRouter (slash-namespaced models) |
 | `PROXY_PATH` | — | Absolute path to `bin/cc-proxy.js` (SessionStart hook) |
@@ -123,7 +123,7 @@ Shows Claude 5h quota, GLM coding quota, and OpenRouter credits (`or:$N.NN`, whe
 
 ## Troubleshooting
 
-- **`ECONNREFUSED` to `:4000` on an IPv6-first host** — `localhost` may resolve to `::1` first while the proxy binds `127.0.0.1`. New setups write `127.0.0.1` directly; if you have an older `ANTHROPIC_BASE_URL=http://localhost:4000`, change it to `http://127.0.0.1:4000`, or set `PROXY_HOST=0.0.0.0` to bind all interfaces.
+- **`localhost` vs the loopback bind** — the proxy binds `127.0.0.1` by default. On an IPv6-first host `localhost` resolves to `::1` before `127.0.0.1`; Node ≥20's happy-eyeballs normally falls back to `127.0.0.1` so `ANTHROPIC_BASE_URL=http://localhost:4000` still works, but new setups write `http://127.0.0.1:4000` directly to avoid depending on that fallback. If you do hit `ECONNREFUSED` to `:4000` on an older `localhost` config, switch it to `http://127.0.0.1:4000`, or set `PROXY_HOST=0.0.0.0` to bind all interfaces.
 - **API errors after setup** — proxy not up yet. `/exit` + `/resume` to trigger the SessionStart hook.
 - **`400 model: String should have at most 256 characters`** — a `"model": "glm-..."` default in settings.json with the proxy not running. Pick the model with `/model` instead, or start the proxy.
 - **Port 4000 in use** — set `PROXY_PORT` in `env`.
