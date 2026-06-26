@@ -32,8 +32,8 @@ if (glm && !glm.apiKey) {
 }
 
 const server = createServer(config);
-server.listen(config.port, () => {
-	console.log(`cc-proxy listening on http://localhost:${config.port}`);
+server.listen(config.port, config.host, () => {
+	console.log(`cc-proxy listening on http://${config.host}:${config.port}`);
 	for (const p of config.providers) {
 		console.log(`  ${p.id.padEnd(6)} -> ${p.baseUrl}  [auth: ${p.auth}]`);
 	}

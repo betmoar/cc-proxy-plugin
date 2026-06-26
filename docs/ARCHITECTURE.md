@@ -65,6 +65,15 @@ A skill that called the provider API directly could only hand it a text prompt �
 
 Your own credentials, on your own machine. A hosted relay that shares credentials across users is a different (ToS-material) thing.
 
+### Loopback binding
+
+The proxy listens on `127.0.0.1` by default. It injects GLM/OpenRouter API keys
+and forwards Claude OAuth, so a request that reaches it is authenticated as you;
+an all-interfaces bind would let any host on the LAN spend your quota. `PROXY_HOST`
+is an explicit opt-out for the rare deliberate off-host setup. The setup template
+writes `ANTHROPIC_BASE_URL=http://127.0.0.1:4000` (not `localhost`) so the client
+target matches the bind exactly rather than relying on IPv6→IPv4 fallback.
+
 ### Context-overflow handling
 
 The one case the proxy actively handles: a **non-streaming** GLM overflow returns `200` with empty content and `stop_reason=model_context_window_exceeded` — a plain pipe would forward that as a silent successful empty turn. The proxy detects that specific case and converts it to a `400` so it surfaces. Everything else passes through untouched: a native `400`/error already surfaces on its own, and a **streaming** overflow reaches Claude Code as its own context-limit message (synthesized from the SSE `stop_reason`).

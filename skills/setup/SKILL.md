@@ -41,7 +41,7 @@ Read the current file, then merge the following into the `env` object (create `e
 ```json
 {
   "env": {
-    "ANTHROPIC_BASE_URL": "http://localhost:4000",
+    "ANTHROPIC_BASE_URL": "http://127.0.0.1:4000",
     "GLM_API_KEY": "<from step 2>",
     "OPENROUTER_API_KEY": "<from step 2, only if the user provided one>",
     "PROXY_PATH": "<from step 1>",

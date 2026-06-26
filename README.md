@@ -114,6 +114,8 @@ Shows Claude 5h quota, GLM coding quota, and OpenRouter credits (`or:$N.NN`, whe
 | `OPENROUTER_API_KEY` | — | Enable OpenRouter (slash-namespaced models) |
 | `PROXY_PATH` | — | Absolute path to `bin/cc-proxy.js` (SessionStart hook) |
 | `PROXY_PORT` | `4000` | Proxy listen port |
+| `PROXY_HOST` | `127.0.0.1` | Interface the proxy binds to (loopback by default) |
+| `PROXY_UPSTREAM_TIMEOUT_MS` | `120000` | Upstream socket-inactivity timeout; raise for 1M-context cold calls |
 | `DEFAULT_BACKEND` | `claude` | Backend when no model prefix matches |
 | `PROXY_READY_TIMEOUT_MS` | `3000` | Hook readiness-poll ceiling after spawn |
 | `PROXY_LOG` | `/tmp/cc-proxy.log` | Proxy stdout/stderr file |
@@ -121,6 +123,7 @@ Shows Claude 5h quota, GLM coding quota, and OpenRouter credits (`or:$N.NN`, whe
 
 ## Troubleshooting
 
+- **`ECONNREFUSED` to `:4000` on an IPv6-first host** — `localhost` may resolve to `::1` first while the proxy binds `127.0.0.1`. New setups write `127.0.0.1` directly; if you have an older `ANTHROPIC_BASE_URL=http://localhost:4000`, change it to `http://127.0.0.1:4000`, or set `PROXY_HOST=0.0.0.0` to bind all interfaces.
 - **API errors after setup** — proxy not up yet. `/exit` + `/resume` to trigger the SessionStart hook.
 - **`400 model: String should have at most 256 characters`** — a `"model": "glm-..."` default in settings.json with the proxy not running. Pick the model with `/model` instead, or start the proxy.
 - **Port 4000 in use** — set `PROXY_PORT` in `env`.
