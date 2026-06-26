@@ -60,6 +60,7 @@ describe("statusline.js", () => {
 			{ OPENROUTER_API_KEY: "" },
 		);
 		assert.ok(stdout.includes("glm["), `Expected glm section, got: ${stdout}`);
+		assert.match(stdout, /~\d+[hm]/, `Expected reset-time suffix, got: ${stdout}`);
 	});
 
 	// Integration test — only runs when OPENROUTER_API_KEY is set

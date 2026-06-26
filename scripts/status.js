@@ -31,7 +31,7 @@ export function parseRoutingLines(logText, limit = 8) {
  * Render the assembled status into a plain-text report.
  * @param {object} data
  * @param {{ up: boolean, port?: number, defaultBackend?: string, providers?: string[] }} data.status
- * @param {{ level?: string, pct?: number, stale?: boolean } | null} [data.glm]
+ * @param {{ level?: string, pct?: number, resetMs?: number, stale?: boolean } | null} [data.glm]
  * @param {{ remaining?: number, usedPct?: number, stale?: boolean } | null} [data.openrouter]
  * @param {string[]} [data.routing]
  * @returns {string}
@@ -56,7 +56,11 @@ export function formatStatusReport(data) {
 	if (glm) {
 		const stale = glm.stale ? " (stale)" : "";
 		const pct = typeof glm.pct === "number" ? `${glm.pct}% used` : "n/a";
-		lines.push(`glm[${glm.level || "?"}]:     ${pct} of 5h coding quota${stale}`);
+		const reset =
+			typeof glm.resetMs === "number"
+				? ` (resets ${new Date(glm.resetMs).toISOString().replace(/\.\d{3}Z$/, "Z")})`
+				: "";
+		lines.push(`glm[${glm.level || "?"}]:     ${pct} of 5h coding quota${stale}${reset}`);
 	}
 	if (openrouter) {
 		const stale = openrouter.stale ? " (stale)" : "";
@@ -101,7 +105,11 @@ async function loadGlm() {
 		const json = await fetchJson(QUOTA_URL, { Authorization: process.env.GLM_API_KEY });
 		const data = json.data || {};
 		const tok = (data.limits || []).find((l) => l.type === "TOKENS_LIMIT");
-		return { level: data.level, pct: tok ? tok.percentage : undefined };
+		return {
+			level: data.level,
+			pct: tok ? tok.percentage : undefined,
+			resetMs: tok ? tok.nextResetTime : undefined,
+		};
 	} catch {
 		return { level: undefined, pct: undefined, stale: true };
 	}

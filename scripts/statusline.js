@@ -219,7 +219,9 @@ process.stdin.on("end", async () => {
 		if (tokLim) {
 			const pct = tokLim.percentage;
 			const c = colorize(pct);
-			parts.push(`glm[${level}] 5h:${c}${pct}%${stale}${RESET}`);
+			// nextResetTime is epoch ms; formatResetTime takes seconds.
+			const reset = tokLim.nextResetTime ? ` ~${formatResetTime(tokLim.nextResetTime / 1000)}` : "";
+			parts.push(`glm[${level}] 5h:${c}${pct}%${stale}${RESET}${reset}`);
 		} else {
 			parts.push(`glm[${level}] --`);
 		}
