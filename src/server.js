@@ -129,13 +129,13 @@ function forwardBuffered(clientReq, clientRes, provider, outboundBuffer, inbound
 			// backs off instead of surfacing a hard error. Stateless — the proxy
 			// does not wait or replay. Body and status pass through unchanged.
 			if (status === 429 && isRateLimitError(parseMaybeJson(bodyBuf))) {
-				console.log(
-					`[rate-limit] ${inboundModel} 429 1302 -> Retry-After: ${RATE_LIMIT_RETRY_AFTER_SECONDS}`,
-				);
-				const headers = {
-					...upstreamRes.headers,
-					"retry-after": String(RATE_LIMIT_RETRY_AFTER_SECONDS),
-				};
+				// Only inject when the upstream omitted it (current GLM behavior).
+				// Preserve any real Retry-After GLM might send in the future rather
+				// than clobbering it with our fixed default. (Node lowercases keys.)
+				const retryAfter =
+					upstreamRes.headers["retry-after"] || String(RATE_LIMIT_RETRY_AFTER_SECONDS);
+				console.log(`[rate-limit] ${inboundModel} 429 1302 -> Retry-After: ${retryAfter}`);
+				const headers = { ...upstreamRes.headers, "retry-after": retryAfter };
 				writeBufferedResponse(clientRes, status, headers, bodyBuf);
 				return;
 			}

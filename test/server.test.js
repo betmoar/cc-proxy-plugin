@@ -164,6 +164,25 @@ describe("server end-to-end routing", () => {
 		assert.equal(claude.calls.length, 0);
 	});
 
+	it("streaming 1302 preserves an upstream Retry-After instead of clobbering it", async () => {
+		await wire(() => ({
+			status: 429,
+			headers: { "content-type": "application/json", "retry-after": "90" },
+			body: JSON.stringify({ error: { code: "1302", message: "Rate limit reached" } }),
+		}));
+		const res = await post(proxy.port, {
+			model: "glm-5.2",
+			stream: true,
+			messages: [{ role: "user", content: "hi" }],
+		});
+		assert.equal(res.status, 429);
+		assert.equal(
+			res.headers["retry-after"],
+			"90",
+			"upstream Retry-After preserved on streaming path",
+		);
+	});
+
 	it("streaming 1313 (non-1302 429) passes through with no Retry-After", async () => {
 		await wire(() => ({
 			status: 429,
@@ -229,6 +248,23 @@ describe("server end-to-end routing", () => {
 		assert.equal(res.headers["retry-after"], "30", "Retry-After injected");
 		assert.match(res.body, /1302/, "original error body preserved");
 		assert.equal(claude.calls.length, 0, "no replay");
+	});
+
+	it("non-stream 1302 preserves an upstream Retry-After instead of clobbering it", async () => {
+		// If GLM ever starts sending its own Retry-After on a 1302, keep it —
+		// our fixed default must not mask a more accurate provider value.
+		await wire(() => ({
+			status: 429,
+			headers: { "content-type": "application/json", "retry-after": "120" },
+			body: JSON.stringify({ error: { code: "1302", message: "Rate limit reached" } }),
+		}));
+		const res = await post(proxy.port, {
+			model: "glm-5.2",
+			stream: false,
+			messages: [{ role: "user", content: "hi" }],
+		});
+		assert.equal(res.status, 429);
+		assert.equal(res.headers["retry-after"], "120", "upstream Retry-After preserved, not 30");
 	});
 
 	it("non-stream normal glm response passes through", async () => {

@@ -77,7 +77,10 @@ export function forward(clientReq, clientRes, provider, bodyBuffer) {
 				if (piping) return;
 				const bodyBuf = Buffer.concat(chunks);
 				let headers = upstreamRes.headers;
-				if (isRateLimitError(parseMaybeJson(bodyBuf))) {
+				// Only inject Retry-After when the upstream omitted it, so a real
+				// value GLM might send in the future isn't clobbered. (Node
+				// lowercases header keys, so this check is canonical.)
+				if (isRateLimitError(parseMaybeJson(bodyBuf)) && !headers["retry-after"]) {
 					headers = { ...headers, "retry-after": String(RATE_LIMIT_RETRY_AFTER_SECONDS) };
 				}
 				clientRes.writeHead(status, headers);
