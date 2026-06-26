@@ -106,6 +106,53 @@ describe("proxy-lifecycle", () => {
 				else process.env.PROXY_PATH = saved;
 			}
 		});
+
+		// /cc-proxy:setup spawns the proxy before SessionStart has injected
+		// settings.json's env into the process, so it passes an explicit env
+		// (GLM_API_KEY especially). The spawned child must receive it.
+		it("forwards opts.env to the spawned proxy", async () => {
+			const port = await freePort();
+			const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "cc-proxy-env-")), "env.txt");
+			// Minimal proxy stand-in: listen on the port (so waitReady passes),
+			// then write the sentinel + its own PID to disk for cleanup.
+			const script = path.join(
+				fs.mkdtempSync(path.join(os.tmpdir(), "cc-proxy-standin-")),
+				"proxy.mjs",
+			);
+			fs.writeFileSync(
+				script,
+				`import net from "node:net";
+import fs from "node:fs";
+const s = net.createServer();
+s.listen(${port}, "127.0.0.1", () => {
+  fs.writeFileSync(${JSON.stringify(out)}, process.env.CC_PROXY_SENTINEL + ":" + process.pid);
+});
+`,
+			);
+			try {
+				const state = await ensureProxyRunning({
+					port,
+					proxyPath: script,
+					readyTimeoutMs: 4000,
+					env: { ...process.env, CC_PROXY_SENTINEL: "forwarded" },
+				});
+				assert.equal(state, "started");
+				// Give the detached child a tick to flush the file after listen().
+				for (let i = 0; i < 50 && !fs.existsSync(out); i++) {
+					await new Promise((r) => setTimeout(r, 50));
+				}
+				const [sentinel, pid] = fs.readFileSync(out, "utf8").split(":");
+				assert.equal(sentinel, "forwarded");
+				try {
+					process.kill(Number(pid));
+				} catch {
+					// child already gone — fine
+				}
+			} finally {
+				fs.rmSync(path.dirname(script), { recursive: true, force: true });
+				fs.rmSync(path.dirname(out), { recursive: true, force: true });
+			}
+		});
 	});
 
 	describe("rotateLogIfLarge", () => {

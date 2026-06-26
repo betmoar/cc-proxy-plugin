@@ -73,11 +73,27 @@ If yes, merge this **top-level** key into `~/.claude/settings.json` (it is *not*
 
 Derive `<PROXY_DIR>` from the `PROXY_PATH` chosen in step 1 by stripping the trailing `/bin/cc-proxy.js` (e.g. `~/.claude/plugins/cache/betmoar/cc-proxy/<version>`). The statusline command runs outside plugin context, so `${CLAUDE_PLUGIN_ROOT}` is unavailable — an absolute path is required here. If the user already has a `statusLine` configured, show them the command and let them decide rather than overwriting it.
 
-### 5. Inform the user
+### 5. Start the proxy now
+
+Spawn the proxy so it is already up when `ANTHROPIC_BASE_URL` takes effect, eliminating the first-run `ECONNREFUSED`. Run, verbatim:
+
+```
+node "$CLAUDE_PLUGIN_ROOT/scripts/start-proxy.js"
+```
+
+`scripts/start-proxy.js` reuses the SessionStart hook's `ensureProxyRunning()`: it TCP-probes `PROXY_PORT` first (idempotent — a no-op if the proxy is already up), then spawns `bin/cc-proxy.js` detached + `unref`'d so it survives this turn. It reads the `env` block you just wrote to `~/.claude/settings.json` and passes it to the spawn, because the proxy reads config from env (not settings.json) and nothing has injected those vars into this process yet on a first-run setup.
+
+Interpret the script's stdout/stderr:
+
+- `cc-proxy already up` or `cc-proxy started` → success. Proceed to step 6.
+- `PROXY_PATH is unset` → step 1 failed to resolve a path. Re-run `/cc-proxy:setup`; do not tell the user to start it by hand.
+- `did not become reachable in time` → spawn fired but readiness timed out. Treat as a fallback: keep `/exit` + `/resume` as the path to recovery (step 6 covers this). Show the user the `/tmp/cc-proxy.log` tail if they ask.
+
+### 6. Inform the user
 
 Tell the user, verbatim:
 
-> Setup complete. Claude Code re-applies `ANTHROPIC_BASE_URL` to running sessions immediately, so any open `claude` will fail with API errors until the proxy is up. `/exit` and `/resume` each running session — the `SessionStart` hook starts the proxy if it isn't already running.
+> Setup complete. The proxy is running (step 5 started it). Claude Code re-applies `ANTHROPIC_BASE_URL` to running sessions immediately, so any open `claude` may still fail until it re-reads env — `/exit` and `/resume` any open session if you hit an error.
 >
 > To confirm, check `/tmp/cc-proxy.log` after your next prompt — you should see routing lines like `claude-sonnet-4-6 -> claude` or `glm-5.2 -> glm`.
 
@@ -85,5 +101,5 @@ Tell the user, verbatim:
 
 - **Do not** overwrite unrelated keys in `settings.json`. Use a merge strategy, not a full rewrite from template.
 - **Do not** commit the user's API key anywhere. It stays only in `~/.claude/settings.json`.
-- **Do not** attempt to start the proxy manually — the `SessionStart` hook handles that on the next session.
+- **Do not** start the proxy by hand with `node bin/cc-proxy.js` or similar — use `scripts/start-proxy.js` (step 5), which is idempotent and passes settings.json's env to the spawn. Raw starts risk duplicate proxies on the port or a spawn missing `GLM_API_KEY`.
 - If `~/.claude/settings.json` does not exist, create it with just the `env` block above (and valid JSON structure).

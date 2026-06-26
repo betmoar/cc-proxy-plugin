@@ -66,15 +66,19 @@ export async function waitReady(port, deadline) {
  * immediately after spawn.
  * @param {string} proxyPath
  * @param {string} logPath
+ * @param {NodeJS.ProcessEnv} [env]  Defaults to process.env. Pass an explicit
+ *   env when the caller carries vars the current process lacks — e.g.
+ *   /cc-proxy:setup reads keys from settings.json before any SessionStart hook
+ *   has injected them into process.env.
  */
-export function spawnProxy(proxyPath, logPath) {
+export function spawnProxy(proxyPath, logPath, env = process.env) {
 	rotateLogIfLarge(logPath);
 	const logFd = fs.openSync(logPath, "a");
 	try {
 		const child = spawn(process.execPath, [proxyPath], {
 			detached: true,
 			stdio: ["ignore", logFd, logFd],
-			env: process.env,
+			env,
 		});
 		child.unref();
 	} finally {
@@ -92,6 +96,8 @@ export function spawnProxy(proxyPath, logPath) {
  * @param {number} [opts.readyTimeoutMs] Defaults to PROXY_READY_TIMEOUT_MS or 3000.
  * @param {string} [opts.proxyPath]    Defaults to PROXY_PATH.
  * @param {string} [opts.logPath]      Defaults to PROXY_LOG or /tmp/cc-proxy.log.
+ * @param {NodeJS.ProcessEnv} [opts.env] Defaults to process.env. Forwarded to
+ *   spawnProxy; see spawnProxy for when to override.
  * @returns {Promise<"already-up" | "started" | "missing-path" | "unreachable">}
  */
 export async function ensureProxyRunning(opts = {}) {
@@ -108,7 +114,7 @@ export async function ensureProxyRunning(opts = {}) {
 	if (await checkPort(port)) return "already-up";
 	if (!proxyPath) return "missing-path";
 
-	spawnProxy(proxyPath, logPath);
+	spawnProxy(proxyPath, logPath, opts.env);
 	const up = await waitReady(port, Date.now() + readyTimeoutMs);
 	return up ? "started" : "unreachable";
 }
