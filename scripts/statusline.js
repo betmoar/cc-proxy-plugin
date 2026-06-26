@@ -219,7 +219,11 @@ process.stdin.on("end", async () => {
 		if (tokLim) {
 			const pct = tokLim.percentage;
 			const c = colorize(pct);
-			parts.push(`glm[${level}] 5h:${c}${pct}%${stale}${RESET}`);
+			// nextResetTime is epoch ms; formatResetTime takes seconds. Coerce and
+			// finiteness-check so a string/garbage value yields no suffix, not "~NaNm".
+			const resetMs = Number(tokLim.nextResetTime);
+			const reset = Number.isFinite(resetMs) ? ` ~${formatResetTime(resetMs / 1000)}` : "";
+			parts.push(`glm[${level}] 5h:${c}${pct}%${stale}${RESET}${reset}`);
 		} else {
 			parts.push(`glm[${level}] --`);
 		}

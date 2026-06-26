@@ -60,6 +60,9 @@ describe("statusline.js", () => {
 			{ OPENROUTER_API_KEY: "" },
 		);
 		assert.ok(stdout.includes("glm["), `Expected glm section, got: ${stdout}`);
+		// Accept ~now too: formatResetTime returns "now" at/after the reset boundary,
+		// so a strict /~\d+[hm]/ would flake if the live quota happens to be resetting.
+		assert.match(stdout, /~(\d+[hm]|now)/, `Expected reset-time suffix, got: ${stdout}`);
 	});
 
 	// Integration test — only runs when OPENROUTER_API_KEY is set

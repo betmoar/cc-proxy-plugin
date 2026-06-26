@@ -44,13 +44,14 @@ describe("status.js formatStatusReport", () => {
 				defaultBackend: "claude",
 				providers: ["glm", "openrouter", "claude"],
 			},
-			glm: { level: "pro", pct: 37 },
+			glm: { level: "pro", pct: 37, resetMs: Date.UTC(2026, 5, 26, 12, 0) },
 			openrouter: { remaining: 4.2, usedPct: 16 },
 			routing: ["[t] glm-5.2[1m] -> glm"],
 		});
 		assert.match(out, /proxy:\s+UP on port 4000/);
 		assert.match(out, /providers:\s+glm, openrouter, claude/);
 		assert.match(out, /glm\[pro\]:\s+37% used/);
+		assert.match(out, /resets 2026-06-26T12:00:00Z/);
 		assert.match(out, /openrouter:\s+\$4\.20 remaining/);
 		assert.match(out, /glm-5\.2\[1m\] -> glm/);
 	});
@@ -61,5 +62,16 @@ describe("status.js formatStatusReport", () => {
 			glm: { stale: true },
 		});
 		assert.match(out, /\(stale\)/);
+	});
+
+	it("omits the reset stamp for a NaN resetMs without throwing", () => {
+		// new Date(NaN).toISOString() throws RangeError; a corrupt upstream
+		// nextResetTime must not crash /cc-proxy:status rendering.
+		const out = formatStatusReport({
+			status: { up: true, port: 4000, defaultBackend: "claude", providers: ["glm"] },
+			glm: { level: "pro", pct: 5, resetMs: Number.NaN },
+		});
+		assert.match(out, /glm\[pro\]:\s+5% used/);
+		assert.doesNotMatch(out, /resets/);
 	});
 });

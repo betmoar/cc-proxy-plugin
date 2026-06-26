@@ -6,6 +6,38 @@ import net from "node:net";
 export const PORT = Number(process.env.PROXY_PORT || 4000);
 const POLL_INTERVAL_MS = 100;
 
+// The proxy log is append-only and never truncated by the proxy itself, so it
+// grows unbounded over the life of the machine (~1 routing line per request).
+// Before each spawn, if it has passed this cap, rotate it to a single `.1`
+// backup so the live log starts fresh. One generation is enough — this is a
+// debug breadcrumb, not an audit trail.
+const DEFAULT_LOG_MAX_BYTES = 5 * 1024 * 1024;
+const envLogMax = Number(process.env.PROXY_LOG_MAX_BYTES);
+// Only honor a finite, positive override; a negative/0/NaN value would disable
+// rotation (size <= cap always true) or be meaningless, so fall back to default.
+export const LOG_MAX_BYTES =
+	Number.isFinite(envLogMax) && envLogMax > 0 ? envLogMax : DEFAULT_LOG_MAX_BYTES;
+
+/**
+ * Rotate `logPath` to `logPath.1` if it exists and exceeds `maxBytes`. Replaces
+ * any prior `.1` (single-generation). Best-effort: any fs error is swallowed so
+ * a rotation problem never blocks spawning the proxy.
+ * @param {string} logPath
+ * @param {number} [maxBytes]
+ */
+export function rotateLogIfLarge(logPath, maxBytes = LOG_MAX_BYTES) {
+	try {
+		if (fs.statSync(logPath).size <= maxBytes) return;
+		// rename onto an existing destination throws EEXIST on Windows (POSIX
+		// overwrites), which would swallow here and leave the log unrotated
+		// forever. Remove the prior backup first so rename always succeeds.
+		fs.rmSync(`${logPath}.1`, { force: true });
+		fs.renameSync(logPath, `${logPath}.1`);
+	} catch {
+		// Log absent (statSync throws) or rename failed — nothing to rotate.
+	}
+}
+
 /**
  * Non-blocking TCP probe to 127.0.0.1:port. Resolves true if a connection
  * succeeds within the default socket timeout, false otherwise.
@@ -43,14 +75,19 @@ export async function waitReady(port, deadline) {
  * immediately after spawn.
  * @param {string} proxyPath
  * @param {string} logPath
+ * @param {NodeJS.ProcessEnv} [env]  Defaults to process.env. Pass an explicit
+ *   env when the caller carries vars the current process lacks — e.g.
+ *   /cc-proxy:setup reads keys from settings.json before any SessionStart hook
+ *   has injected them into process.env.
  */
-export function spawnProxy(proxyPath, logPath) {
+export function spawnProxy(proxyPath, logPath, env = process.env) {
+	rotateLogIfLarge(logPath);
 	const logFd = fs.openSync(logPath, "a");
 	try {
 		const child = spawn(process.execPath, [proxyPath], {
 			detached: true,
 			stdio: ["ignore", logFd, logFd],
-			env: process.env,
+			env,
 		});
 		child.unref();
 	} finally {
@@ -68,6 +105,8 @@ export function spawnProxy(proxyPath, logPath) {
  * @param {number} [opts.readyTimeoutMs] Defaults to PROXY_READY_TIMEOUT_MS or 3000.
  * @param {string} [opts.proxyPath]    Defaults to PROXY_PATH.
  * @param {string} [opts.logPath]      Defaults to PROXY_LOG or /tmp/cc-proxy.log.
+ * @param {NodeJS.ProcessEnv} [opts.env] Defaults to process.env. Forwarded to
+ *   spawnProxy; see spawnProxy for when to override.
  * @returns {Promise<"already-up" | "started" | "missing-path" | "unreachable">}
  */
 export async function ensureProxyRunning(opts = {}) {
@@ -84,7 +123,7 @@ export async function ensureProxyRunning(opts = {}) {
 	if (await checkPort(port)) return "already-up";
 	if (!proxyPath) return "missing-path";
 
-	spawnProxy(proxyPath, logPath);
+	spawnProxy(proxyPath, logPath, opts.env);
 	const up = await waitReady(port, Date.now() + readyTimeoutMs);
 	return up ? "started" : "unreachable";
 }

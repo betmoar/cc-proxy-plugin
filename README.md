@@ -17,6 +17,7 @@ Claude Code → cc-proxy (:4000) → GLM | OpenRouter | Claude
 ```
 
 - **Context overflow.** A non-streaming GLM overflow is returned as a `400` the user sees; a streaming overflow surfaces as Claude Code's own context-limit message (synthesized from the SSE `stop_reason`). The proxy does not retry or reroute — manage context at the session level: switch model, `/clear`, or `/compact`.
+- **Rate limits.** GLM's `1302` rate-limit response (HTTP `429`) carries no `Retry-After`, so Claude Code surfaces it as a hard error. The proxy injects `Retry-After: 30` (on both the streaming and buffered paths) so the client backs off and retries on its own. It stays stateless — no in-proxy wait or replay. The sibling `1113` (insufficient balance) and other `429`s are passed through untouched, so they get no misleading retry hint.
 - **Thinking blocks stripped** from history so backends don't reject each other's signatures when you switch mid-session.
 
 ## Install
@@ -42,7 +43,7 @@ It merges these into `~/.claude/settings.json` `env` and registers `glm-5.2[1m]`
 | `GLM_API_KEY` | Your Z.ai key (forwarded as `x-api-key`) |
 | `PROXY_PATH` | Absolute path to `bin/cc-proxy.js` (SessionStart hook spawns it) |
 
-**After setup, `/exit` + `/resume` each running session** — Claude Code re-applies `ANTHROPIC_BASE_URL` immediately, so open sessions get `ECONNREFUSED` until the SessionStart hook starts the proxy.
+**`/cc-proxy:setup` starts the proxy before it finishes**, so a fresh session connects with no `ECONNREFUSED`. Claude Code re-applies `ANTHROPIC_BASE_URL` to *already-open* sessions immediately, though — if one errors before the proxy came up, `/exit` + `/resume` it to reconnect (the SessionStart hook also ensures the proxy is running).
 
 ## Usage
 
@@ -109,7 +110,7 @@ claude --plugin-dir .
 }
 ```
 
-Shows Claude 5h quota, GLM coding quota, and OpenRouter credits (`or:$N.NN`, when `OPENROUTER_API_KEY` is set). `proxy down` in bold red when the local proxy is unreachable.
+Shows Claude 5h quota, GLM coding quota, and OpenRouter credits (`or:$N.NN`, when `OPENROUTER_API_KEY` is set). Each 5h gauge carries a countdown to its reset (`~4h41m`). `proxy down` in bold red when the local proxy is unreachable.
 
 ## Environment variables
 
@@ -125,12 +126,13 @@ Shows Claude 5h quota, GLM coding quota, and OpenRouter credits (`or:$N.NN`, whe
 | `DEFAULT_BACKEND` | `claude` | Backend when no model prefix matches |
 | `PROXY_READY_TIMEOUT_MS` | `3000` | Hook readiness-poll ceiling after spawn |
 | `PROXY_LOG` | `/tmp/cc-proxy.log` | Proxy stdout/stderr file |
+| `PROXY_LOG_MAX_BYTES` | `5242880` | Rotate the log to `<log>.1` past this size (single generation) |
 | `PROXY_DEBUG` | — | `1` logs per-request metadata |
 
 ## Troubleshooting
 
 - **`localhost` vs the loopback bind** — the proxy binds `127.0.0.1` by default. On an IPv6-first host `localhost` resolves to `::1` before `127.0.0.1`; Node ≥20's happy-eyeballs normally falls back to `127.0.0.1` so `ANTHROPIC_BASE_URL=http://localhost:4000` still works, but new setups write `http://127.0.0.1:4000` directly to avoid depending on that fallback. If you do hit `ECONNREFUSED` to `:4000` on an older `localhost` config, switch it to `http://127.0.0.1:4000`, or set `PROXY_HOST=0.0.0.0` to bind all interfaces.
-- **API errors after setup** — proxy not up yet. `/exit` + `/resume` to trigger the SessionStart hook.
+- **API errors after setup** — setup starts the proxy itself, so this is usually an *already-open* session that retargeted before the proxy came up. `/exit` + `/resume` it (the SessionStart hook ensures the proxy is running). If a new session also errors, check `/tmp/cc-proxy.log`.
 - **`400 model: String should have at most 256 characters`** — a `"model": "glm-..."` default in settings.json with the proxy not running. Pick the model with `/model` instead, or start the proxy.
 - **Port 4000 in use** — set `PROXY_PORT` in `env`.
 - **`proxy down` in statusline** — check `lsof -ti:4000` and `/tmp/cc-proxy.log`.

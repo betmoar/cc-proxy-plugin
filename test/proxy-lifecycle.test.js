@@ -1,7 +1,16 @@
 import { strict as assert } from "node:assert";
+import fs from "node:fs";
 import net from "node:net";
+import os from "node:os";
+import path from "node:path";
 import { after, before, describe, it } from "node:test";
-import { checkPort, ensureProxyRunning, waitReady } from "../hooks/proxy-lifecycle.js";
+import {
+	LOG_MAX_BYTES,
+	checkPort,
+	ensureProxyRunning,
+	rotateLogIfLarge,
+	waitReady,
+} from "../hooks/proxy-lifecycle.js";
 
 // Pick a high random port so this test doesn't collide with a real proxy.
 function listenOn(port) {
@@ -96,6 +105,114 @@ describe("proxy-lifecycle", () => {
 				if (saved === undefined) process.env.PROXY_PATH = undefined;
 				else process.env.PROXY_PATH = saved;
 			}
+		});
+
+		// /cc-proxy:setup spawns the proxy before SessionStart has injected
+		// settings.json's env into the process, so it passes an explicit env
+		// (GLM_API_KEY especially). The spawned child must receive it.
+		it("forwards opts.env to the spawned proxy", async () => {
+			const port = await freePort();
+			const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "cc-proxy-env-")), "env.txt");
+			// Minimal proxy stand-in: listen on the port (so waitReady passes),
+			// then write the sentinel + its own PID to disk for cleanup.
+			const script = path.join(
+				fs.mkdtempSync(path.join(os.tmpdir(), "cc-proxy-standin-")),
+				"proxy.mjs",
+			);
+			fs.writeFileSync(
+				script,
+				`import net from "node:net";
+import fs from "node:fs";
+const s = net.createServer();
+s.listen(${port}, "127.0.0.1", () => {
+  fs.writeFileSync(${JSON.stringify(out)}, process.env.CC_PROXY_SENTINEL + ":" + process.pid);
+});
+`,
+			);
+			try {
+				const state = await ensureProxyRunning({
+					port,
+					proxyPath: script,
+					readyTimeoutMs: 4000,
+					env: { ...process.env, CC_PROXY_SENTINEL: "forwarded" },
+				});
+				assert.equal(state, "started");
+				// Give the detached child a tick to flush the file after listen().
+				for (let i = 0; i < 50 && !fs.existsSync(out); i++) {
+					await new Promise((r) => setTimeout(r, 50));
+				}
+				const [sentinel, pid] = fs.readFileSync(out, "utf8").split(":");
+				assert.equal(sentinel, "forwarded");
+				try {
+					process.kill(Number(pid));
+				} catch {
+					// child already gone — fine
+				}
+			} finally {
+				fs.rmSync(path.dirname(script), { recursive: true, force: true });
+				fs.rmSync(path.dirname(out), { recursive: true, force: true });
+			}
+		});
+	});
+
+	describe("rotateLogIfLarge", () => {
+		let dir;
+		before(() => {
+			dir = fs.mkdtempSync(path.join(os.tmpdir(), "cc-proxy-log-"));
+		});
+		after(() => {
+			fs.rmSync(dir, { recursive: true, force: true });
+		});
+
+		it("no-op when the log does not exist", () => {
+			const logPath = path.join(dir, "absent.log");
+			rotateLogIfLarge(logPath, 10);
+			assert.equal(fs.existsSync(logPath), false);
+			assert.equal(fs.existsSync(`${logPath}.1`), false);
+		});
+
+		it("no-op when the log is under the cap", () => {
+			const logPath = path.join(dir, "small.log");
+			fs.writeFileSync(logPath, "tiny");
+			rotateLogIfLarge(logPath, 1024);
+			assert.equal(fs.existsSync(`${logPath}.1`), false);
+			assert.equal(fs.readFileSync(logPath, "utf8"), "tiny");
+		});
+
+		it("rotates to .1 when the log exceeds the cap", () => {
+			const logPath = path.join(dir, "big.log");
+			fs.writeFileSync(logPath, "x".repeat(2048));
+			rotateLogIfLarge(logPath, 1024);
+			// Original moved aside; live log no longer present (spawn reopens it).
+			assert.equal(fs.existsSync(`${logPath}.1`), true);
+			assert.equal(fs.readFileSync(`${logPath}.1`, "utf8").length, 2048);
+			assert.equal(fs.existsSync(logPath), false);
+		});
+
+		it("overwrites a prior .1 on the next rotation (single generation)", () => {
+			const logPath = path.join(dir, "gen.log");
+			fs.writeFileSync(`${logPath}.1`, "OLD");
+			fs.writeFileSync(logPath, "y".repeat(2048));
+			rotateLogIfLarge(logPath, 1024);
+			assert.equal(fs.readFileSync(`${logPath}.1`, "utf8").length, 2048);
+		});
+
+		it("exports a sane default cap (>=1MB)", () => {
+			assert.ok(LOG_MAX_BYTES >= 1024 * 1024, `cap ${LOG_MAX_BYTES}`);
+		});
+
+		// The env guard runs at import, so vary it in a child process. A negative
+		// PROXY_LOG_MAX_BYTES would disable rotation (size <= cap always true), so
+		// it must fall back to the 5 MB default, not pass through.
+		it("falls back to the default cap for a negative PROXY_LOG_MAX_BYTES", async () => {
+			const { execFileSync } = await import("node:child_process");
+			const mod = new URL("../hooks/proxy-lifecycle.js", import.meta.url).pathname;
+			const out = execFileSync(
+				process.execPath,
+				["-e", `import(${JSON.stringify(mod)}).then((m) => console.log(m.LOG_MAX_BYTES))`],
+				{ env: { ...process.env, PROXY_LOG_MAX_BYTES: "-1" }, encoding: "utf8" },
+			);
+			assert.equal(Number(out.trim()), 5 * 1024 * 1024);
 		});
 	});
 });
