@@ -20,7 +20,8 @@ function settingsEnv() {
 	const file = path.join(os.homedir(), ".claude", "settings.json");
 	try {
 		const json = JSON.parse(fs.readFileSync(file, "utf8"));
-		return json?.env && typeof json.env === "object" ? { ...json.env } : {};
+		const env = json?.env;
+		return env && typeof env === "object" && !Array.isArray(env) ? { ...env } : {};
 	} catch {
 		return {};
 	}
