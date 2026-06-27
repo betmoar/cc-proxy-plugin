@@ -74,6 +74,28 @@ function formatResetTime(epochSec) {
 	return hours > 0 ? `${hours}h${mins > 0 ? `${mins}m` : ""}` : `${mins}m`;
 }
 
+const CLOCK = "⏱";
+
+// Render a 5h quota segment. Normal: `label 5h:<color>NN%`. Once usage hits
+// 100% (exhausted, waiting for the window to roll over), the percentage is
+// replaced by a red reset countdown `label 5h:⏱<time>` so the only useful
+// signal — when access returns — is what shows. `stale` is an optional "!" mark.
+// `pct` is the raw (unrounded) usage: the countdown gates on the true value so
+// 99.6 doesn't round up to 100 and false-trigger exhaustion, while the
+// displayed percentage is rounded for compactness.
+function renderQuota(label, pct, resetEpochSec, stale = "") {
+	const usage = Number(pct);
+	// Non-finite usage (upstream/schema drift) → placeholder, not "NaN%"
+	// (colorize(NaN) would also fall through to GREEN, doubly misleading).
+	if (!Number.isFinite(usage)) return `${label} 5h:--${stale}`;
+	const resetSec = Number(resetEpochSec);
+	const reset = Number.isFinite(resetSec) ? formatResetTime(resetSec) : null;
+	if (usage >= 100 && reset) {
+		return `${label} 5h:${RED}${CLOCK}${reset}${stale}${RESET}`;
+	}
+	return `${label} 5h:${colorize(usage)}${Math.round(usage)}%${stale}${RESET}`;
+}
+
 async function loadGlmQuota(cacheDir) {
 	const apiKey = process.env.GLM_API_KEY;
 	if (!apiKey) return null;
@@ -197,44 +219,48 @@ process.stdin.on("end", async () => {
 	// from the non-bold RED used by quota gauges at ≥85%.
 	const proxyAlive = await checkProxyAlive(PROXY_PORT, cacheDir);
 
-	// Claude section: 5h usage + reset time
+	// Claude section (`cc`): 5h usage %, or a reset countdown once exhausted.
 	const rl = input.rate_limits;
 	if (rl?.five_hour) {
-		const pct = Math.round(rl.five_hour.used_percentage);
-		const c = colorize(pct);
-		const reset = formatResetTime(rl.five_hour.resets_at);
-		parts.push(`claude 5h:${c}${pct}%${RESET} ~${reset}`);
+		parts.push(renderQuota("cc", Number(rl.five_hour.used_percentage), rl.five_hour.resets_at));
 	} else {
-		parts.push("claude 5h:--");
+		parts.push("cc 5h:--");
 	}
 
 	// GLM section
 	const glm = await loadGlmQuota(cacheDir);
 	if (glm) {
 		const stale = glm._stale ? "!" : "";
-		const level = glm.level || "?";
 
 		// TOKENS_LIMIT = 5-hour coding quota (confirmed via zai-org/zai-coding-plugins)
 		const tokLim = glm.limits?.find((l) => l.type === "TOKENS_LIMIT");
 		if (tokLim) {
-			const pct = tokLim.percentage;
-			const c = colorize(pct);
-			// nextResetTime is epoch ms; formatResetTime takes seconds. Coerce and
-			// finiteness-check so a string/garbage value yields no suffix, not "~NaNm".
-			const resetMs = Number(tokLim.nextResetTime);
-			const reset = Number.isFinite(resetMs) ? ` ~${formatResetTime(resetMs / 1000)}` : "";
-			parts.push(`glm[${level}] 5h:${c}${pct}%${stale}${RESET}${reset}`);
+			// nextResetTime is epoch ms; renderQuota takes seconds. Coerce so a
+			// string/garbage value is non-finite and yields no countdown.
+			const resetSec = Number(tokLim.nextResetTime) / 1000;
+			parts.push(renderQuota("glm", tokLim.percentage, resetSec, stale));
 		} else {
-			parts.push(`glm[${level}] --`);
+			parts.push("glm 5h:--");
 		}
 	}
 
-	// OpenRouter section (only when OPENROUTER_API_KEY is set)
+	// OpenRouter section (`api:`, only when OPENROUTER_API_KEY is set)
 	const or = await loadOpenRouterCredits(cacheDir);
 	if (or) {
 		const stale = or._stale ? "!" : "";
 		const c = colorize(or.usedPct);
-		parts.push(`or:${c}$${or.remaining.toFixed(2)}${stale}${RESET}`);
+		// One $ per digit of whole-dollar credits remaining: $1–9=$, $10–99=$$,
+		// $100–999=$$$, $1000+=$$$$ (unbounded by design). An empty balance
+		// renders a distinct `$0`; any non-empty balance — including a sub-$1
+		// amount that floors to 0 — shows at least one `$`. A non-finite balance
+		// (stale/corrupt cache, schema drift) renders `--` rather than deriving a
+		// misleading tier from NaN (String(NaN).length === 3 would yield "$$$").
+		const remaining = Number(or.remaining);
+		let tier;
+		if (!Number.isFinite(remaining)) tier = "--";
+		else if (remaining <= 0) tier = "$0";
+		else tier = "$".repeat(Math.max(1, String(Math.floor(remaining)).length));
+		parts.push(`api:${c}${tier}${stale}${RESET}`);
 	}
 
 	if (!proxyAlive) {
