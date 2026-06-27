@@ -80,12 +80,16 @@ const CLOCK = "⏱";
 // 100% (exhausted, waiting for the window to roll over), the percentage is
 // replaced by a red reset countdown `label 5h:⏱<time>` so the only useful
 // signal — when access returns — is what shows. `stale` is an optional "!" mark.
+// `pct` is the raw (unrounded) usage: the countdown gates on the true value so
+// 99.6 doesn't round up to 100 and false-trigger exhaustion, while the
+// displayed percentage is rounded for compactness.
 function renderQuota(label, pct, resetEpochSec, stale = "") {
-	const reset = Number.isFinite(resetEpochSec) ? formatResetTime(resetEpochSec) : null;
+	const resetSec = Number(resetEpochSec);
+	const reset = Number.isFinite(resetSec) ? formatResetTime(resetSec) : null;
 	if (pct >= 100 && reset) {
 		return `${label} 5h:${RED}${CLOCK}${reset}${stale}${RESET}`;
 	}
-	return `${label} 5h:${colorize(pct)}${pct}%${stale}${RESET}`;
+	return `${label} 5h:${colorize(pct)}${Math.round(pct)}%${stale}${RESET}`;
 }
 
 async function loadGlmQuota(cacheDir) {
@@ -214,8 +218,7 @@ process.stdin.on("end", async () => {
 	// Claude section: 5h usage + reset time
 	const rl = input.rate_limits;
 	if (rl?.five_hour) {
-		const pct = Math.round(rl.five_hour.used_percentage);
-		parts.push(renderQuota("cc", pct, rl.five_hour.resets_at));
+		parts.push(renderQuota("cc", Number(rl.five_hour.used_percentage), rl.five_hour.resets_at));
 	} else {
 		parts.push("cc 5h:--");
 	}
@@ -243,9 +246,10 @@ process.stdin.on("end", async () => {
 		const stale = or._stale ? "!" : "";
 		const c = colorize(or.usedPct);
 		// One $ per digit of whole-dollar credits remaining: $1–9=$, $10–99=$$,
-		// $100–999=$$$. Floored at one $ so a non-empty balance always shows.
+		// $100–999=$$$. A zero balance renders a distinct `$0` so it can't be
+		// mistaken for the $1–9 tier.
 		const whole = Math.max(0, Math.floor(or.remaining));
-		const tier = "$".repeat(Math.max(1, String(whole).length));
+		const tier = whole === 0 ? "$0" : "$".repeat(String(whole).length);
 		parts.push(`api:${c}${tier}${stale}${RESET}`);
 	}
 

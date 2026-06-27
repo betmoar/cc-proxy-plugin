@@ -25,7 +25,7 @@ function run(input, env = {}) {
 }
 
 describe("statusline.js", () => {
-	it("shows claude usage when rate_limits is present", async () => {
+	it("shows cc usage when rate_limits is present", async () => {
 		const { stdout } = await run(
 			{
 				rate_limits: {
@@ -51,7 +51,7 @@ describe("statusline.js", () => {
 		assert.ok(!stdout.includes("100%"), `Expected no percentage at 100%, got: ${stdout}`);
 	});
 
-	it("shows -- for claude when rate_limits is missing", async () => {
+	it("shows -- for cc when rate_limits is missing", async () => {
 		const { stdout } = await run({}, { GLM_API_KEY: "", OPENROUTER_API_KEY: "" });
 		assert.ok(stdout.includes("cc 5h:--"), `Expected --, got: ${stdout}`);
 	});
@@ -63,7 +63,20 @@ describe("statusline.js", () => {
 	});
 
 	// Integration test — only runs when GLM_API_KEY is set
-	it("shows GLM quota when key is set", { skip: !process.env.GLM_API_KEY }, async () => {
+	it("does not trigger countdown when usage rounds up to 100 but is below it", async () => {
+		const { stdout } = await run(
+			{
+				rate_limits: {
+					five_hour: { used_percentage: 99.6, resets_at: Math.floor(Date.now() / 1000) + 3600 },
+				},
+			},
+			{ GLM_API_KEY: "", OPENROUTER_API_KEY: "" },
+		);
+		assert.ok(stdout.includes("100%"), `Expected rounded 100%, got: ${stdout}`);
+		assert.ok(!stdout.includes("⏱"), `Expected no countdown below 100%, got: ${stdout}`);
+	});
+
+	it("shows GLM 5h quota when key is set", { skip: !process.env.GLM_API_KEY }, async () => {
 		const { stdout } = await run(
 			{
 				rate_limits: {
