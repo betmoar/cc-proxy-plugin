@@ -74,6 +74,20 @@ function formatResetTime(epochSec) {
 	return hours > 0 ? `${hours}h${mins > 0 ? `${mins}m` : ""}` : `${mins}m`;
 }
 
+const CLOCK = "⏱";
+
+// Render a 5h quota segment. Normal: `label 5h:<color>NN%`. Once usage hits
+// 100% (exhausted, waiting for the window to roll over), the percentage is
+// replaced by a red reset countdown `label 5h:⏱<time>` so the only useful
+// signal — when access returns — is what shows. `stale` is an optional "!" mark.
+function renderQuota(label, pct, resetEpochSec, stale = "") {
+	const reset = Number.isFinite(resetEpochSec) ? formatResetTime(resetEpochSec) : null;
+	if (pct >= 100 && reset) {
+		return `${label} 5h:${RED}${CLOCK}${reset}${stale}${RESET}`;
+	}
+	return `${label} 5h:${colorize(pct)}${pct}%${stale}${RESET}`;
+}
+
 async function loadGlmQuota(cacheDir) {
 	const apiKey = process.env.GLM_API_KEY;
 	if (!apiKey) return null;
@@ -201,31 +215,25 @@ process.stdin.on("end", async () => {
 	const rl = input.rate_limits;
 	if (rl?.five_hour) {
 		const pct = Math.round(rl.five_hour.used_percentage);
-		const c = colorize(pct);
-		const reset = formatResetTime(rl.five_hour.resets_at);
-		parts.push(`claude 5h:${c}${pct}%${RESET} ~${reset}`);
+		parts.push(renderQuota("cc", pct, rl.five_hour.resets_at));
 	} else {
-		parts.push("claude 5h:--");
+		parts.push("cc 5h:--");
 	}
 
 	// GLM section
 	const glm = await loadGlmQuota(cacheDir);
 	if (glm) {
 		const stale = glm._stale ? "!" : "";
-		const level = glm.level || "?";
 
 		// TOKENS_LIMIT = 5-hour coding quota (confirmed via zai-org/zai-coding-plugins)
 		const tokLim = glm.limits?.find((l) => l.type === "TOKENS_LIMIT");
 		if (tokLim) {
-			const pct = tokLim.percentage;
-			const c = colorize(pct);
-			// nextResetTime is epoch ms; formatResetTime takes seconds. Coerce and
-			// finiteness-check so a string/garbage value yields no suffix, not "~NaNm".
-			const resetMs = Number(tokLim.nextResetTime);
-			const reset = Number.isFinite(resetMs) ? ` ~${formatResetTime(resetMs / 1000)}` : "";
-			parts.push(`glm[${level}] 5h:${c}${pct}%${stale}${RESET}${reset}`);
+			// nextResetTime is epoch ms; renderQuota takes seconds. Coerce so a
+			// string/garbage value is non-finite and yields no countdown.
+			const resetSec = Number(tokLim.nextResetTime) / 1000;
+			parts.push(renderQuota("glm", tokLim.percentage, resetSec, stale));
 		} else {
-			parts.push(`glm[${level}] --`);
+			parts.push("glm 5h:--");
 		}
 	}
 
@@ -234,7 +242,11 @@ process.stdin.on("end", async () => {
 	if (or) {
 		const stale = or._stale ? "!" : "";
 		const c = colorize(or.usedPct);
-		parts.push(`or:${c}$${or.remaining.toFixed(2)}${stale}${RESET}`);
+		// One $ per digit of whole-dollar credits remaining: $1–9=$, $10–99=$$,
+		// $100–999=$$$. Floored at one $ so a non-empty balance always shows.
+		const whole = Math.max(0, Math.floor(or.remaining));
+		const tier = "$".repeat(Math.max(1, String(whole).length));
+		parts.push(`api:${c}${tier}${stale}${RESET}`);
 	}
 
 	if (!proxyAlive) {

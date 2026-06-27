@@ -34,19 +34,32 @@ describe("statusline.js", () => {
 			},
 			{ GLM_API_KEY: "", OPENROUTER_API_KEY: "" },
 		);
-		assert.ok(stdout.includes("claude 5h:"), `Expected claude section, got: ${stdout}`);
+		assert.ok(stdout.includes("cc 5h:"), `Expected cc section, got: ${stdout}`);
 		assert.ok(stdout.includes("42%"), `Expected 42%, got: ${stdout}`);
+	});
+
+	it("replaces percentage with a reset countdown at 100% usage", async () => {
+		const { stdout } = await run(
+			{
+				rate_limits: {
+					five_hour: { used_percentage: 100, resets_at: Math.floor(Date.now() / 1000) + 7200 },
+				},
+			},
+			{ GLM_API_KEY: "", OPENROUTER_API_KEY: "" },
+		);
+		assert.match(stdout, /cc 5h:\S*⏱\d+h/, `Expected countdown, got: ${stdout}`);
+		assert.ok(!stdout.includes("100%"), `Expected no percentage at 100%, got: ${stdout}`);
 	});
 
 	it("shows -- for claude when rate_limits is missing", async () => {
 		const { stdout } = await run({}, { GLM_API_KEY: "", OPENROUTER_API_KEY: "" });
-		assert.ok(stdout.includes("claude 5h:--"), `Expected --, got: ${stdout}`);
+		assert.ok(stdout.includes("cc 5h:--"), `Expected --, got: ${stdout}`);
 	});
 
 	it("handles empty stdin gracefully", async () => {
 		const { stdout, code } = await run("", { GLM_API_KEY: "", OPENROUTER_API_KEY: "" });
 		assert.equal(code, 0);
-		assert.ok(stdout.includes("claude 5h:--"), `Expected graceful handling, got: ${stdout}`);
+		assert.ok(stdout.includes("cc 5h:--"), `Expected graceful handling, got: ${stdout}`);
 	});
 
 	// Integration test — only runs when GLM_API_KEY is set
@@ -59,10 +72,10 @@ describe("statusline.js", () => {
 			},
 			{ OPENROUTER_API_KEY: "" },
 		);
-		assert.ok(stdout.includes("glm["), `Expected glm section, got: ${stdout}`);
-		// Accept ~now too: formatResetTime returns "now" at/after the reset boundary,
-		// so a strict /~\d+[hm]/ would flake if the live quota happens to be resetting.
-		assert.match(stdout, /~(\d+[hm]|now)/, `Expected reset-time suffix, got: ${stdout}`);
+		assert.ok(stdout.includes("glm 5h:"), `Expected glm section, got: ${stdout}`);
+		// Normal (non-exhausted) GLM shows a percentage, not a countdown. The
+		// ⏱ countdown only appears at 100%, which a live quota rarely is.
+		assert.match(stdout, /glm 5h:\S*\d+%/, `Expected glm percentage, got: ${stdout}`);
 	});
 
 	// Integration test — only runs when OPENROUTER_API_KEY is set
@@ -71,12 +84,12 @@ describe("statusline.js", () => {
 		{ skip: !process.env.OPENROUTER_API_KEY },
 		async () => {
 			const { stdout } = await run({}, { GLM_API_KEY: "" });
-			// Strip ANSI color codes: the script emits `or:<color>$<amount><reset>`,
-			// so a color code sits between `or:` and `$` on a live (non-stale) run.
+			// Strip ANSI color codes: the script emits `api:<color>$$<reset>`,
+			// so a color code sits between `api:` and the $ tier on a live run.
 			// ESC built via fromCharCode to avoid a literal control char in the regex.
 			const ansi = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
 			const plain = stdout.replace(ansi, "");
-			assert.match(plain, /or:\$\d/, `Expected openrouter section, got: ${stdout}`);
+			assert.match(plain, /api:\$+/, `Expected api section, got: ${stdout}`);
 		},
 	);
 });
