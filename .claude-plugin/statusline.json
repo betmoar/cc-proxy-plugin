@@ -1,0 +1,1 @@
+{ "name": "cc-proxy", "render": "scripts/statusline.js", "order": 10 }
