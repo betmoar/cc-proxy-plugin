@@ -104,18 +104,22 @@ describe("statusline.js", () => {
 			[42, "$$"],
 			[150, "$$$"],
 			[1200, "$$$$"], // unbounded by design — does NOT cap at $$$
+			[undefined, "--"], // non-finite balance (corrupt/schema drift) → placeholder
 		];
 		for (const [remaining, expected] of cases) {
 			const dir = seedOpenRouterCache(remaining);
-			const { stdout } = await run(
-				{},
-				{ GLM_API_KEY: "", OPENROUTER_API_KEY: "dummy", CLAUDE_PLUGIN_DATA: dir },
-			);
-			assert.ok(
-				plain(stdout).includes(`api:${expected} `) || plain(stdout).endsWith(`api:${expected}`),
-				`remaining=${remaining}: expected api:${expected}, got: ${plain(stdout)}`,
-			);
-			fs.rmSync(dir, { recursive: true, force: true });
+			try {
+				const { stdout } = await run(
+					{},
+					{ GLM_API_KEY: "", OPENROUTER_API_KEY: "dummy", CLAUDE_PLUGIN_DATA: dir },
+				);
+				assert.ok(
+					plain(stdout).includes(`api:${expected} `) || plain(stdout).endsWith(`api:${expected}`),
+					`remaining=${remaining}: expected api:${expected}, got: ${plain(stdout)}`,
+				);
+			} finally {
+				fs.rmSync(dir, { recursive: true, force: true });
+			}
 		}
 	});
 
