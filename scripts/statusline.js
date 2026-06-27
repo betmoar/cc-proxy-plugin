@@ -246,10 +246,11 @@ process.stdin.on("end", async () => {
 		const stale = or._stale ? "!" : "";
 		const c = colorize(or.usedPct);
 		// One $ per digit of whole-dollar credits remaining: $1–9=$, $10–99=$$,
-		// $100–999=$$$. A zero balance renders a distinct `$0` so it can't be
-		// mistaken for the $1–9 tier.
+		// $100–999=$$$, $1000+=$$$$ (unbounded by design). An empty balance
+		// renders a distinct `$0`; any non-empty balance — including a sub-$1
+		// amount that floors to 0 — shows at least one `$`.
 		const whole = Math.max(0, Math.floor(or.remaining));
-		const tier = whole === 0 ? "$0" : "$".repeat(String(whole).length);
+		const tier = or.remaining <= 0 ? "$0" : "$".repeat(Math.max(1, String(whole).length));
 		parts.push(`api:${c}${tier}${stale}${RESET}`);
 	}
 

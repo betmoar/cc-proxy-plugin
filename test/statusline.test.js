@@ -1,5 +1,7 @@
 import { strict as assert } from "node:assert";
 import { execFile } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -8,6 +10,25 @@ const SCRIPT = path.resolve(
 	path.dirname(fileURLToPath(import.meta.url)),
 	"../scripts/statusline.js",
 );
+
+// Seed a fresh OpenRouter credits cache so the renderer reads the fixture
+// instead of calling the network. A dummy key makes the loader proceed past
+// its no-key guard; the <60s _ts keeps the cache non-stale. Returns the temp
+// dir to pass as CLAUDE_PLUGIN_DATA. The proxy-alive cache shares this dir but
+// is independent, so it just probes (and prints "proxy down") harmlessly.
+function seedOpenRouterCache(remaining) {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "statusline-test-"));
+	fs.writeFileSync(
+		path.join(dir, "openrouter_credits_cache.json"),
+		JSON.stringify({ remaining, usedPct: 0, _ts: Date.now() }),
+	);
+	return dir;
+}
+
+// Strip ANSI color codes for label/shape assertions.
+function plain(s) {
+	return s.replace(new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g"), "");
+}
 
 function run(input, env = {}) {
 	return new Promise((resolve) => {
@@ -62,7 +83,6 @@ describe("statusline.js", () => {
 		assert.ok(stdout.includes("cc 5h:--"), `Expected graceful handling, got: ${stdout}`);
 	});
 
-	// Integration test — only runs when GLM_API_KEY is set
 	it("does not trigger countdown when usage rounds up to 100 but is below it", async () => {
 		const { stdout } = await run(
 			{
@@ -74,6 +94,29 @@ describe("statusline.js", () => {
 		);
 		assert.ok(stdout.includes("100%"), `Expected rounded 100%, got: ${stdout}`);
 		assert.ok(!stdout.includes("⏱"), `Expected no countdown below 100%, got: ${stdout}`);
+	});
+
+	it("renders api: $-tiers by digit count, unbounded above $999", async () => {
+		const cases = [
+			[0, "$0"],
+			[0.5, "$"], // non-empty sub-$1 floors to 0 but must still show one $
+			[7, "$"],
+			[42, "$$"],
+			[150, "$$$"],
+			[1200, "$$$$"], // unbounded by design — does NOT cap at $$$
+		];
+		for (const [remaining, expected] of cases) {
+			const dir = seedOpenRouterCache(remaining);
+			const { stdout } = await run(
+				{},
+				{ GLM_API_KEY: "", OPENROUTER_API_KEY: "dummy", CLAUDE_PLUGIN_DATA: dir },
+			);
+			assert.ok(
+				plain(stdout).includes(`api:${expected} `) || plain(stdout).endsWith(`api:${expected}`),
+				`remaining=${remaining}: expected api:${expected}, got: ${plain(stdout)}`,
+			);
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
 	});
 
 	it("shows GLM 5h quota when key is set", { skip: !process.env.GLM_API_KEY }, async () => {
