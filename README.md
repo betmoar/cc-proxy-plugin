@@ -110,7 +110,17 @@ claude --plugin-dir .
 }
 ```
 
-Shows Claude 5h quota, GLM coding quota, and OpenRouter credits (`or:$N.NN`, when `OPENROUTER_API_KEY` is set). Each 5h gauge carries a countdown to its reset (`~4h41m`). `proxy down` in bold red when the local proxy is unreachable.
+Compact composed-bar format, designed to sit alongside other plugins' segments:
+
+```
+cc 5h:2% | glm 5h:14% | api:$$$
+```
+
+- **`cc` / `glm` 5h** — usage percentage, green→yellow→red by load. When a quota hits 100% (exhausted), the percentage is replaced by a red reset countdown `⏱3h11m`, since at that point the only useful signal is when access returns.
+- **`api:`** — OpenRouter credits remaining (when `OPENROUTER_API_KEY` is set), as `$`-tiers by digit count: `$1–9`=`$`, `$10–99`=`$$`, `$100–999`=`$$$`, `$1000+`=`$$$$`. Empty balance shows `$0`; an unavailable balance shows `--`.
+- **`proxy down`** in bold red when the local proxy is unreachable.
+
+When the [cc-status](https://github.com/betmoar/cc-status-plugin) composer is the active statusLine, this segment is discovered and composed automatically via `.claude-plugin/statusline.json` — no manual wiring needed.
 
 ## Environment variables
 

@@ -90,7 +90,7 @@ Claude Code's picker rejects unknown ids unless injected via `ANTHROPIC_CUSTOM_M
 
 ### Statusline quota mapping
 
-From Z.ai's official plugin: `TOKENS_LIMIT` = the 5-hour coding quota (what the statusline shows). Its `nextResetTime` (epoch ms) drives the reset countdown next to the gauge (`~4h41m` in the statusline, an absolute UTC stamp in `/cc-proxy:status`). OpenRouter exposes remaining credits at `/api/v1/credits`.
+From Z.ai's official plugin: `TOKENS_LIMIT` = the 5-hour coding quota (what the statusline shows). Its `nextResetTime` (epoch ms) drives the reset countdown — shown only once a quota is exhausted (`⏱3h11m`, replacing the percentage), and as an absolute UTC stamp in `/cc-proxy:status`. OpenRouter exposes remaining credits at `/api/v1/credits`, rendered as `$`-tiers by digit count (`api:$$$`). The shared `renderQuota()` helper in `scripts/statusline.js` carries this logic and guards non-finite inputs (schema drift) with a `--` placeholder rather than `NaN%`.
 
 ## Repository layout
 

@@ -219,7 +219,7 @@ process.stdin.on("end", async () => {
 	// from the non-bold RED used by quota gauges at ≥85%.
 	const proxyAlive = await checkProxyAlive(PROXY_PORT, cacheDir);
 
-	// Claude section: 5h usage + reset time
+	// Claude section (`cc`): 5h usage %, or a reset countdown once exhausted.
 	const rl = input.rate_limits;
 	if (rl?.five_hour) {
 		parts.push(renderQuota("cc", Number(rl.five_hour.used_percentage), rl.five_hour.resets_at));
@@ -244,7 +244,7 @@ process.stdin.on("end", async () => {
 		}
 	}
 
-	// OpenRouter section (only when OPENROUTER_API_KEY is set)
+	// OpenRouter section (`api:`, only when OPENROUTER_API_KEY is set)
 	const or = await loadOpenRouterCredits(cacheDir);
 	if (or) {
 		const stale = or._stale ? "!" : "";
