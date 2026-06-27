@@ -84,12 +84,16 @@ const CLOCK = "⏱";
 // 99.6 doesn't round up to 100 and false-trigger exhaustion, while the
 // displayed percentage is rounded for compactness.
 function renderQuota(label, pct, resetEpochSec, stale = "") {
+	const usage = Number(pct);
+	// Non-finite usage (upstream/schema drift) → placeholder, not "NaN%"
+	// (colorize(NaN) would also fall through to GREEN, doubly misleading).
+	if (!Number.isFinite(usage)) return `${label} 5h:--${stale}`;
 	const resetSec = Number(resetEpochSec);
 	const reset = Number.isFinite(resetSec) ? formatResetTime(resetSec) : null;
-	if (pct >= 100 && reset) {
+	if (usage >= 100 && reset) {
 		return `${label} 5h:${RED}${CLOCK}${reset}${stale}${RESET}`;
 	}
-	return `${label} 5h:${colorize(pct)}${Math.round(pct)}%${stale}${RESET}`;
+	return `${label} 5h:${colorize(usage)}${Math.round(usage)}%${stale}${RESET}`;
 }
 
 async function loadGlmQuota(cacheDir) {

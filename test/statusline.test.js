@@ -83,6 +83,19 @@ describe("statusline.js", () => {
 		assert.ok(stdout.includes("cc 5h:--"), `Expected graceful handling, got: ${stdout}`);
 	});
 
+	it("renders -- for cc when usage is non-numeric", async () => {
+		const { stdout } = await run(
+			{
+				rate_limits: {
+					five_hour: { used_percentage: "oops", resets_at: Math.floor(Date.now() / 1000) + 3600 },
+				},
+			},
+			{ GLM_API_KEY: "", OPENROUTER_API_KEY: "" },
+		);
+		assert.ok(stdout.includes("cc 5h:--"), `Expected -- placeholder, got: ${stdout}`);
+		assert.ok(!stdout.includes("NaN"), `Expected no NaN, got: ${stdout}`);
+	});
+
 	it("does not trigger countdown when usage rounds up to 100 but is below it", async () => {
 		const { stdout } = await run(
 			{
