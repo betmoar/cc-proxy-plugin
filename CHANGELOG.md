@@ -2,6 +2,11 @@
 
 All notable changes to cc-proxy are recorded here. Versions follow [semver](https://semver.org/); `package.json` is the single source of truth and propagates to `.claude-plugin/plugin.json` via `scripts/sync-version.mjs`.
 
+## [0.3.0] — 2026-06-28
+
+### Removed
+- **GLM offload subagents removed.** The `glm-bulk-reader`, `glm-review-code`, `glm-review-plan`, `glm-review-spec`, `glm-review-implementation`, and `glm-brainstorm` agents moved to a dedicated plugin: [`betmoar/cc-agents-plugin`](https://github.com/betmoar/cc-agents-plugin). cc-proxy now ships only the router (`/cc-proxy:status`, `/cc-proxy:ask`, the proxy server, and the statusline segment).
+
 ## [0.2.2] — 2026-06-27
 
 ### Changed

@@ -2,7 +2,7 @@
   "name": "cc-proxy-plugin",
   "private": true,
   "type": "module",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "Z.ai and OpenRouter proxy plugin for Claude Code",
   "license": "MIT",
   "packageManager": "pnpm@11.3.0",

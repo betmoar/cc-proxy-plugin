@@ -111,7 +111,6 @@ cc-proxy-plugin/                    ← the plugin IS the repo root; the marketp
 ├── scripts/start-proxy.js          /cc-proxy:setup proxy starter (idempotent)
 ├── skills/setup/SKILL.md           /cc-proxy:setup
 ├── commands/                       /cc-proxy:status, /cc-proxy:ask
-├── agents/                         glm-* offload subagents
 ├── test/                           node --test suite
 └── docs/                           ARCHITECTURE.md, OPERATIONS.md
 ```

@@ -55,22 +55,16 @@ Switch backends with `/model`:
 
 Routing decisions land in `/tmp/cc-proxy.log` (`PROXY_DEBUG=1` for per-request detail).
 
-## Commands & agents
+## Commands
 
-The plugin ships slash commands and subagents that reach proxy backends **without changing your session model**.
+The plugin ships slash commands that reach proxy backends **without changing your session model**.
 
 **Commands:**
 
 - `/cc-proxy:status` — proxy liveness, configured providers + default backend, GLM/OpenRouter quota, and recent routing decisions. Reads the proxy's `/_status` endpoint and tails `/tmp/cc-proxy.log`; works whether the proxy is up or down.
 - `/cc-proxy:ask <prompt>` — a one-shot question answered by **GLM-5.2 (1M context)** for that turn only; your session model resumes on the next prompt. The clean way to ask the cheap, large-context model mid-session without `/model` switching.
 
-**Agents** (all pinned to `glm-5.2[1m]`, read-only — invoke explicitly to offload work to GLM):
-
-- `glm-bulk-reader` — ingest a large body of code/text using GLM's 1M context; returns a structured digest with `path:line` citations.
-- `glm-review-code` / `glm-review-plan` / `glm-review-spec` / `glm-review-implementation` — cheap, **wide first-pass** review; a stronger model renders the final verdict.
-- `glm-brainstorm` — divergent idea generation (breadth, not judgment).
-
-A subagent's `model:` field is sent through the proxy verbatim, so each runs on GLM regardless of your session model. These are framed as first-pass / offload helpers — **confirm their output before acting**, since GLM is the cheaper, weaker model for judgment tasks. This is also how OpenRouter models (which have no `/model` picker slot) are reached: a subagent or command pinned to a `vendor/model` id.
+> The GLM offload subagents (`glm-bulk-reader`, `glm-review-*`, `glm-brainstorm`) have moved to a dedicated plugin: [`betmoar/cc-agents-plugin`](https://github.com/betmoar/cc-agents-plugin).
 
 ## Model assignment
 

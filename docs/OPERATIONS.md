@@ -11,7 +11,7 @@ Runtime facts, known traps, and debugging. For design rationale, see [`ARCHITECT
 | `~/.claude/plugins/marketplaces/betmoar/` | marketplace clone (`betmoar/ccp-market`) | `claude plugin marketplace update betmoar` |
 | `~/.claude/plugins/cache/betmoar/cc-proxy/<version>/` | full plugin tree (the whole `cc-proxy-plugin` repo) | `claude plugin update cc-proxy@betmoar` |
 
-**The plugin is the repo root**, so the cache holds the whole tree — `src/`, `bin/`, hooks, scripts, skills, commands, and agents. Hooks import siblings inside the cache (`./proxy-lifecycle.js`); the proxy entry point (`bin/cc-proxy.js`) is still referenced by absolute path via `PROXY_PATH` because the statusline runs outside plugin context, where `${CLAUDE_PLUGIN_ROOT}` is unavailable.
+**The plugin is the repo root**, so the cache holds the whole tree — `src/`, `bin/`, hooks, scripts, skills, and commands. Hooks import siblings inside the cache (`./proxy-lifecycle.js`); the proxy entry point (`bin/cc-proxy.js`) is still referenced by absolute path via `PROXY_PATH` because the statusline runs outside plugin context, where `${CLAUDE_PLUGIN_ROOT}` is unavailable.
 
 **Cache key = `plugin.json` version.** A new cache dir is created only when the `version` string changes. Bump it to force end users to pick up new hook/skill content.
 
