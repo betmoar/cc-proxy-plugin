@@ -93,7 +93,11 @@ export function providerById(config, id) {
  */
 export function applyAuth(sourceHeaders, provider) {
 	if (provider.auth === "oauth") return { ...sourceHeaders };
-	const { authorization: _drop, ...rest } = sourceHeaders;
+	// Drop BOTH inbound credential headers, not just authorization: when Claude
+	// Code authenticates with ANTHROPIC_API_KEY it sends `x-api-key`, and
+	// forwarding it to a third-party backend (the bearer path doesn't overwrite
+	// it) would leak the user's Anthropic key off-platform.
+	const { authorization: _drop, "x-api-key": _dropKey, ...rest } = sourceHeaders;
 	if (provider.auth === "bearer") {
 		return { ...rest, authorization: `Bearer ${provider.apiKey}` };
 	}

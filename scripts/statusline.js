@@ -115,8 +115,14 @@ async function loadGlmQuota(cacheDir) {
 
 	// Fetch from API
 	// The quota endpoint accepts Authorization, x-api-key, and Bearer formats.
+	// Timeout matches the OpenRouter fetch below: the statusline renders every
+	// ~300ms, so a hanging quota endpoint must fail fast into the stale-cache
+	// path instead of stalling every render.
 	try {
-		const res = await fetch(QUOTA_URL, { headers: { Authorization: apiKey } });
+		const res = await fetch(QUOTA_URL, {
+			headers: { Authorization: apiKey },
+			signal: AbortSignal.timeout(800),
+		});
 		if (!res.ok) throw new Error(`HTTP ${res.status}`);
 		const json = await res.json();
 		const result = { ...json.data, _ts: Date.now() };

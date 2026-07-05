@@ -1,14 +1,12 @@
 // @ts-check
 import http from "node:http";
-import https from "node:https";
-import { pickAgent, upstreamTimeoutMs } from "./agents.js";
 import {
 	RATE_LIMIT_RETRY_AFTER_SECONDS,
 	isContextLimitByStopReason,
 	isRateLimitError,
 } from "./fallback.js";
-import { buildUpstreamHeaders, defaultProvider } from "./providers.js";
-import { forward } from "./proxy.js";
+import { defaultProvider } from "./providers.js";
+import { abortUpstreamOnClientClose, forward, upstreamRequestOptions } from "./proxy.js";
 import { resolve } from "./router.js";
 import { stripAssistantThinking } from "./sanitize.js";
 
@@ -42,30 +40,11 @@ function parseMaybeJson(buffer) {
 	}
 }
 
-function upstreamRequestOptions(clientReq, provider, outboundBuffer) {
-	const url = new URL(provider.baseUrl + clientReq.url);
-	const proto = url.protocol === "https:" ? https : http;
-	return {
-		proto,
-		options: {
-			hostname: url.hostname,
-			port: url.port || (url.protocol === "https:" ? 443 : 80),
-			path: url.pathname,
-			method: clientReq.method,
-			headers: buildUpstreamHeaders(
-				provider,
-				clientReq.headers,
-				outboundBuffer.length,
-				url.hostname,
-			),
-			agent: pickAgent(proto),
-			timeout: upstreamTimeoutMs(),
-		},
-	};
-}
-
 function onUpstreamError(clientRes) {
 	return (err) => {
+		// Client already gone (it aborted and we destroyed the upstream) — nothing
+		// to report to anyone.
+		if (clientRes.destroyed) return;
 		if (!clientRes.headersSent) {
 			sendJson(clientRes, 502, { error: { message: `Upstream error: ${err.message}` } });
 		} else if (!clientRes.writableEnded) {
@@ -87,7 +66,7 @@ const NON_STREAM_BUFFER_LIMIT = 1024 * 1024;
 // empty content + stop_reason) can be converted into a real error instead of a
 // silent empty turn. Larger-than-cap and everything else pass through unchanged.
 function forwardBuffered(clientReq, clientRes, provider, outboundBuffer, inboundModel) {
-	const { proto, options } = upstreamRequestOptions(clientReq, provider, outboundBuffer);
+	const { proto, options } = upstreamRequestOptions(clientReq, provider, outboundBuffer.length);
 	const upstream = proto.request(options, (upstreamRes) => {
 		const status = upstreamRes.statusCode || 502;
 		const chunks = [];
@@ -144,6 +123,7 @@ function forwardBuffered(clientReq, clientRes, provider, outboundBuffer, inbound
 	});
 	upstream.on("timeout", () => upstream.destroy(new Error("upstream timeout")));
 	upstream.on("error", onUpstreamError(clientRes));
+	abortUpstreamOnClientClose(clientRes, upstream);
 	upstream.write(outboundBuffer);
 	upstream.end();
 }
@@ -185,6 +165,10 @@ function parseJsonOrEmpty(buffer) {
 export function createServer(config) {
 	return http.createServer((req, res) => {
 		const chunks = [];
+		// A client that resets the connection mid-upload emits 'error' on the
+		// request stream; without a listener that is an uncaught exception that
+		// kills the shared long-running proxy process for every session.
+		req.on("error", () => res.destroy());
 		req.on("data", (c) => chunks.push(c));
 		req.on("end", () => {
 			const bodyBuffer = Buffer.concat(chunks);
