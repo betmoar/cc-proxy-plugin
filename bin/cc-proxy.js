@@ -31,7 +31,30 @@ if (glm && !glm.apiKey) {
 	process.exit(1);
 }
 
+// Fail loud on a bad port instead of letting listen() throw a bare RangeError:
+// a typo'd PROXY_PORT would otherwise leave a cryptic stack in the log while
+// ANTHROPIC_BASE_URL points at the (equally typo'd) dead port.
+if (!Number.isInteger(config.port) || config.port < 1 || config.port > 65535) {
+	console.error(
+		`Invalid proxy port "${process.env.PROXY_PORT ?? config.port}" — set PROXY_PORT (or --port) to an integer 1–65535.`,
+	);
+	process.exit(1);
+}
+
 const server = createServer(config);
+server.on("error", (err) => {
+	// Two SessionStart hooks can race past the TCP probe and both spawn; the
+	// loser lands here. One proxy on the port is the goal state, so report
+	// plainly rather than dumping an uncaught stack into the log.
+	if (/** @type {NodeJS.ErrnoException} */ (err).code === "EADDRINUSE") {
+		console.error(
+			`Port ${config.port} is already in use (another cc-proxy?). Nothing started; check lsof -ti:${config.port}.`,
+		);
+	} else {
+		console.error(`cc-proxy failed to listen: ${err.message}`);
+	}
+	process.exit(1);
+});
 server.listen(config.port, config.host, () => {
 	console.log(`cc-proxy listening on http://${config.host}:${config.port}`);
 	for (const p of config.providers) {

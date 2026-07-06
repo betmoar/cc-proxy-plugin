@@ -2,7 +2,7 @@
   "name": "cc-proxy-plugin",
   "private": true,
   "type": "module",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Z.ai and OpenRouter proxy plugin for Claude Code",
   "license": "MIT",
   "packageManager": "pnpm@11.3.0",
@@ -17,6 +17,7 @@
     "lint:fix": "biome check --write .",
     "format": "biome format --write .",
     "test": "node --test test/*.test.js",
+    "check": "pnpm lint && pnpm test",
     "proxy": "node bin/cc-proxy.js",
     "sync-version": "node scripts/sync-version.mjs",
     "version": "node scripts/sync-version.mjs && git add .claude-plugin/plugin.json"

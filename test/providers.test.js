@@ -98,6 +98,27 @@ describe("applyAuth", () => {
 		assert.equal(h["x-api-key"], undefined);
 	});
 
+	// INVARIANT (credential isolation): the user's Anthropic credentials —
+	// Authorization (OAuth) and x-api-key (ANTHROPIC_API_KEY auth) — must never
+	// reach a third-party backend.
+	it("apiKey drops an inbound x-api-key (replaced by the provider's own)", () => {
+		const h = applyAuth(
+			{ authorization: "Bearer oauth", "x-api-key": "users-anthropic-key" },
+			{ auth: "apiKey", apiKey: "glm-key" },
+		);
+		assert.equal(h["x-api-key"], "glm-key");
+		assert.equal(h.authorization, undefined);
+	});
+
+	it("bearer drops an inbound x-api-key (must not leak to OpenRouter)", () => {
+		const h = applyAuth(
+			{ authorization: "Bearer oauth", "x-api-key": "users-anthropic-key" },
+			{ auth: "bearer", apiKey: "or-key" },
+		);
+		assert.equal(h["x-api-key"], undefined);
+		assert.equal(h.authorization, "Bearer or-key");
+	});
+
 	it("does not mutate the source headers", () => {
 		const src = { authorization: "Bearer oauth" };
 		applyAuth(src, { auth: "apiKey", apiKey: "k" });

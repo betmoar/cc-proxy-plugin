@@ -54,14 +54,14 @@ function close(...servers) {
 	);
 }
 
-async function post(port, body, extraHeaders = {}) {
+async function post(port, body, extraHeaders = {}, path = "/v1/messages") {
 	const payload = JSON.stringify(body);
 	return new Promise((resolve, reject) => {
 		const req = http.request(
 			{
 				hostname: "127.0.0.1",
 				port,
-				path: "/v1/messages",
+				path,
 				method: "POST",
 				headers: {
 					"content-type": "application/json",
@@ -494,6 +494,116 @@ describe("server end-to-end routing", () => {
 				await close(stalling);
 				if (saved === undefined) process.env.PROXY_UPSTREAM_TIMEOUT_MS = "";
 				else process.env.PROXY_UPSTREAM_TIMEOUT_MS = saved;
+			}
+		},
+	);
+
+	// INVARIANT (transparent pipe): the full inbound path INCLUDING the query
+	// string reaches the upstream. Claude Code sends e.g. /v1/messages?beta=true;
+	// dropping the query silently changes API behavior.
+	it("query string is preserved on the buffered path", async () => {
+		await wire(() => ({
+			status: 200,
+			headers: { "content-type": "application/json" },
+			body: NORMAL_200,
+		}));
+		await post(
+			proxy.port,
+			{ model: "glm-5.2", stream: false, messages: [] },
+			{},
+			"/v1/messages?beta=true",
+		);
+		assert.equal(glm.calls[0].url, "/v1/messages?beta=true");
+	});
+
+	it("query string is preserved on the streaming path", async () => {
+		await wire(() => ({
+			status: 200,
+			headers: { "content-type": "text/event-stream" },
+			body: 'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+		}));
+		await post(
+			proxy.port,
+			{ model: "glm-5.2", stream: true, messages: [] },
+			{},
+			"/v1/messages?beta=true",
+		);
+		assert.equal(glm.calls[0].url, "/v1/messages?beta=true");
+	});
+
+	it(
+		"client abort mid-stream aborts the upstream request (no quota leak) and the proxy survives",
+		{ timeout: 5000 },
+		async () => {
+			// Upstream streams SSE ticks forever; record when its response is torn
+			// down. Without abort propagation it would keep generating (billing
+			// tokens) until the upstream inactivity timeout — or forever.
+			let upstreamTornDown;
+			const tornDown = new Promise((r) => {
+				upstreamTornDown = r;
+			});
+			const streaming = http.createServer((req, res) => {
+				req.on("data", () => {});
+				req.on("end", () => {
+					res.writeHead(200, { "content-type": "text/event-stream" });
+					const iv = setInterval(() => res.write("data: {}\n\n"), 50);
+					res.on("close", () => {
+						clearInterval(iv);
+						upstreamTornDown();
+					});
+				});
+			});
+			await new Promise((r) => streaming.listen(0, "127.0.0.1", r));
+			const streamPort = /** @type {any} */ (streaming.address()).port;
+			try {
+				claude = await startBackend(() => ({
+					status: 200,
+					headers: { "content-type": "application/json" },
+					body: NORMAL_200,
+				}));
+				const providers = buildProviders({ GLM_API_KEY: "glm-test" }, "claude");
+				providers.find((p) => p.id === "glm").baseUrl = `http://127.0.0.1:${streamPort}`;
+				providers.find((p) => p.id === "claude").baseUrl = claude.baseUrl;
+				proxy = await startProxy({ port: 0, providers });
+
+				// Start a streaming request, then destroy the client connection after
+				// the first chunk arrives.
+				await new Promise((resolve, reject) => {
+					const payload = JSON.stringify({ model: "glm-5.2", stream: true, messages: [] });
+					const req = http.request(
+						{
+							hostname: "127.0.0.1",
+							port: proxy.port,
+							path: "/v1/messages",
+							method: "POST",
+							headers: {
+								"content-type": "application/json",
+								"content-length": Buffer.byteLength(payload),
+							},
+						},
+						(res) => {
+							res.once("data", () => req.destroy());
+							res.on("error", () => {});
+						},
+					);
+					req.on("error", () => {});
+					req.on("close", resolve);
+					req.setTimeout(3000, () => reject(new Error("client never got a first chunk")));
+					req.write(payload);
+					req.end();
+				});
+
+				await tornDown; // hangs (→ test timeout) if the upstream leak regresses
+
+				// The shared proxy process must still be serving after the abort.
+				const after = await post(proxy.port, {
+					model: "claude-opus-4-6",
+					stream: false,
+					messages: [],
+				});
+				assert.equal(after.status, 200, "proxy still functional after client abort");
+			} finally {
+				await close(streaming);
 			}
 		},
 	);

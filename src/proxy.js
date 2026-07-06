@@ -19,6 +19,53 @@ function parseMaybeJson(buffer) {
 }
 
 /**
+ * Build the request options for an upstream call. Shared by BOTH forward paths
+ * (streaming here, buffered in server.js) so URL/option construction cannot
+ * drift between them. The full inbound path including the query string is
+ * preserved: Claude Code sends e.g. `/v1/messages?beta=true`, and dropping the
+ * query would silently change API behavior (this was a real bug — both paths
+ * had independently used `url.pathname` alone).
+ *
+ * @param {http.IncomingMessage} clientReq
+ * @param {import("./providers.js").Provider} provider
+ * @param {number} bodyLength
+ * @returns {{ proto: typeof http | typeof https, options: http.RequestOptions }}
+ */
+export function upstreamRequestOptions(clientReq, provider, bodyLength) {
+	const url = new URL(provider.baseUrl + clientReq.url);
+	const proto = url.protocol === "https:" ? https : http;
+	return {
+		proto,
+		options: {
+			hostname: url.hostname,
+			port: url.port || (url.protocol === "https:" ? 443 : 80),
+			path: url.pathname + url.search,
+			method: clientReq.method,
+			headers: buildUpstreamHeaders(provider, clientReq.headers, bodyLength, url.hostname),
+			agent: pickAgent(proto),
+			timeout: upstreamTimeoutMs(),
+		},
+	};
+}
+
+/**
+ * Abort the upstream request when the client goes away before the response
+ * finished (user hit Esc, session closed, connection reset). Without this the
+ * upstream keeps generating tokens into a dead connection — burning provider
+ * quota for output nobody will receive. `close` fires on every response
+ * teardown; `writableFinished` distinguishes a completed response from an
+ * aborted one.
+ *
+ * @param {http.ServerResponse} clientRes
+ * @param {http.ClientRequest} upstream
+ */
+export function abortUpstreamOnClientClose(clientRes, upstream) {
+	clientRes.on("close", () => {
+		if (!clientRes.writableFinished) upstream.destroy();
+	});
+}
+
+/**
  * Forward a request to a provider. Auth is applied per the provider's strategy
  * (OAuth passthrough for Claude, x-api-key / Bearer for others). Response is
  * piped back as-is, so SSE streams work transparently.
@@ -29,25 +76,7 @@ function parseMaybeJson(buffer) {
  * @param {Buffer} bodyBuffer
  */
 export function forward(clientReq, clientRes, provider, bodyBuffer) {
-	const url = new URL(provider.baseUrl + clientReq.url);
-	const proto = url.protocol === "https:" ? https : http;
-
-	const headers = buildUpstreamHeaders(
-		provider,
-		clientReq.headers,
-		bodyBuffer.length,
-		url.hostname,
-	);
-
-	const options = {
-		hostname: url.hostname,
-		port: url.port || (url.protocol === "https:" ? 443 : 80),
-		path: url.pathname,
-		method: clientReq.method,
-		headers,
-		agent: pickAgent(proto),
-		timeout: upstreamTimeoutMs(),
-	};
+	const { proto, options } = upstreamRequestOptions(clientReq, provider, bodyBuffer.length);
 
 	const upstream = proto.request(options, (upstreamRes) => {
 		const status = upstreamRes.statusCode || 502;
@@ -100,6 +129,9 @@ export function forward(clientReq, clientRes, provider, bodyBuffer) {
 	upstream.on("timeout", () => upstream.destroy(new Error("upstream timeout")));
 
 	upstream.on("error", (err) => {
+		// Client already gone (it aborted and we destroyed the upstream, which can
+		// surface here as ECONNRESET) — nothing to report to anyone.
+		if (clientRes.destroyed) return;
 		if (!clientRes.headersSent) {
 			clientRes.writeHead(502, { "content-type": "application/json" });
 			clientRes.end(JSON.stringify({ error: { message: `Upstream error: ${err.message}` } }));
@@ -110,6 +142,7 @@ export function forward(clientReq, clientRes, provider, bodyBuffer) {
 		}
 	});
 
+	abortUpstreamOnClientClose(clientRes, upstream);
 	upstream.write(bodyBuffer);
 	upstream.end();
 }
