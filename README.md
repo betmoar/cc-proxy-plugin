@@ -116,6 +116,8 @@ cc 5h:2% | glm 5h:14% | api:$$$
 
 When the [cc-status](https://github.com/betmoar/cc-status-plugin) composer is the active statusLine, this segment is discovered and composed automatically via `.claude-plugin/statusline.json` — no manual wiring needed.
 
+The statusline runs as its own subprocess and only inherits `settings.json`'s `env` block, not the proxy's dotenv. So the `glm`/`api:` gauges still render when `GLM_API_KEY`/`OPENROUTER_API_KEY` live outside settings.json, it loads `~/.env` (Node `process.loadEnvFile`) at startup; keys already in the environment (e.g. from settings.json) still win, and it's a no-op if `~/.env` is absent.
+
 ## Environment variables
 
 | Variable | Default | Purpose |
