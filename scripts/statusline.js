@@ -2,6 +2,7 @@
 
 import fs from "node:fs";
 import net from "node:net";
+import os from "node:os";
 import path from "node:path";
 
 const QUOTA_URL = "https://api.z.ai/api/monitor/usage/quota/limit";
@@ -15,6 +16,14 @@ const YELLOW = "\x1b[33m";
 const RED = "\x1b[31m";
 const RED_BOLD = "\x1b[1;31m";
 const RESET = "\x1b[0m";
+
+// Load ~/.env so GLM_API_KEY (and OPENROUTER_API_KEY) reach this subprocess.
+// The statusline is spawned by Claude Code with only settings.json's env, not
+// the proxy's dotenv. process.loadEnvFile never overwrites existing env vars,
+// so settings.json still wins if a key is set there. No-op if ~/.env is absent.
+try {
+	process.loadEnvFile(path.join(os.homedir(), ".env"));
+} catch {}
 
 function probePort(port) {
 	return new Promise((resolve) => {

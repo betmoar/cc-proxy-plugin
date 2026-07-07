@@ -2,6 +2,11 @@
 
 All notable changes to cc-proxy are recorded here. Versions follow [semver](https://semver.org/); `package.json` is the single source of truth and propagates to `.claude-plugin/plugin.json` via `scripts/sync-version.mjs`.
 
+## [0.3.2] — 2026-07-07
+
+### Added
+- **Statusline reads `~/.env`.** The statusline is spawned as its own subprocess and inherits only `settings.json`'s `env` block — not the proxy's dotenv — so the `glm`/`api:` gauges went blank whenever `GLM_API_KEY`/`OPENROUTER_API_KEY` lived outside settings.json. It now loads `~/.env` (Node `process.loadEnvFile`) at startup; existing env vars still win, and it's a no-op when `~/.env` is absent. (`scripts/statusline.js`)
+
 ## [0.3.1] — 2026-07-05
 
 ### Fixed
