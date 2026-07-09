@@ -27,6 +27,17 @@ describe("status.js parseRoutingLines", () => {
 	it("returns empty for a log with no routing lines", () => {
 		assert.deepEqual(parseRoutingLines("just some noise\nno arrows here"), []);
 	});
+
+	it("keeps routing lines that carry a trailing request path", () => {
+		const withPath = [
+			"[2026-07-09T08:00:00.000Z] glm-5.2 -> glm /v1/messages",
+			"[2026-07-09T08:00:01.000Z] unknown -> claude /v1/messages/count_tokens",
+		].join("\n");
+		const lines = parseRoutingLines(withPath);
+		assert.equal(lines.length, 2);
+		assert.match(lines[0], /glm-5\.2 -> glm \/v1\/messages$/);
+		assert.match(lines[1], /unknown -> claude \/v1\/messages\/count_tokens$/);
+	});
 });
 
 describe("status.js formatStatusReport", () => {

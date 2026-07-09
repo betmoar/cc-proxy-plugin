@@ -624,4 +624,48 @@ describe("server end-to-end routing", () => {
 		assert.equal(headers.authorization, "Bearer oauth-token", "OAuth header passed through");
 		assert.equal(headers["x-api-key"], undefined, "no x-api-key set");
 	});
+
+	it("routing log line records the model, provider and request path", async () => {
+		await wire(() => ({
+			status: 200,
+			headers: { "content-type": "application/json" },
+			body: NORMAL_200,
+		}));
+		const logged = [];
+		const orig = console.log;
+		console.log = (...a) => logged.push(a.join(" "));
+		try {
+			await post(
+				proxy.port,
+				{ model: "glm-5.2", stream: false, messages: [] },
+				{},
+				"/v1/messages?beta=true",
+			);
+		} finally {
+			console.log = orig;
+		}
+		const route = logged.find((l) => / -> /.test(l));
+		assert.ok(route, "a routing line was logged");
+		assert.match(route, /] glm-5\.2 -> glm \/v1\/messages\?beta=true$/);
+	});
+
+	it("routing log line falls back to 'unknown' model but still records the path", async () => {
+		// count_tokens and similar calls arrive with no `model` field; the path
+		// is what makes those `unknown -> …` entries diagnosable.
+		await wire(
+			() => ({ status: 200, headers: { "content-type": "application/json" }, body: NORMAL_200 }),
+			"claude",
+		);
+		const logged = [];
+		const orig = console.log;
+		console.log = (...a) => logged.push(a.join(" "));
+		try {
+			await post(proxy.port, { messages: [] }, {}, "/v1/messages/count_tokens");
+		} finally {
+			console.log = orig;
+		}
+		const route = logged.find((l) => / -> /.test(l));
+		assert.ok(route, "a routing line was logged");
+		assert.match(route, /] unknown -> claude \/v1\/messages\/count_tokens$/);
+	});
 });

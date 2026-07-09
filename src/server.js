@@ -138,7 +138,7 @@ function handleProxy(req, res, body, bodyBuffer, config) {
 		? Buffer.from(JSON.stringify(stripped.body))
 		: bodyBuffer;
 
-	console.log(`[${new Date().toISOString()}] ${inboundModel} -> ${provider.id}`);
+	console.log(`[${new Date().toISOString()}] ${inboundModel} -> ${provider.id} ${req.url}`);
 	debug(
 		"  metadata:",
 		JSON.stringify(body.metadata),

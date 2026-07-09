@@ -10,11 +10,11 @@ const PORT = Number(process.env.PROXY_PORT || 4000);
 const LOG_PATH = process.env.PROXY_LOG || "/tmp/cc-proxy.log";
 const QUOTA_URL = "https://api.z.ai/api/monitor/usage/quota/limit";
 const OPENROUTER_CREDITS_URL = "https://openrouter.ai/api/v1/credits";
-const FETCH_TIMEOUT_MS = 1500;
+const FETCH_TIMEOUT_MS = 2000;
 
 /**
  * Pull the most recent routing decisions out of the proxy log. The proxy logs
- * one line per request as `[<iso>] <model> -> <providerId>`; we keep those.
+ * one line per request as `[<iso>] <model> -> <providerId> <path>`; we keep those.
  * @param {string} logText
  * @param {number} [limit]
  * @returns {string[]} most-recent-last

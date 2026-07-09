@@ -64,7 +64,9 @@ There is no automatic replay. Recovery: switch model with `/model`, `/clear`, or
 1. **Which version is active?** `cat ~/.claude/plugins/installed_plugins.json` — confirm `installPath` and `version`.
 2. **Is the proxy up?** `lsof -ti:4000` and `curl -s http://localhost:4000/_status`.
 3. **Orphan log inode?** `stat $PROXY_LOG` vs `lsof -p <pid>` — compare inodes.
-4. **What did the router decide?** `<model> -> <provider>` lines in `/tmp/cc-proxy.log`.
+4. **What did the router decide?** `<model> -> <provider> <path>` lines in `/tmp/cc-proxy.log`.
+   The trailing path disambiguates `unknown -> …` entries (a request that arrived
+   with no `model` field — usually a non-Messages call like `/v1/messages/count_tokens`).
 
 When clearing logs: `truncate -s 0 /tmp/cc-proxy.log`. Never `rm && touch`.
 

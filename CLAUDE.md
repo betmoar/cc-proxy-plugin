@@ -61,7 +61,7 @@ Each is locked by tests; the test names tell you what you broke.
 
 ## Couplings — if you touch X, you must also update Y
 
-- **Routing log format** `[<iso>] <model> -> <provider>` (`src/server.js`) is
+- **Routing log format** `[<iso>] <model> -> <provider> <path>` (`src/server.js`) is
   **parsed** by `scripts/status.js` `parseRoutingLines()`. Change one → both + tests.
 - **Version**: bump only via `pnpm version <patch|minor>` (runs
   `sync-version.mjs`, keeps `plugin.json` in step). Hand-editing one file fails
