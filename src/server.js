@@ -6,7 +6,13 @@ import {
 	isRateLimitError,
 } from "./fallback.js";
 import { defaultProvider } from "./providers.js";
-import { abortUpstreamOnClientClose, forward, upstreamRequestOptions } from "./proxy.js";
+import {
+	abortUpstreamOnClientClose,
+	forward,
+	onUpstreamError,
+	parseMaybeJson,
+	upstreamRequestOptions,
+} from "./proxy.js";
 import { resolve } from "./router.js";
 import { stripAssistantThinking } from "./sanitize.js";
 
@@ -30,30 +36,6 @@ function handleStatus(res, config) {
 		defaultBackend: defaultProvider(config).id,
 		providers: config.providers.map((p) => p.id),
 	});
-}
-
-function parseMaybeJson(buffer) {
-	try {
-		return JSON.parse(buffer.toString());
-	} catch {
-		return null;
-	}
-}
-
-function onUpstreamError(clientRes) {
-	return (err) => {
-		// Client already gone (it aborted and we destroyed the upstream) — nothing
-		// to report to anyone.
-		if (clientRes.destroyed) return;
-		if (!clientRes.headersSent) {
-			sendJson(clientRes, 502, { error: { message: `Upstream error: ${err.message}` } });
-		} else if (!clientRes.writableEnded) {
-			// Headers already sent (e.g. a >1MB passthrough that then stalled) — can't
-			// send a 502. Destroy the client so the aborted upstream doesn't leak an
-			// open downstream connection.
-			clientRes.destroy();
-		}
-	};
 }
 
 // Cap on buffering a non-streaming response. The overflow signal is tiny (an

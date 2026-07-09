@@ -9,13 +9,41 @@ import { buildUpstreamHeaders } from "./providers.js";
 // can't be held in memory. Past the cap we give up inspecting and pipe through.
 const RATE_LIMIT_PEEK_LIMIT = 64 * 1024;
 
-/** @param {Buffer} buffer @returns {unknown} */
-function parseMaybeJson(buffer) {
+/**
+ * Shared by both forward paths (streaming here, buffered in server.js) so body
+ * inspection cannot drift between them.
+ * @param {Buffer} buffer @returns {unknown}
+ */
+export function parseMaybeJson(buffer) {
 	try {
 		return JSON.parse(buffer.toString());
 	} catch {
 		return null;
 	}
+}
+
+/**
+ * Error handler for an upstream request, shared by BOTH forward paths so the
+ * error contract (502 before headers, teardown after) cannot drift between
+ * them — the same duplication class that shipped the query-string bug twice.
+ * @param {http.ServerResponse} clientRes
+ * @returns {(err: Error) => void}
+ */
+export function onUpstreamError(clientRes) {
+	return (err) => {
+		// Client already gone (it aborted and we destroyed the upstream, which can
+		// surface here as ECONNRESET) — nothing to report to anyone.
+		if (clientRes.destroyed) return;
+		if (!clientRes.headersSent) {
+			clientRes.writeHead(502, { "content-type": "application/json" });
+			clientRes.end(JSON.stringify({ error: { message: `Upstream error: ${err.message}` } }));
+		} else if (!clientRes.writableEnded) {
+			// Headers already sent (mid-stream or mid-passthrough) — can't send a
+			// 502. Destroy the client so a stalled/aborted upstream doesn't leak an
+			// open downstream connection.
+			clientRes.destroy();
+		}
+	};
 }
 
 /**
@@ -128,19 +156,7 @@ export function forward(clientReq, clientRes, provider, bodyBuffer) {
 	// handler below (502 if nothing was sent yet; otherwise the stream just ends).
 	upstream.on("timeout", () => upstream.destroy(new Error("upstream timeout")));
 
-	upstream.on("error", (err) => {
-		// Client already gone (it aborted and we destroyed the upstream, which can
-		// surface here as ECONNRESET) — nothing to report to anyone.
-		if (clientRes.destroyed) return;
-		if (!clientRes.headersSent) {
-			clientRes.writeHead(502, { "content-type": "application/json" });
-			clientRes.end(JSON.stringify({ error: { message: `Upstream error: ${err.message}` } }));
-		} else if (!clientRes.writableEnded) {
-			// Headers already sent (mid-stream) — can't send a 502. Destroy the
-			// client so a stalled/aborted upstream doesn't leak an open connection.
-			clientRes.destroy();
-		}
-	});
+	upstream.on("error", onUpstreamError(clientRes));
 
 	abortUpstreamOnClientClose(clientRes, upstream);
 	upstream.write(bodyBuffer);
