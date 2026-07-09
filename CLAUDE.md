@@ -61,11 +61,22 @@ Each is locked by tests; the test names tell you what you broke.
 
 ## Couplings — if you touch X, you must also update Y
 
-- **Routing log format** `[<iso>] <model> -> <provider>` (`src/server.js`) is
+- **Routing log format** `[<iso>] <model> -> <provider> <path>` (`src/server.js`) is
   **parsed** by `scripts/status.js` `parseRoutingLines()`. Change one → both + tests.
 - **Version**: bump only via `pnpm version <patch|minor>` (runs
   `sync-version.mjs`, keeps `plugin.json` in step). Hand-editing one file fails
   `test/version-sync.test.js`. Users only get new code when the version changes.
+- **Release coupling**: a `v<x.y.z>` tag must equal `plugin.json` == `package.json`
+  == newest `## [x.y.z]` heading in `CHANGELOG.md`, and that CHANGELOG section
+  must be non-empty (it becomes the GitHub release body). Enforced by
+  `scripts/release-gate.mjs` (run locally: `node scripts/release-gate.mjs v<x.y.z>`),
+  fired on tag push by `.github/workflows/release.yml`, locked by
+  `test/release-gate.test.js`. So: write the CHANGELOG entry **before** tagging.
+- **Marketplace manifest** `.claude-plugin/marketplace.json` advertises the plugin
+  at `source: ./` for standalone install (`cc-proxy@cc-proxy-plugin`). Its entry
+  `name` and `source` must match `plugin.json`; `test/marketplace.test.js` locks
+  it. (It carries no version — the central `betmoar/ccp-market` is the primary
+  channel; this is the fallback.)
 - **`upstreamRequestOptions()`** in `src/proxy.js` is the single place upstream
   request options are built, shared by the streaming and buffered paths. Do not
   reintroduce a second copy in `server.js` — that duplication is how the

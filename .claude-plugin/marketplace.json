@@ -1,0 +1,16 @@
+{
+  "name": "cc-proxy-plugin",
+  "owner": {
+    "name": "betmoar"
+  },
+  "metadata": {
+    "description": "Marketplace for the cc-proxy plugin. The plugin lives at the repo root; this file exists so `/plugin marketplace add` works on a local checkout or the GitHub repo, as a fallback to installing from a central marketplace."
+  },
+  "plugins": [
+    {
+      "name": "cc-proxy",
+      "source": "./",
+      "description": "Z.ai and OpenRouter proxy for Claude Code — stateless local router with manual /model switching and per-provider auth."
+    }
+  ]
+}

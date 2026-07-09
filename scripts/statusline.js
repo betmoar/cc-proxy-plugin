@@ -10,6 +10,11 @@ const OPENROUTER_CREDITS_URL = "https://openrouter.ai/api/v1/credits";
 const CACHE_TTL_MS = 60_000;
 const PROXY_PORT = Number(process.env.PROXY_PORT || 4000);
 const PROXY_PROBE_TIMEOUT_MS = 300;
+// Quota/credits fetch timeout, shared by both the GLM and OpenRouter fetchers.
+// 800ms was too tight and dropped both providers into stale cache on slow
+// networks; 2000ms still fails fast enough that a hanging endpoint doesn't
+// stall the ~300ms render loop.
+const QUOTA_FETCH_TIMEOUT_MS = 2000;
 
 const GREEN = "\x1b[32m";
 const YELLOW = "\x1b[33m";
@@ -124,13 +129,13 @@ async function loadGlmQuota(cacheDir) {
 
 	// Fetch from API
 	// The quota endpoint accepts Authorization, x-api-key, and Bearer formats.
-	// Timeout matches the OpenRouter fetch below: the statusline renders every
-	// ~300ms, so a hanging quota endpoint must fail fast into the stale-cache
-	// path instead of stalling every render.
+	// Timeout is QUOTA_FETCH_TIMEOUT_MS, shared with the OpenRouter fetch below:
+	// the statusline renders every ~300ms, so a hanging quota endpoint must fail
+	// fast into the stale-cache path instead of stalling every render.
 	try {
 		const res = await fetch(QUOTA_URL, {
 			headers: { Authorization: apiKey },
-			signal: AbortSignal.timeout(800),
+			signal: AbortSignal.timeout(QUOTA_FETCH_TIMEOUT_MS),
 		});
 		if (!res.ok) throw new Error(`HTTP ${res.status}`);
 		const json = await res.json();
@@ -180,7 +185,7 @@ async function loadOpenRouterCredits(cacheDir) {
 	try {
 		const res = await fetch(OPENROUTER_CREDITS_URL, {
 			headers: { Authorization: `Bearer ${key}` },
-			signal: AbortSignal.timeout(800),
+			signal: AbortSignal.timeout(QUOTA_FETCH_TIMEOUT_MS),
 		});
 		if (!res.ok) throw new Error(`HTTP ${res.status}`);
 		const json = await res.json();

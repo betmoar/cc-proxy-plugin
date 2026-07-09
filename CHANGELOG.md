@@ -2,6 +2,16 @@
 
 All notable changes to cc-proxy are recorded here. Versions follow [semver](https://semver.org/); `package.json` is the single source of truth and propagates to `.claude-plugin/plugin.json` via `scripts/sync-version.mjs`.
 
+## [0.3.3] — 2026-07-09
+
+### Added
+- **Standalone-install marketplace** (`.claude-plugin/marketplace.json`). The plugin can now be installed straight from this repo with `claude plugin marketplace add betmoar/cc-proxy-plugin && claude plugin install cc-proxy@cc-proxy-plugin`, as a fallback to the central `betmoar/ccp-market`. Locked by `test/marketplace.test.js` (name + `source: ./` must match `plugin.json`).
+- **Release workflow** (`.github/workflows/release.yml`) + gate (`scripts/release-gate.mjs`). Pushing a `v<x.y.z>` tag re-runs lint + tests and publishes a GitHub release whose body is that version's CHANGELOG section — but only if `tag == plugin.json == package.json == newest CHANGELOG heading`. The gate is runnable locally (`node scripts/release-gate.mjs v0.3.3`) and locked by `test/release-gate.test.js`.
+
+### Changed
+- **Quota/credits fetch timeout raised 800 ms → 2000 ms** and unified. Both the GLM-quota and OpenRouter-credits fetchers in `scripts/statusline.js` now share one `QUOTA_FETCH_TIMEOUT_MS` constant (was two inline `800`s that dropped both providers into stale cache on slow networks); `scripts/status.js` moved `1500 → 2000` to match, so every provider on both surfaces times out identically.
+- **Routing log now records the request path.** The per-request line is `[<iso>] <model> -> <provider> <path>` (was `<model> -> <provider>`), so the `unknown -> …` entries — requests that arrive with no `model` field, typically `/v1/messages/count_tokens` — become diagnosable. `scripts/status.js` `parseRoutingLines()` keeps whole lines, so the extra field is safe. (`src/server.js`)
+
 ## [0.3.2] — 2026-07-07
 
 ### Added
