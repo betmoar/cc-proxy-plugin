@@ -43,13 +43,13 @@ Inside Claude Code:
 /cc-proxy:setup
 ```
 
-It merges these into `~/.claude/settings.json` `env` and registers `glm-5.2[1m]` in the `/model` picker:
+It writes your **API keys to `~/.env`** (the single source of truth the proxy reads at startup) and merges the non-secret **plumbing into `~/.claude/settings.json` `env`**, registering `glm-5.2[1m]` in the `/model` picker:
 
-| Key | Purpose |
-| --- | --- |
-| `ANTHROPIC_BASE_URL=http://127.0.0.1:4000` | Route API calls through the proxy |
-| `GLM_API_KEY` | Your Z.ai key (forwarded as `x-api-key`) |
-| `PROXY_PATH` | Absolute path to `bin/cc-proxy.js` (SessionStart hook spawns it) |
+| Key | Where | Purpose |
+| --- | --- | --- |
+| `GLM_API_KEY` | `~/.env` | Your Z.ai key (forwarded as `x-api-key`) |
+| `ANTHROPIC_BASE_URL=http://127.0.0.1:4000` | settings.json `env` | Route API calls through the proxy |
+| `PROXY_PATH` | settings.json `env` | Absolute path to `bin/cc-proxy.js` (SessionStart hook spawns it) |
 
 **`/cc-proxy:setup` starts the proxy before it finishes**, so a fresh session connects with no `ECONNREFUSED`. Claude Code re-applies `ANTHROPIC_BASE_URL` to *already-open* sessions immediately, though — if one errors before the proxy came up, `/exit` + `/resume` it to reconnect (the SessionStart hook also ensures the proxy is running).
 
@@ -93,7 +93,7 @@ pnpm proxy             # standalone on PROXY_PORT (default 4000)
 pnpm test && pnpm lint
 ```
 
-`bin/cc-proxy.js` loads `.env` from the repo root (Node 22 `process.loadEnvFile`); vars already in the environment win, so the plugin flow (settings.json `env`) is unaffected. `.env` is gitignored.
+`bin/cc-proxy.js` loads API keys from `~/.env` (canonical for installs) and, if present, the repo-root `.env` (dev/inline). Vars already in the environment (e.g. settings.json `env`) always win. For the installed plugin, just the two keys go in `~/.env`; `/cc-proxy:setup` writes them there. Both files are gitignored.
 
 To load this checkout as a plugin without going through the marketplace, launch Claude Code with the repo as a plugin dir:
 
@@ -124,15 +124,15 @@ cc 5h:2% | glm 5h:14% | api:$$$
 
 When the [cc-status](https://github.com/betmoar/cc-status-plugin) composer is the active statusLine, this segment is discovered and composed automatically via `.claude-plugin/statusline.json` — no manual wiring needed.
 
-The statusline runs as its own subprocess and only inherits `settings.json`'s `env` block, not the proxy's dotenv. So the `glm`/`api:` gauges still render when `GLM_API_KEY`/`OPENROUTER_API_KEY` live outside settings.json, it loads `~/.env` (Node `process.loadEnvFile`) at startup; keys already in the environment (e.g. from settings.json) still win, and it's a no-op if `~/.env` is absent.
+The statusline runs as its own subprocess and only inherits `settings.json`'s `env` block, not the proxy's dotenv. So the `glm`/`api:` gauges still render when `GLM_API_KEY`/`OPENROUTER_API_KEY` live in `~/.env`, it loads `~/.env` (+ repo `.env` in dev) at startup; keys already in the environment still win, and it's a no-op if neither file is present.
 
 ## Environment variables
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `ANTHROPIC_BASE_URL` | — | Set by setup to `http://127.0.0.1:4000` |
-| `GLM_API_KEY` | — | Z.ai API key |
-| `OPENROUTER_API_KEY` | — | Enable OpenRouter (slash-namespaced models) |
+| `GLM_API_KEY` | — | Z.ai API key (lives in `~/.env`) |
+| `OPENROUTER_API_KEY` | — | Enable OpenRouter (slash-namespaced models; lives in `~/.env`) |
 | `PROXY_PATH` | — | Absolute path to `bin/cc-proxy.js` (SessionStart hook) |
 | `PROXY_PORT` | `4000` | Proxy listen port |
 | `PROXY_HOST` | `127.0.0.1` | Interface the proxy binds to (loopback by default) |

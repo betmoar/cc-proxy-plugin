@@ -5,14 +5,15 @@
 // effect. Reuses the SessionStart hook's ensureProxyRunning() (TCP-probe first
 // → detached spawn → wait for readiness).
 //
-// The proxy reads config from process.env only (loadEnvFile loads repo .env,
-// not settings.json). On a first-run setup nothing has injected settings.json's
-// env block into *this* process yet, so we read it ourselves and merge it over
-// process.env — both for the spawned child's env (GLM_API_KEY especially,
-// without which the proxy exits 1) AND to derive ensureProxyRunning's own
-// PROXY_PATH/PROXY_PORT/PROXY_LOG/timeout opts, which it would otherwise pull
-// from this process's env where they don't yet exist (→ wrong port or
-// missing-path). Already-up is a no-op; missing-path/unreachable print guidance.
+// The proxy reads config from process.env, augmented at startup by ~/.env
+// (and repo .env in dev) — see src/env.js. API keys live in ~/.env now, not
+// settings.json's `env`. The settings.json `env` block still carries the
+// *plumbing* the hook needs (PROXY_PATH/PROXY_PORT/PROXY_LOG), and on a
+// first-run setup nothing has injected it into *this* process yet — so we read
+// it ourselves and merge it over process.env to derive ensureProxyRunning's
+// own opts (wrong port or missing-path otherwise). The child then loads its
+// own ~/.env for keys. Already-up is a no-op; missing-path/unreachable print
+// guidance.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";

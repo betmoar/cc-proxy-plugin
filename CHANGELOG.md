@@ -2,6 +2,14 @@
 
 All notable changes to cc-proxy are recorded here. Versions follow [semver](https://semver.org/); `package.json` is the single source of truth and propagates to `.claude-plugin/plugin.json` via `scripts/sync-version.mjs`.
 
+## [0.3.4] — 2026-07-09
+
+### Fixed
+- **`~/.env` is now the single source of truth for API keys, and the proxy loads it.** `bin/cc-proxy.js` loaded only the repo-root `.env` (never `~/.env`), so an install where `GLM_API_KEY` lived in `~/.env` exited 1 with `GLM_API_KEY is not set.` — the proxy refused to start. Keys are now loaded from `~/.env` (canonical for installs) plus the repo `.env` (dev/inline) by a shared `src/env.js` `loadEnv()` called from the proxy, `scripts/status.js`, and `scripts/statusline.js` (the latter already read `~/.env`; the other two didn't). Precedence: `process.env` (settings.json `env`) > repo `.env` > `~/.env`. Locked by `test/dotenv.test.js`. Backwards-compatible: existing setups with keys in settings.json `env` keep working until a `/cc-proxy:setup` re-run migrates them out.
+
+### Changed
+- **`/cc-proxy:setup` writes keys to `~/.env`, not settings.json `env`.** `skills/setup/SKILL.md` now writes `GLM_API_KEY`/`OPENROUTER_API_KEY` to `~/.env` (prompting for GLM, asking for OpenRouter) and migrates any legacy keys out of settings.json `env`, leaving only non-secret plumbing there. Boundary is architectural: plumbing (`PROXY_PATH`/`PROXY_PORT`/`PROXY_LOG`) must stay in settings.json `env` because the `SessionStart` hook reads it before the proxy process starts; keys can move because the proxy loads `~/.env` itself.
+
 ## [0.3.3] — 2026-07-09
 
 ### Added

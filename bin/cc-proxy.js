@@ -2,16 +2,15 @@
 // @ts-check
 import { parseArgs } from "node:util";
 import { load } from "../src/config.js";
+import { loadEnv } from "../src/env.js";
 import { defaultProvider, providerById } from "../src/providers.js";
 import { createServer } from "../src/server.js";
 
-// Load a local .env from the package root if present (standalone `npm run
-// proxy` / dev). Values already in process.env — e.g. from Claude Code's
-// settings.json `env` block in the plugin flow — take precedence, so this is a
-// no-op there. Silently skipped when the file is absent.
-try {
-	process.loadEnvFile(new URL("../.env", import.meta.url));
-} catch {}
+// Load API keys + config from ~/.env (canonical for the installed plugin) and,
+// if present, the repo-root .env (dev/inline). Values already in process.env —
+// e.g. Claude Code's settings.json `env` block — win over either file. Silent
+// no-op when a file is absent.
+loadEnv();
 
 const { values } = parseArgs({
 	options: {
@@ -27,7 +26,9 @@ const config = load({
 
 const glm = providerById(config, "glm");
 if (glm && !glm.apiKey) {
-	console.error("GLM_API_KEY is not set.");
+	console.error(
+		"GLM_API_KEY is not set. Put it in ~/.env (or .env at the repo root for dev); run /cc-proxy:setup.",
+	);
 	process.exit(1);
 }
 

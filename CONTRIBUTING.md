@@ -4,9 +4,11 @@
 
 ```bash
 pnpm install
-cp .env.example .env   # set GLM_API_KEY (and OPENROUTER_API_KEY if used)
+cp .env.example .env   # dev: set GLM_API_KEY (and OPENROUTER_API_KEY if used)
 pnpm proxy             # run the proxy standalone on PROXY_PORT (default 4000)
 ```
+
+For the installed plugin, API keys live in `~/.env` (not the repo `.env`, which is the dev/inline convenience). `/cc-proxy:setup` writes them there; the proxy loads `~/.env` plus any repo `.env` at startup.
 
 Gates (both must pass):
 
