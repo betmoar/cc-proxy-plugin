@@ -89,14 +89,26 @@ Each is locked by tests; the test names tell you what you broke.
   completes. Raise both together.
 - **`.env.example` ↔ README env table ↔ `docs/OPERATIONS.md`**: new env vars go
   in all three.
+- **Keys vs plumbing split.** API keys (`GLM_API_KEY`, `OPENROUTER_API_KEY`)
+  live in `~/.env`; non-secret plumbing (`PROXY_PATH`, `PROXY_PORT`, `PROXY_LOG`,
+  `ANTHROPIC_BASE_URL`, `ANTHROPIC_CUSTOM_MODEL_OPTION*`) lives in settings.json
+  `env`. Both are loaded by the shared `src/env.js` (`loadEnv()`): repo `.env`
+  first (dev/inline), then `~/.env`, with `process.env` always winning. All key
+  consumers (`bin/cc-proxy.js`, `scripts/status.js`, `scripts/statusline.js`)
+  call `loadEnv()` — don't add a fourth inline `process.loadEnvFile`; that's how
+  the proxy shipped without `~/.env` support (the bug behind v0.3.4).
 
 ## Traps for the unwary
 
+- **Plumbing can't move to `~/.env`.** The `SessionStart` hook reads
+  `PROXY_PORT`/`PROXY_PATH`/`PROXY_LOG` from `process.env` (settings.json
+  injection) *before* the proxy process exists to load `~/.env`. So those stay in
+  settings.json `env`; only keys (loaded by the proxy itself) go in `~/.env`.
 - **Setup order matters.** The moment `ANTHROPIC_BASE_URL` lands in
   settings.json, *already-open* sessions retarget immediately. That's why
   `/cc-proxy:setup` starts the proxy itself (`scripts/start-proxy.js`) and why
-  that script reads settings.json's `env` block explicitly — on first run those
-  vars exist nowhere else. Don't "simplify" this into a plain spawn.
+  that script reads settings.json's `env` block explicitly — on first run the
+  plumbing exists nowhere else. Don't "simplify" this into a plain spawn.
 - **Never `rm && touch` the proxy log** while the proxy runs (orphan inode —
   output vanishes). `truncate -s 0` instead.
 - **The 429 buffering exception**: `stream:true` responses are a pure pipe

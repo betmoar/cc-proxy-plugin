@@ -19,7 +19,7 @@ Runtime facts, known traps, and debugging. For design rationale, see [`ARCHITECT
 
 ## Claude Code request internals
 
-- **`ANTHROPIC_BASE_URL` re-applies to running sessions immediately.** The moment `/cc-proxy:setup` writes settings.json, every open session retargets to the proxy. Setup's final step runs `scripts/start-proxy.js` to bring the proxy up before it returns, so a *fresh* session connects cleanly. An *already-open* session that retargeted in the gap before the proxy was up returns `ECONNREFUSED` until you `/exit` + `/resume` it (re-triggering SessionStart). `start-proxy.js` is idempotent — TCP-probes the port first, no-ops if already up — and reads settings.json's `env` block to feed the spawn, since the proxy reads `GLM_API_KEY` from `process.env`, not settings.json.
+- **`ANTHROPIC_BASE_URL` re-applies to running sessions immediately.** The moment `/cc-proxy:setup` writes settings.json, every open session retargets to the proxy. Setup's final step runs `scripts/start-proxy.js` to bring the proxy up before it returns, so a *fresh* session connects cleanly. An *already-open* session that retargeted in the gap before the proxy was up returns `ECONNREFUSED` until you `/exit` + `/resume` it (re-triggering SessionStart). `start-proxy.js` is idempotent — TCP-probes the port first, no-ops if already up — and reads settings.json's `env` block to feed the spawn's plumbing (the proxy reads `GLM_API_KEY` from `~/.env` at startup, while `PROXY_PATH`/`PROXY_PORT`/`PROXY_LOG` stay in settings.json `env` for the hook).
 - **`ANTHROPIC_CUSTOM_MODEL_OPTION`** — exactly one slot; the id passes verbatim into `model` with validation skipped.
 - **`"model": "glm-..."` default without `ANTHROPIC_BASE_URL`** makes CC hit `api.anthropic.com` directly; its retry path then corrupts the model string to >256 chars (`400 String should have at most 256 characters`). Pick the model with `/model`, or keep the proxy running.
 - **`ANTHROPIC_DEFAULT_HAIKU_MODEL`** sets the id for internal ops (titles/summaries); leaving it on Claude keeps that traffic off paid quotas.
@@ -36,7 +36,7 @@ Runtime facts, known traps, and debugging. For design rationale, see [`ARCHITECT
 
 The proxy is spawned **detached** (`spawn + unref`), so it survives the hook exiting. If it dies mid-session, recovery needs a new session (`/exit` + `/resume`) to re-trigger SessionStart; the statusline shows `proxy down` until then.
 
-`/cc-proxy:setup` runs `scripts/start-proxy.js`, which calls the same `ensureProxyRunning()` so the proxy is up the moment setup finishes. The one difference from the hook: it passes an explicit `env` (merged from settings.json over `process.env`), because on a first-run setup nothing has injected settings.json's keys into the process yet. `spawnProxy()` takes an optional `env` arg for this; it defaults to `process.env`, leaving the SessionStart path unchanged.
+`/cc-proxy:setup` runs `scripts/start-proxy.js`, which calls the same `ensureProxyRunning()` so the proxy is up the moment setup finishes. The one difference from the hook: it passes an explicit `env` (merged from settings.json over `process.env`), because on a first-run setup nothing has injected the plumbing vars into the process yet. The spawned child then loads `~/.env` itself for `GLM_API_KEY`/`OPENROUTER_API_KEY`. `spawnProxy()` takes an optional `env` arg for this; it defaults to `process.env`, leaving the SessionStart path unchanged.
 
 ## Proxy infrastructure
 
@@ -72,4 +72,4 @@ When clearing logs: `truncate -s 0 /tmp/cc-proxy.log`. Never `rm && touch`.
 
 ## Dev loop
 
-`pnpm proxy` runs the proxy standalone (loads `.env`); `node --watch bin/cc-proxy.js` auto-restarts on edits. Hook/skill edits in the dev repo take effect on the next prompt only if the cache points at your repo — for marketplace installs, bump `plugin.json` version and re-run `claude plugin update`. Gates: `pnpm test`, `pnpm lint`.
+`pnpm proxy` runs the proxy standalone (loads repo `.env` then `~/.env`); `node --watch bin/cc-proxy.js` auto-restarts on edits. Hook/skill edits in the dev repo take effect on the next prompt only if the cache points at your repo — for marketplace installs, bump `plugin.json` version and re-run `claude plugin update`. Gates: `pnpm test`, `pnpm lint`.

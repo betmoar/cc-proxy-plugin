@@ -1,6 +1,6 @@
 ---
 name: setup
-description: One-time setup for the cc-proxy plugin. Configures ANTHROPIC_BASE_URL, GLM_API_KEY, PROXY_PATH, and the glm-5.2[1m] custom model option in ~/.claude/settings.json so the SessionStart hook can auto-start the proxy and /model can route to GLM. Invoke via /cc-proxy:setup.
+description: One-time setup for the cc-proxy plugin. Writes API keys (GLM_API_KEY, optionally OPENROUTER_API_KEY) to ~/.env, and configures ANTHROPIC_BASE_URL, PROXY_PATH, and the glm-5.2[1m] custom model option in ~/.claude/settings.json so the SessionStart hook can auto-start the proxy and /model can route to GLM. Invoke via /cc-proxy:setup.
 ---
 
 # cc-proxy setup
@@ -20,30 +20,34 @@ Check these locations in order and use the first one that exists. The plugin is 
 
 Resolve the glob to a concrete absolute path before writing it. If neither exists, ask the user where `cc-proxy.js` is located and use that absolute path.
 
-### 2. Collect provider API keys
+### 2. Collect provider API keys (written to `~/.env`)
 
-Read `~/.claude/settings.json`. For each provider, reuse an existing non-empty value if present, otherwise ask.
+API keys live in `~/.env` — the single source of truth the proxy reads at startup. Do **not** put keys in `~/.claude/settings.json` `env`; it keeps only non-secret plumbing (step 3).
 
-**Z.ai / GLM — required.** This is the model wired into the `/model` picker. If `env.GLM_API_KEY` is missing, ask:
+Read `~/.env` first (create the file if absent). For each key, reuse a value already present rather than re-asking.
 
-> "Enter your Z.ai API key (https://z.ai → Dashboard → API Keys):"
+**Z.ai / GLM — required.** This is the model wired into the `/model` picker. If `GLM_API_KEY` is missing or empty in `~/.env`, **ask explicitly**:
 
-**OpenRouter — optional.** Ask the user whether they also want OpenRouter routing. If yes and `env.OPENROUTER_API_KEY` is missing, ask:
+> "Enter your Z.ai API key (https://z.ai → Dashboard → API Keys). It will be stored in ~/.env:"
 
-> "Enter your OpenRouter API key (https://openrouter.ai/settings/keys):"
+**OpenRouter — optional.** Ask the user whether they also want OpenRouter routing. If yes and `OPENROUTER_API_KEY` is missing or empty in `~/.env`, ask:
+
+> "Enter your OpenRouter API key (https://openrouter.ai/settings/keys). It will be stored in ~/.env:"
+
+Write each collected key to `~/.env` as a `KEY=value` line, one per line (e.g. `GLM_API_KEY=<value>`). If `~/.env` already exists, **merge** — update only the key lines you collected and preserve every other line unchanged. If it does not exist, create it with just the key line(s).
 
 The proxy only registers OpenRouter when `OPENROUTER_API_KEY` is set, and routes any model id containing a slash to it (e.g. `z-ai/glm-4.7`, `anthropic/claude-opus-4`). **Tell the user this constraint:** Claude Code allows only **one** custom `/model` picker entry, and GLM uses it — so OpenRouter models do **not** appear in the `/model` picker. They are reached only by (a) setting `DEFAULT_BACKEND=openrouter` so unmatched requests fall through to it, or (b) a subagent/slash-command whose frontmatter pins a `vendor/model` id (which the proxy then routes verbatim).
 
-### 3. Update `~/.claude/settings.json`
+**Migrate existing keys (one source of truth).** Read `~/.claude/settings.json`. If its `env` block contains `GLM_API_KEY` or `OPENROUTER_API_KEY` (legacy setups), move them to `~/.env`: if `~/.env` already has the key, keep the `~/.env` value and just drop the settings.json copy; otherwise copy the value over then **remove** the key from settings.json `env`. After setup, keys must exist **only** in `~/.env`.
 
-Read the current file, then merge the following into the `env` object (create `env` if missing). Preserve every other existing key unchanged.
+### 3. Update `~/.claude/settings.json` (plumbing only — no keys)
+
+Read the current file, then merge the following into the `env` object (create `env` if missing). Preserve every other existing key unchanged. **Do not add `GLM_API_KEY` or `OPENROUTER_API_KEY` here** — they go in `~/.env` (step 2).
 
 ```json
 {
   "env": {
     "ANTHROPIC_BASE_URL": "http://127.0.0.1:4000",
-    "GLM_API_KEY": "<from step 2>",
-    "OPENROUTER_API_KEY": "<from step 2, only if the user provided one>",
     "PROXY_PATH": "<from step 1>",
     "ANTHROPIC_CUSTOM_MODEL_OPTION": "glm-5.2[1m]",
     "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME": "GLM-5.2 (1M)",
@@ -99,7 +103,7 @@ Tell the user, verbatim:
 
 ## Important constraints
 
-- **Do not** overwrite unrelated keys in `settings.json`. Use a merge strategy, not a full rewrite from template.
-- **Do not** commit the user's API key anywhere. It stays only in `~/.claude/settings.json`.
-- **Do not** start the proxy by hand with `node bin/cc-proxy.js` or similar — use `scripts/start-proxy.js` (step 5), which is idempotent and passes settings.json's env to the spawn. Raw starts risk duplicate proxies on the port or a spawn missing `GLM_API_KEY`.
+- **Do not** overwrite unrelated keys in `settings.json` or unrelated lines in `~/.env`. Use a merge strategy for both, not a full rewrite from template.
+- **Do not** commit the user's API key anywhere. API keys stay only in `~/.env` (it is gitignored). They must **not** appear in `~/.claude/settings.json`.
+- **Do not** start the proxy by hand with `node bin/cc-proxy.js` or similar — use `scripts/start-proxy.js` (step 5), which is idempotent and passes settings.json's plumbing env to the spawn. Raw starts risk duplicate proxies on the port or a spawn missing `PROXY_PATH`.
 - If `~/.claude/settings.json` does not exist, create it with just the `env` block above (and valid JSON structure).

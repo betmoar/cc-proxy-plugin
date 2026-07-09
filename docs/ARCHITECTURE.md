@@ -97,9 +97,10 @@ From Z.ai's official plugin: `TOKENS_LIMIT` = the 5-hour coding quota (what the 
 ```
 cc-proxy-plugin/                    ← the plugin IS the repo root; the marketplace caches the whole tree
 ├── .claude-plugin/plugin.json      plugin manifest (root, per Claude Code convention)
-├── bin/cc-proxy.js                 CLI entry point (loads .env, starts server)
+├── bin/cc-proxy.js                 CLI entry point (loads ~/.env + repo .env, starts server)
 ├── src/
 │   ├── config.js                   env loader → { port, providers }
+│   ├── env.js                      shared ~/.env + repo .env loader (no-overwrite)
 │   ├── providers.js                provider registry + auth strategies
 │   ├── router.js                   resolve() — stateless model→provider lookup
 │   ├── proxy.js                    upstream forwarding (transparent pipe)

@@ -5,6 +5,11 @@
 // the bottom; the formatting/parsing helpers above are exported for testing.
 
 import fs from "node:fs";
+import { loadEnv } from "../src/env.js";
+
+// Load API keys from ~/.env (+ repo .env in dev) so the quota/credit fetches
+// below work once keys move out of settings.json `env`. process.env still wins.
+loadEnv();
 
 const PORT = Number(process.env.PROXY_PORT || 4000);
 const LOG_PATH = process.env.PROXY_LOG || "/tmp/cc-proxy.log";

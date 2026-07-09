@@ -62,7 +62,7 @@ s.listen(${port}, "127.0.0.1", () => {
 		fs.writeFileSync(
 			path.join(home, ".claude", "settings.json"),
 			JSON.stringify({
-				env: { PROXY_PATH: proxyBin, PROXY_PORT: String(port), GLM_API_KEY: "k" },
+				env: { PROXY_PATH: proxyBin, PROXY_PORT: String(port) },
 			}),
 		);
 
@@ -84,10 +84,7 @@ s.listen(${port}, "127.0.0.1", () => {
 	});
 
 	it("reports missing-path when settings.json has no PROXY_PATH", async () => {
-		fs.writeFileSync(
-			path.join(home, ".claude", "settings.json"),
-			JSON.stringify({ env: { GLM_API_KEY: "k" } }),
-		);
+		fs.writeFileSync(path.join(home, ".claude", "settings.json"), JSON.stringify({ env: {} }));
 		const port = await freePort();
 		const { code, stderr } = await run({
 			PATH: process.env.PATH,

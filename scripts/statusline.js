@@ -2,8 +2,8 @@
 
 import fs from "node:fs";
 import net from "node:net";
-import os from "node:os";
 import path from "node:path";
+import { loadEnv } from "../src/env.js";
 
 const QUOTA_URL = "https://api.z.ai/api/monitor/usage/quota/limit";
 const OPENROUTER_CREDITS_URL = "https://openrouter.ai/api/v1/credits";
@@ -22,13 +22,11 @@ const RED = "\x1b[31m";
 const RED_BOLD = "\x1b[1;31m";
 const RESET = "\x1b[0m";
 
-// Load ~/.env so GLM_API_KEY (and OPENROUTER_API_KEY) reach this subprocess.
-// The statusline is spawned by Claude Code with only settings.json's env, not
-// the proxy's dotenv. process.loadEnvFile never overwrites existing env vars,
-// so settings.json still wins if a key is set there. No-op if ~/.env is absent.
-try {
-	process.loadEnvFile(path.join(os.homedir(), ".env"));
-} catch {}
+// Load API keys from ~/.env (+ repo .env in dev) so the GLM/OpenRouter quota
+// fetches below work. The statusline is spawned by Claude Code with only
+// settings.json's env, not the proxy's dotenv — without this, a key that lives
+// only in ~/.env never reaches the quota gauges. process.env still wins.
+loadEnv();
 
 function probePort(port) {
 	return new Promise((resolve) => {
