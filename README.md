@@ -27,6 +27,14 @@ claude plugin marketplace add betmoar/ccp-market
 claude plugin install cc-proxy@betmoar
 ```
 
+Or install standalone straight from this repo (no central marketplace), using
+the bundled `.claude-plugin/marketplace.json`:
+
+```bash
+claude plugin marketplace add betmoar/cc-proxy-plugin
+claude plugin install cc-proxy@cc-proxy-plugin
+```
+
 ## Setup
 
 Inside Claude Code:
