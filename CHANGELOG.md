@@ -2,6 +2,17 @@
 
 All notable changes to cc-proxy are recorded here. Versions follow [semver](https://semver.org/); `package.json` is the single source of truth and propagates to `.claude-plugin/plugin.json` via `scripts/sync-version.mjs`.
 
+## [0.3.5] — 2026-07-10
+
+### Fixed
+- **Inbound hop-by-hop headers are now stripped before forwarding.** `buildUpstreamHeaders` copied every inbound header (via `applyAuth`) and then set `content-length`, but never deleted `transfer-encoding`. The proxy always sends a fully-buffered body with an exact `content-length`, so forwarding an inbound `Transfer-Encoding: chunked` alongside it tripped upstream request-smuggling protections (RFC 9110 §7.6.1) — a bare `400` before the request reached any handler. Any client sending a chunked-body request failed with a misattributed upstream error (latent today: Claude Code sends `Content-Length`). All hop-by-hop headers (`connection`, `keep-alive`, `proxy-authenticate`, `proxy-authorization`, `te`, `trailer`, `transfer-encoding`, `upgrade`) are now dropped in `src/providers.js`. Locked by `test/providers.test.js` "drops inbound hop-by-hop headers" and `test/server.test.js` "chunked inbound body…" (buffered + streaming paths).
+- **Statusline liveness probe honors `PROXY_PORT` from `~/.env`.** `scripts/statusline.js` evaluated its module-level `PROXY_PORT` const *before* the `loadEnv()` call lower in the file, so a port configured only in `~/.env` (a path `.env.example` documents) was silently ignored — the probe watched port 4000 while the proxy ran elsewhere, showing a false "proxy down" (or hiding a real one). `loadEnv()` now runs immediately after the imports, before any `process.env` read. Locked by `test/statusline.test.js` "liveness probe honors PROXY_PORT from ~/.env".
+
+### Changed
+- **Upstream error handling deduplicated across forward paths.** `onUpstreamError` and `parseMaybeJson` are now exported once from `src/proxy.js` and consumed by `src/server.js`, replacing two hand-copied blocks. The 502-before-headers / teardown-after-headers contract can no longer drift between the streaming and buffered paths — the same duplication class that shipped the query-string bug twice. Both 502 paths remain locked by the existing e2e timeout tests.
+- **`docs/OPERATIONS.md` env table completed.** Added the four documented-elsewhere-but-missing knobs: `PROXY_HOST`, `PROXY_UPSTREAM_TIMEOUT_MS`, `DEFAULT_BACKEND`, `PROXY_LOG_MAX_BYTES`. Now enforced by a new coupling test asserting every `.env.example` key is documented in both `README.md` and `docs/OPERATIONS.md`.
+- **Cross-file couplings are now test-locked** (`test/couplings.test.js`): the `PROXY_PORT` default (4000) is asserted identical across `src/config.js`, `hooks/proxy-lifecycle.js`, `scripts/status.js`, `scripts/statusline.js`; the `hooks.json` 10 s kill is asserted to exceed the lifecycle ready-poll default with headroom; and the env-doc coupling above. These were documented-only couplings that a future edit could silently break.
+
 ## [0.3.4] — 2026-07-09
 
 ### Fixed
