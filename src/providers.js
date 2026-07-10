@@ -104,9 +104,26 @@ export function applyAuth(sourceHeaders, provider) {
 	return { ...rest, "x-api-key": provider.apiKey };
 }
 
+// Hop-by-hop headers (RFC 9110 §7.6.1) describe the inbound connection, not the
+// request, and must not be forwarded. The critical one is transfer-encoding: the
+// proxy always sends a fully-buffered body with an exact content-length, so an
+// inbound `Transfer-Encoding: chunked` forwarded alongside it trips upstream
+// request-smuggling protections (bare 400 before the request reaches a handler).
+const HOP_BY_HOP_HEADERS = [
+	"connection",
+	"keep-alive",
+	"proxy-authenticate",
+	"proxy-authorization",
+	"te",
+	"trailer",
+	"transfer-encoding",
+	"upgrade",
+];
+
 /**
- * Build the outbound header set for an upstream request: auth applied, host
- * rewritten, anthropic-version defaulted, content-length set.
+ * Build the outbound header set for an upstream request: auth applied,
+ * hop-by-hop headers dropped, host rewritten, anthropic-version defaulted,
+ * content-length set.
  * @param {Provider} provider
  * @param {Record<string, any>} sourceHeaders
  * @param {number} bodyLength
@@ -115,6 +132,7 @@ export function applyAuth(sourceHeaders, provider) {
  */
 export function buildUpstreamHeaders(provider, sourceHeaders, bodyLength, hostname) {
 	const headers = applyAuth(sourceHeaders, provider);
+	for (const h of HOP_BY_HOP_HEADERS) delete headers[h];
 	headers.host = hostname;
 	headers["anthropic-version"] = headers["anthropic-version"] || "2023-06-01";
 	headers["content-length"] = String(bodyLength);

@@ -608,6 +608,65 @@ describe("server end-to-end routing", () => {
 		},
 	);
 
+	// INVARIANT (transparent pipe, hop-by-hop exception): a client that sends its
+	// body chunked must still reach the upstream as a content-length request with
+	// no transfer-encoding header — the proxy buffers the full body, and CL+TE
+	// together are rejected by upstreams as request smuggling (bare 400).
+	async function postChunked(port, body, stream) {
+		const payload = JSON.stringify({ ...body, stream });
+		return new Promise((resolve, reject) => {
+			const req = http.request(
+				{
+					hostname: "127.0.0.1",
+					port,
+					path: "/v1/messages",
+					method: "POST",
+					// no content-length; explicit chunked framing
+					headers: { "content-type": "application/json", "transfer-encoding": "chunked" },
+				},
+				(res) => {
+					const chunks = [];
+					res.on("data", (c) => chunks.push(c));
+					res.on("end", () =>
+						resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString() }),
+					);
+				},
+			);
+			req.on("error", reject);
+			req.write(payload.slice(0, 25));
+			req.write(payload.slice(25));
+			req.end();
+		});
+	}
+
+	it("chunked inbound body reaches the upstream with content-length, no transfer-encoding (buffered path)", async () => {
+		await wire(() => ({
+			status: 200,
+			headers: { "content-type": "application/json" },
+			body: NORMAL_200,
+		}));
+		const res = await postChunked(proxy.port, { model: "glm-5.2", messages: [] }, false);
+		assert.equal(res.status, 200);
+		const call = glm.calls[0];
+		assert.equal(call.headers["transfer-encoding"], undefined, "TE must not be forwarded");
+		assert.equal(call.headers["content-length"], String(call.body.length), "CL set to real length");
+		assert.match(call.body, /"model":"glm-5\.2"/, "full body delivered");
+	});
+
+	it("chunked inbound body reaches the upstream with content-length, no transfer-encoding (streaming path)", async () => {
+		await wire(() => ({
+			status: 200,
+			headers: { "content-type": "text/event-stream" },
+			body: 'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+		}));
+		const res = await postChunked(proxy.port, { model: "glm-5.2", messages: [] }, true);
+		assert.equal(res.status, 200);
+		const call = glm.calls[0];
+		assert.equal(call.headers["transfer-encoding"], undefined, "TE must not be forwarded");
+		assert.equal(call.headers["content-length"], String(call.body.length), "CL set to real length");
+		assert.match(call.body, /"model":"glm-5\.2"/, "full body delivered");
+	});
+
 	it("claude request uses OAuth passthrough (Authorization kept, no x-api-key)", async () => {
 		await wire(
 			() => ({ status: 200, headers: { "content-type": "application/json" }, body: NORMAL_200 }),

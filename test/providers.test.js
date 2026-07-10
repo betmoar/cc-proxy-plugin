@@ -152,4 +152,42 @@ describe("buildUpstreamHeaders", () => {
 		);
 		assert.equal(h["anthropic-version"], "2099-01-01");
 	});
+
+	// INVARIANT (transparent pipe, hop-by-hop exception): the proxy always sends
+	// a fully-buffered body with an exact content-length, so inbound hop-by-hop
+	// headers — above all Transfer-Encoding — must never reach the upstream.
+	// Forwarding transfer-encoding alongside content-length trips upstream
+	// request-smuggling protections (bare 400 before any handler runs).
+	it("drops inbound hop-by-hop headers (transfer-encoding et al.)", () => {
+		const h = buildUpstreamHeaders(
+			{ auth: "oauth" },
+			{
+				"transfer-encoding": "chunked",
+				connection: "keep-alive",
+				"keep-alive": "timeout=5",
+				te: "trailers",
+				trailer: "x-checksum",
+				upgrade: "h2c",
+				"proxy-authorization": "Basic xxx",
+				"proxy-authenticate": "Basic",
+				"content-type": "application/json",
+			},
+			42,
+			"api.anthropic.com",
+		);
+		for (const dropped of [
+			"transfer-encoding",
+			"connection",
+			"keep-alive",
+			"te",
+			"trailer",
+			"upgrade",
+			"proxy-authorization",
+			"proxy-authenticate",
+		]) {
+			assert.equal(h[dropped], undefined, `${dropped} must not be forwarded`);
+		}
+		assert.equal(h["content-type"], "application/json", "end-to-end headers survive");
+		assert.equal(h["content-length"], "42");
+	});
 });

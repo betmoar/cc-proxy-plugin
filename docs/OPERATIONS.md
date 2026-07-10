@@ -51,12 +51,16 @@ A **non-streaming** GLM overflow comes back as `200` with empty content and `sto
 
 There is no automatic replay. Recovery: switch model with `/model`, `/clear`, or `/compact`. With `glm-5.2[1m]` (1M window) overflow is rare.
 
-## Debug environment variables
+## Environment variables
 
 | Variable | Effect |
 | --- | --- |
+| `PROXY_HOST` | Interface the proxy binds to (default `127.0.0.1`; loopback on purpose — the proxy injects keys) |
+| `PROXY_UPSTREAM_TIMEOUT_MS` | Upstream socket-inactivity timeout (default 120000); raise for 1M-context cold calls |
+| `DEFAULT_BACKEND` | Backend when no model prefix matches (default `claude`) |
 | `PROXY_DEBUG=1` | Log `metadata` + `system` summary per request |
 | `PROXY_LOG` | Proxy stdout/stderr file (default `/tmp/cc-proxy.log`) |
+| `PROXY_LOG_MAX_BYTES` | Rotate the log to `<log>.1` past this size on next spawn (default 5242880) |
 | `PROXY_READY_TIMEOUT_MS` | SessionStart readiness-poll ceiling (default 3000) |
 
 ## Debugging checklist

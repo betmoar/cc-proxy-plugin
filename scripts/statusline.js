@@ -5,6 +5,15 @@ import net from "node:net";
 import path from "node:path";
 import { loadEnv } from "../src/env.js";
 
+// Load API keys + config from ~/.env (+ repo .env in dev) so the GLM/OpenRouter
+// quota fetches below work. The statusline is spawned by Claude Code with only
+// settings.json's env, not the proxy's dotenv — without this, a key that lives
+// only in ~/.env never reaches the quota gauges. process.env still wins.
+// MUST run before any module-level process.env read: PROXY_PORT below is
+// evaluated at load time, and calling loadEnv() after it silently ignored a
+// port configured in ~/.env (the liveness probe then watched the wrong port).
+loadEnv();
+
 const QUOTA_URL = "https://api.z.ai/api/monitor/usage/quota/limit";
 const OPENROUTER_CREDITS_URL = "https://openrouter.ai/api/v1/credits";
 const CACHE_TTL_MS = 60_000;
@@ -21,12 +30,6 @@ const YELLOW = "\x1b[33m";
 const RED = "\x1b[31m";
 const RED_BOLD = "\x1b[1;31m";
 const RESET = "\x1b[0m";
-
-// Load API keys from ~/.env (+ repo .env in dev) so the GLM/OpenRouter quota
-// fetches below work. The statusline is spawned by Claude Code with only
-// settings.json's env, not the proxy's dotenv — without this, a key that lives
-// only in ~/.env never reaches the quota gauges. process.env still wins.
-loadEnv();
 
 function probePort(port) {
 	return new Promise((resolve) => {

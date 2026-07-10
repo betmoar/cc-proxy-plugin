@@ -22,8 +22,13 @@ Each is locked by tests; the test names tell you what you broke.
 1. **Transparent pipe.** The proxy rewrites auth/headers only. Full inbound
    path *including the query string* reaches the upstream; bodies are forwarded
    byte-for-byte (except the thinking-strip, below). No prompt inspection, no
-   rewriting, no retry/replay. → `test/server.test.js` "query string is
-   preserved…", "passes through…"
+   rewriting, no retry/replay. One deliberate header exception: hop-by-hop
+   headers (RFC 9110 §7.6.1 — above all `transfer-encoding`) are dropped,
+   because the proxy always sends a buffered body with an exact
+   `content-length`, and forwarding CL+TE together trips upstream
+   request-smuggling rejection (bare 400). → `test/server.test.js` "query
+   string is preserved…", "passes through…", "chunked inbound body…";
+   `test/providers.test.js` "drops inbound hop-by-hop headers…"
 2. **Stateless.** No circuit breakers, no on-disk state, no in-proxy waiting.
    Rate limits are handled by *injecting* `Retry-After` and letting the client
    back off. → "…1302 rate limit gets a Retry-After header", "1313 … no
@@ -83,12 +88,18 @@ Each is locked by tests; the test names tell you what you broke.
   query-string bug shipped twice.
 - **`PROXY_PORT` default (4000)** is read independently in `src/config.js`,
   `hooks/proxy-lifecycle.js`, `scripts/statusline.js`, `scripts/status.js`.
-  Change the default in all four or in none.
+  Change the default in all four or in none. → locked by `test/couplings.test.js`.
 - **`PROXY_READY_TIMEOUT_MS` vs `hooks/hooks.json` `timeout: 10`** (seconds):
   the hook is killed at 10 s, so a ready-timeout ≥ 10000 ms silently never
-  completes. Raise both together.
+  completes. Raise both together. → locked by `test/couplings.test.js`.
 - **`.env.example` ↔ README env table ↔ `docs/OPERATIONS.md`**: new env vars go
-  in all three.
+  in all three. → locked by `test/couplings.test.js`.
+- **Scripts must call `loadEnv()` before any module-level `process.env` read.**
+  `scripts/statusline.js` once computed its `PROXY_PORT` const above the
+  `loadEnv()` call, so a port configured only in `~/.env` was silently ignored
+  by the liveness probe (fixed; locked by `test/statusline.test.js` "liveness
+  probe honors PROXY_PORT from ~/.env"). When adding a script, put `loadEnv()`
+  directly under the imports.
 - **Keys vs plumbing split.** API keys (`GLM_API_KEY`, `OPENROUTER_API_KEY`)
   live in `~/.env`; non-secret plumbing (`PROXY_PATH`, `PROXY_PORT`, `PROXY_LOG`,
   `ANTHROPIC_BASE_URL`, `ANTHROPIC_CUSTOM_MODEL_OPTION*`) lives in settings.json
@@ -164,7 +175,24 @@ tests in `providers.test.js` + `router.test.js`. Never a router/server change.
 3. **Dedup quota fetchers** — `scripts/status.js` and `scripts/statusline.js`
    each carry a GLM-quota and OpenRouter-credits fetcher. They already drifted
    once (missing timeout, fixed 0.3.1). Extract a shared module both import.
-4. **Agent-queue wall-clock deadline** — documented out of scope in
+4. **`checkPort` socket timeout** (`hooks/proxy-lifecycle.js`) — the lifecycle
+   TCP probe has no timer, unlike `probePort` in `scripts/statusline.js` (300 ms).
+   A firewall that DROPs (not rejects) loopback traffic would hang the
+   SessionStart hook until its 10 s kill. Fix: mirror probePort's
+   `setTimeout(→destroy→resolve false)` pattern, ~4 lines. Deferred because no
+   CI test can simulate a black-holed loopback connect — apply it alongside the
+   next lifecycle change and lean on the existing open/closed-port tests.
+   Done-when: checkPort carries a bounded timer and lifecycle tests stay green.
+5. **Predictable `/tmp` defaults** — `PROXY_LOG=/tmp/cc-proxy.log` (append
+   follows symlinks) and the statusline's `/tmp/*.json` cache fallback are
+   pre-createable by other local users on a multi-user machine (garbage gauges;
+   log lines appended through a planted symlink — no key material either way).
+   Fix at the next minor: default both under `~/.claude/cc-proxy/`, updating
+   the documented default in README/.env.example/OPERATIONS plus the hardcoded
+   fallbacks in `hooks/proxy-lifecycle.js` and `scripts/status.js` together
+   (env-doc coupling test will catch the doc half). Done-when: defaults live
+   under $HOME and a config test asserts it.
+6. **Agent-queue wall-clock deadline** — documented out of scope in
    `docs/ARCHITECTURE.md` (last section); only matters past ~128 concurrently
    stalled upstream calls to one origin.
-5. **Windows** — untested end to end (detached spawn, log paths).
+7. **Windows** — untested end to end (detached spawn, log paths).

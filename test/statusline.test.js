@@ -136,6 +136,74 @@ describe("statusline.js", () => {
 		}
 	});
 
+	// A repo-root .env is loaded before ~/.env by loadEnv() and would win over the
+	// fixture home written below — skip in that dev-machine configuration, exactly
+	// like dotenv.test.js's repoEnvHasGlmKey guard.
+	function repoEnvHasProxyPort() {
+		try {
+			const repoEnv = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../.env");
+			return /^PROXY_PORT=/m.test(fs.readFileSync(repoEnv, "utf8"));
+		} catch {
+			return false;
+		}
+	}
+
+	// GUARDRAIL for the load-order bug: PROXY_PORT was read at module load BEFORE
+	// loadEnv() ran, so a port configured only in ~/.env was silently ignored and
+	// the liveness probe watched the default port instead. Two-sided so the test
+	// fails pre-fix regardless of whether something happens to listen on 4000.
+	it("liveness probe honors PROXY_PORT from ~/.env", { skip: repoEnvHasProxyPort() }, async () => {
+		const net = await import("node:net");
+		const listener = net.createServer();
+		await new Promise((r) => listener.listen(0, "127.0.0.1", r));
+		const livePort = listener.address().port;
+		// Acquire a second ephemeral port and release it — a just-freed port is
+		// reliably closed, unlike livePort+1 which some other service may hold.
+		const scratch = net.createServer();
+		await new Promise((r) => scratch.listen(0, "127.0.0.1", r));
+		const deadPort = scratch.address().port;
+		await new Promise((r) => scratch.close(r));
+
+		async function runWithHomeEnv(port) {
+			const home = fs.mkdtempSync(path.join(os.tmpdir(), "statusline-home-"));
+			const cache = fs.mkdtempSync(path.join(os.tmpdir(), "statusline-cache-"));
+			fs.writeFileSync(path.join(home, ".env"), `PROXY_PORT=${port}\n`);
+			// PROXY_PORT must come from ~/.env, not the process env, so strip it.
+			const { PROXY_PORT: _ignored, ...baseEnv } = process.env;
+			const env = {
+				...baseEnv,
+				HOME: home,
+				CLAUDE_PLUGIN_DATA: cache,
+				GLM_API_KEY: "",
+				OPENROUTER_API_KEY: "",
+			};
+			try {
+				return await new Promise((resolve) => {
+					const child = execFile("node", [SCRIPT], { env }, (_err, stdout) => resolve(stdout));
+					child.stdin.end("{}");
+				});
+			} finally {
+				fs.rmSync(home, { recursive: true, force: true });
+				fs.rmSync(cache, { recursive: true, force: true });
+			}
+		}
+
+		try {
+			const upOut = await runWithHomeEnv(livePort);
+			assert.ok(
+				!upOut.includes("proxy down"),
+				`~/.env port ${livePort} is live but probe missed it: ${upOut}`,
+			);
+			const downOut = await runWithHomeEnv(deadPort);
+			assert.ok(
+				downOut.includes("proxy down"),
+				`~/.env port ${deadPort} is dead but no warning shown: ${downOut}`,
+			);
+		} finally {
+			await new Promise((r) => listener.close(r));
+		}
+	});
+
 	it("shows GLM 5h quota when key is set", { skip: !process.env.GLM_API_KEY }, async () => {
 		const { stdout } = await run(
 			{
