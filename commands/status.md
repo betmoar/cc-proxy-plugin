@@ -11,8 +11,19 @@ Run the cc-proxy diagnostic and show the user its output.
 Execute:
 
 ```bash
-root="${CLAUDE_PLUGIN_ROOT:-$(dirname "$(dirname "${PROXY_PATH:-}")")}"
-[ -f "$root/scripts/status.js" ] || { echo 'cc-proxy: cannot locate plugin root; run /cc-proxy:setup or /resume'; exit 1; }
+# Resolve the plugin root. $CLAUDE_PLUGIN_ROOT is only injected in hook context,
+# not into a slash-command's Bash, so fall back through the legacy PROXY_PATH
+# pin, then the marketplace cache (newest version wins — the tree is always
+# current), then the dev repo. Never rely on env alone.
+root=""
+try() { [ -n "$1" ] && [ -f "$1/scripts/status.js" ] && root="$1"; }
+try "${CLAUDE_PLUGIN_ROOT:-}"
+[ -z "$root" ] && [ -n "${PROXY_PATH:-}" ] && try "$(dirname "$(dirname "$PROXY_PATH")")"
+if [ -z "$root" ]; then
+  for d in $(ls -d "$HOME"/.claude/plugins/cache/*/cc-proxy/*/ 2>/dev/null | sort -V); do try "${d%/}"; done
+fi
+[ -z "$root" ] && try "$HOME/dev/cc-proxy-plugin"
+[ -n "$root" ] || { echo 'cc-proxy: cannot locate plugin root; run /cc-proxy:setup or /resume'; exit 1; }
 node "$root/scripts/status.js"
 ```
 
