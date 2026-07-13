@@ -2,6 +2,11 @@
 
 All notable changes to cc-proxy are recorded here. Versions follow [semver](https://semver.org/); `package.json` is the single source of truth and propagates to `.claude-plugin/plugin.json` via `scripts/sync-version.mjs`.
 
+## [0.4.1] — 2026-07-13
+
+### Fixed
+- **`/cc-proxy:status` no longer misreports the plugin as unlocatable.** The command's Bash resolved the plugin root as `${CLAUDE_PLUGIN_ROOT:-$(dirname $(dirname $PROXY_PATH))}`, but `CLAUDE_PLUGIN_ROOT` is injected only in **hook** context — not into a slash-command's Bash — and `PROXY_PATH` stopped being written to settings.json in 0.4.0. With both unset, the fallback resolved to garbage and the command printed `cc-proxy: cannot locate plugin root` on every invocation, even with the proxy healthy (the SessionStart hook, which *does* get `CLAUDE_PLUGIN_ROOT`, kept the proxy running the whole time — so the failure was cosmetic but total). `commands/status.md` now uses a layered resolver: explicit `CLAUDE_PLUGIN_ROOT` → legacy `PROXY_PATH` pin → marketplace cache glob (`~/.claude/plugins/cache/*/cc-proxy/*/`, newest version wins via `sort -V`, matching the "own tree is current" resolution philosophy of `resolveProxyPath()`) → dev repo, falling back to the same guidance + exit 1 only when nothing is found. Verified under the failing condition (`env -u CLAUDE_PLUGIN_ROOT -u PROXY_PATH`): resolves the installed tree and runs `status.js` exit 0; the env-preferred, `PROXY_PATH`-fallback, and hard-fail paths all pass.
+
 ## [0.4.0] — 2026-07-13
 
 ### Fixed
