@@ -2,6 +2,18 @@
 
 All notable changes to cc-proxy are recorded here. Versions follow [semver](https://semver.org/); `package.json` is the single source of truth and propagates to `.claude-plugin/plugin.json` via `scripts/sync-version.mjs`.
 
+## [0.4.2] — 2026-07-13
+
+### Fixed
+- **`/cc-proxy:status` plugin-root resolution, rebuilt for the two shells it actually runs in.** The command resolved its plugin root from `$CLAUDE_PLUGIN_ROOT`, but that var is injected only in **hook** context — not into a slash-command's Bash — and the `PROXY_PATH` fallback stopped being written to settings.json in 0.4.0, so with both unset the command printed `cc-proxy: cannot locate plugin root` even with the proxy healthy. Fixing it surfaced two portability traps that earlier attempts (0.4.1) tripped over, each masked by testing in the wrong environment:
+  1. **A slash-command body is a template.** Claude Code substitutes `$1`..`$9` (positional args) into the body *before* the shell runs. 0.4.1's `try() { … "$1" … }` helper had every `$1` blanked to the empty string, making it a permanent no-op — the command failed *unconditionally*. Missed because the verifying test ran the block through a plain `bash -c`, which does not reproduce the harness's pre-substitution.
+  2. **The command runs under the user's login shell — zsh on macOS, not bash.** zsh does not word-split an unquoted `$var`, so a `for c in $candidates` loop iterates once over the whole newline-joined blob and never matches. Missed because that fix, too, was tested via explicit `bash -c` instead of the real zsh.
+
+  Final form uses **no positional parameters, no helper function, and a newline-fed `while IFS= read -r` loop** (which splits identically in bash and zsh) over the candidate list: explicit `CLAUDE_PLUGIN_ROOT` → legacy `PROXY_PATH` pin → marketplace cache glob (`~/.claude/plugins/cache/*/cc-proxy/*/`, newest via `sort -V -r`, matching `resolveProxyPath()`'s "own tree is current" philosophy) → dev repo, falling back to guidance + exit 1. Verified by executing the actual command body under **both zsh and bash**: resolves the installed tree and runs `status.js` exit 0; env-preferred, `PROXY_PATH`-fallback, and hard-fail paths pass in each shell.
+
+### Added
+- **`/cc-proxy:status` now shows the running proxy's version.** The `proxy: UP` line reads `proxy: UP on port 4000 (v0.4.2)`, sourced from the `version` field `/_status` already reports (added in 0.4.0 for the update handshake). Makes a stale proxy — one still serving an old version after a plugin update, before the next session restarts it — visible at a glance. A proxy too old to report a version renders the clean `UP on port <n>` line with no suffix. Locked by `test/status.test.js` (version rendered; suffix omitted when absent).
+
 ## [0.4.1] — 2026-07-13
 
 ### Fixed

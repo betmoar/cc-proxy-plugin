@@ -35,7 +35,7 @@ export function parseRoutingLines(logText, limit = 8) {
 /**
  * Render the assembled status into a plain-text report.
  * @param {object} data
- * @param {{ up: boolean, port?: number, defaultBackend?: string, providers?: string[] }} data.status
+ * @param {{ up: boolean, port?: number, version?: string, defaultBackend?: string, providers?: string[] }} data.status
  * @param {{ level?: string, pct?: number, resetMs?: number, stale?: boolean } | null} [data.glm]
  * @param {{ remaining?: number, usedPct?: number, stale?: boolean } | null} [data.openrouter]
  * @param {string[]} [data.routing]
@@ -54,7 +54,8 @@ export function formatStatusReport(data) {
 		return lines.join("\n");
 	}
 
-	lines.push(`proxy:        UP on port ${status.port}`);
+	const ver = status.version ? ` (v${status.version})` : "";
+	lines.push(`proxy:        UP on port ${status.port}${ver}`);
 	lines.push(`default:      ${status.defaultBackend}`);
 	lines.push(`providers:    ${(status.providers || []).join(", ")}`);
 
@@ -97,6 +98,7 @@ async function probeStatus() {
 		return {
 			up: true,
 			port: json.port,
+			version: json.version,
 			defaultBackend: json.defaultBackend,
 			providers: json.providers,
 		};

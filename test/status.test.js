@@ -52,6 +52,7 @@ describe("status.js formatStatusReport", () => {
 			status: {
 				up: true,
 				port: 4000,
+				version: "0.4.2",
 				defaultBackend: "claude",
 				providers: ["glm", "openrouter", "claude"],
 			},
@@ -59,12 +60,22 @@ describe("status.js formatStatusReport", () => {
 			openrouter: { remaining: 4.2, usedPct: 16 },
 			routing: ["[t] glm-5.2[1m] -> glm"],
 		});
-		assert.match(out, /proxy:\s+UP on port 4000/);
+		assert.match(out, /proxy:\s+UP on port 4000 \(v0\.4\.2\)/);
 		assert.match(out, /providers:\s+glm, openrouter, claude/);
 		assert.match(out, /glm\[pro\]:\s+37% used/);
 		assert.match(out, /resets 2026-06-26T12:00:00Z/);
 		assert.match(out, /openrouter:\s+\$4\.20 remaining/);
 		assert.match(out, /glm-5\.2\[1m\] -> glm/);
+	});
+
+	it("omits the version suffix when the proxy reports no version", () => {
+		// A pre-0.4.0 proxy (before /_status carried `version`) must still render
+		// a clean UP line, not "port 4000 (vundefined)".
+		const out = formatStatusReport({
+			status: { up: true, port: 4000, defaultBackend: "claude", providers: ["glm"] },
+		});
+		assert.match(out, /proxy:\s+UP on port 4000\n/);
+		assert.doesNotMatch(out, /\(v/);
 	});
 
 	it("marks stale provider data", () => {

@@ -15,14 +15,25 @@ Execute:
 # not into a slash-command's Bash, so fall back through the legacy PROXY_PATH
 # pin, then the marketplace cache (newest version wins — the tree is always
 # current), then the dev repo. Never rely on env alone.
+#
+# Two portability traps this form avoids, both of which bit earlier versions:
+#   1. A slash-command body is a TEMPLATE: Claude Code substitutes positional
+#      args (dollar-one through dollar-nine) into it BEFORE the shell runs — so a
+#      helper referencing them is blanked to a no-op. This block uses NONE.
+#   2. The command runs under the user's login shell, which on macOS is ZSH,
+#      NOT bash. zsh does not word-split an unquoted parameter, so `for c in
+#      $list` iterates once over the whole blob. A newline-fed `while IFS= read
+#      -r` splits identically in bash and zsh.
 root=""
-try() { [ -n "$1" ] && [ -f "$1/scripts/status.js" ] && root="$1"; }
-try "${CLAUDE_PLUGIN_ROOT:-}"
-[ -z "$root" ] && [ -n "${PROXY_PATH:-}" ] && try "$(dirname "$(dirname "$PROXY_PATH")")"
-if [ -z "$root" ]; then
-  for d in $(ls -d "$HOME"/.claude/plugins/cache/*/cc-proxy/*/ 2>/dev/null | sort -V); do try "${d%/}"; done
-fi
-[ -z "$root" ] && try "$HOME/dev/cc-proxy-plugin"
+while IFS= read -r c; do
+  [ -n "$c" ] || continue
+  if [ -f "$c/scripts/status.js" ]; then root="$c"; break; fi
+done <<EOF
+${CLAUDE_PLUGIN_ROOT:-}
+$([ -n "${PROXY_PATH:-}" ] && dirname "$(dirname "$PROXY_PATH")")
+$(ls -d "$HOME"/.claude/plugins/cache/*/cc-proxy/*/ 2>/dev/null | sort -V -r | sed 's:/*$::')
+$HOME/dev/cc-proxy-plugin
+EOF
 [ -n "$root" ] || { echo 'cc-proxy: cannot locate plugin root; run /cc-proxy:setup or /resume'; exit 1; }
 node "$root/scripts/status.js"
 ```
