@@ -1,10 +1,119 @@
 // @ts-check
 import { spawn } from "node:child_process";
 import fs from "node:fs";
+import http from "node:http";
 import net from "node:net";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 export const PORT = Number(process.env.PROXY_PORT || 4000);
 const POLL_INTERVAL_MS = 100;
+
+// This file runs from inside the plugin tree (marketplace cache dir or dev
+// repo), so its own location identifies the CURRENT plugin version — unlike a
+// PROXY_PATH pinned into settings.json by an old /cc-proxy:setup run, which
+// keeps pointing at the cache dir of whatever version was installed then.
+const HOOKS_DIR = path.dirname(fileURLToPath(import.meta.url));
+
+/**
+ * Resolve the proxy entry point. The plugin tree's own `bin/cc-proxy.js`
+ * (sibling of hooks/) wins; a PROXY_PATH from env is only a fallback for
+ * hand-rolled installs where the tree carries no bin. This is the fix for the
+ * staleness trap: settings.json's version-pinned PROXY_PATH used to outrank
+ * everything, so plugin updates shipped code nobody ran.
+ *
+ * @param {NodeJS.ProcessEnv} [env]
+ * @param {string} [hooksDir]  Overridable for tests.
+ * @returns {string | undefined}
+ */
+export function resolveProxyPath(env = process.env, hooksDir = HOOKS_DIR) {
+	const own = path.resolve(hooksDir, "..", "bin", "cc-proxy.js");
+	if (fs.existsSync(own)) return own;
+	return env.PROXY_PATH || undefined;
+}
+
+/**
+ * Version of the plugin tree this hook runs from (package.json sibling of
+ * hooks/). Undefined when unreadable — callers must then skip version checks.
+ * @param {string} [hooksDir]  Overridable for tests.
+ * @returns {string | undefined}
+ */
+export function pluginVersion(hooksDir = HOOKS_DIR) {
+	try {
+		const pkg = JSON.parse(fs.readFileSync(path.resolve(hooksDir, "..", "package.json"), "utf8"));
+		return typeof pkg.version === "string" ? pkg.version : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * GET /_status on a listening proxy and return its reported version.
+ * Distinguishes three cases: a cc-proxy that reports a version (string), a
+ * cc-proxy too old to report one (null), and something that doesn't speak the
+ * contract at all — foreign listener, timeout (undefined).
+ * @param {number} port
+ * @returns {Promise<string | null | undefined>}
+ */
+export function probeProxyVersion(port) {
+	return new Promise((resolve) => {
+		const req = http.get(
+			{ hostname: "127.0.0.1", port, path: "/_status", timeout: 1000 },
+			(res) => {
+				const chunks = [];
+				res.on("data", (c) => chunks.push(c));
+				res.on("end", () => {
+					try {
+						const json = JSON.parse(Buffer.concat(chunks).toString());
+						// Only trust a payload that looks like our /_status contract.
+						if (res.statusCode === 200 && Array.isArray(json.providers)) {
+							resolve(typeof json.version === "string" ? json.version : null);
+							return;
+						}
+					} catch {}
+					resolve(undefined);
+				});
+			},
+		);
+		req.on("timeout", () => req.destroy());
+		req.on("error", () => resolve(undefined));
+	});
+}
+
+/**
+ * POST /_shutdown to a running proxy. Resolves once the response arrives (or
+ * errors); the caller then polls the port until the listener is gone.
+ * @param {number} port
+ * @returns {Promise<boolean>} true if the proxy acknowledged the shutdown.
+ */
+export function requestShutdown(port) {
+	return new Promise((resolve) => {
+		const req = http.request(
+			{ hostname: "127.0.0.1", port, path: "/_shutdown", method: "POST", timeout: 1000 },
+			(res) => {
+				res.resume();
+				res.on("end", () => resolve(res.statusCode === 200));
+			},
+		);
+		req.on("timeout", () => req.destroy());
+		req.on("error", () => resolve(false));
+		req.end();
+	});
+}
+
+/**
+ * Poll until nothing accepts connections on the port, or the deadline passes.
+ * @param {number} port
+ * @param {number} deadline ms epoch
+ * @returns {Promise<boolean>} true once the port is free.
+ */
+async function waitGone(port, deadline) {
+	while (Date.now() < deadline) {
+		if (!(await checkPort(port))) return true;
+		await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+	}
+	return !(await checkPort(port));
+}
 
 // The proxy log is append-only and never truncated by the proxy itself, so it
 // grows unbounded over the life of the machine (~1 routing line per request).
@@ -96,18 +205,23 @@ export function spawnProxy(proxyPath, logPath, env = process.env) {
 }
 
 /**
- * Ensure the proxy is reachable on its port. If not, spawn it and wait for
- * readiness. Safe to call from any hook; if PROXY_PATH is unset we can't
- * spawn and the caller must tolerate a dead proxy.
+ * Ensure the CURRENT proxy is reachable on its port. If nothing listens, spawn
+ * and wait for readiness. If a cc-proxy is listening but reports a different
+ * version than this plugin tree (stale process from before an update), ask it
+ * to shut down via POST /_shutdown and spawn the current one in its place.
+ * Anything on the port that doesn't speak the /_status contract is treated as
+ * foreign and left untouched ("already-up" — same behavior as the pre-version
+ * TCP probe, and never a kill).
  *
  * @param {object} [opts]
  * @param {number} [opts.port]         Defaults to PROXY_PORT or 4000.
  * @param {number} [opts.readyTimeoutMs] Defaults to PROXY_READY_TIMEOUT_MS or 3000.
- * @param {string} [opts.proxyPath]    Defaults to PROXY_PATH.
+ * @param {string} [opts.proxyPath]    Defaults to resolveProxyPath() (own tree's
+ *   bin, then env PROXY_PATH).
  * @param {string} [opts.logPath]      Defaults to PROXY_LOG or /tmp/cc-proxy.log.
  * @param {NodeJS.ProcessEnv} [opts.env] Defaults to process.env. Forwarded to
  *   spawnProxy; see spawnProxy for when to override.
- * @returns {Promise<"already-up" | "started" | "missing-path" | "unreachable">}
+ * @returns {Promise<"already-up" | "started" | "restarted" | "missing-path" | "unreachable">}
  */
 export async function ensureProxyRunning(opts = {}) {
 	const port = opts.port ?? PORT;
@@ -117,10 +231,33 @@ export async function ensureProxyRunning(opts = {}) {
 	const envTimeout = Number(process.env.PROXY_READY_TIMEOUT_MS);
 	const readyTimeoutMs =
 		opts.readyTimeoutMs ?? (Number.isFinite(envTimeout) && envTimeout > 0 ? envTimeout : 3000);
-	const proxyPath = opts.proxyPath ?? process.env.PROXY_PATH;
+	const proxyPath = opts.proxyPath ?? resolveProxyPath();
 	const logPath = opts.logPath ?? process.env.PROXY_LOG ?? "/tmp/cc-proxy.log";
 
-	if (await checkPort(port)) return "already-up";
+	if (await checkPort(port)) {
+		const running = await probeProxyVersion(port);
+		const current = pluginVersion();
+		// Foreign listener (undefined), unknown own version, or match → leave it.
+		// Only a confirmed cc-proxy (running !== undefined) with a confirmed
+		// different version is replaced. `null` (a cc-proxy too old to report a
+		// version) counts as a mismatch — every version from this change on
+		// reports one, so null is by definition stale.
+		const stale = running !== undefined && current !== undefined && running !== current;
+		if (!stale) return "already-up";
+		if (!proxyPath) return "missing-path";
+
+		const acked = await requestShutdown(port);
+		// close() waits for in-flight responses, so allow the drain a share of
+		// the ready budget; if the old process won't die, leave it — two proxies
+		// racing one port is worse than one stale proxy.
+		const gone = acked && (await waitGone(port, Date.now() + readyTimeoutMs));
+		if (!gone) return "already-up";
+
+		spawnProxy(proxyPath, logPath, opts.env);
+		const up = await waitReady(port, Date.now() + readyTimeoutMs);
+		return up ? "restarted" : "unreachable";
+	}
+
 	if (!proxyPath) return "missing-path";
 
 	spawnProxy(proxyPath, logPath, opts.env);

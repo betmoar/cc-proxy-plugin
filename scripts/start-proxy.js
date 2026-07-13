@@ -17,7 +17,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { ensureProxyRunning } from "../hooks/proxy-lifecycle.js";
+import { ensureProxyRunning, resolveProxyPath } from "../hooks/proxy-lifecycle.js";
 
 /** @returns {Record<string, string>} */
 function settingsEnv() {
@@ -41,16 +41,19 @@ function settingsEnv() {
 async function main() {
 	const env = { ...process.env, ...settingsEnv() };
 
-	// ensureProxyRunning reads proxyPath/port/logPath/readyTimeout from
-	// process.env by default — but on a first-run setup those live ONLY in
-	// settings.json, not yet in this process. Derive them from the merged env
-	// and pass explicitly, or the spawn targets the wrong path/port (or returns
-	// missing-path) even though the child env is correct.
+	// ensureProxyRunning reads port/logPath/readyTimeout from process.env by
+	// default — but on a first-run setup those live ONLY in settings.json, not
+	// yet in this process. Derive them from the merged env and pass explicitly,
+	// or the spawn targets the wrong port even though the child env is correct.
+	// The proxy binary itself comes from resolveProxyPath(): this script's own
+	// plugin tree first (always the current version), settings.json PROXY_PATH
+	// only as a legacy fallback — a version-pinned PROXY_PATH from an old setup
+	// must not pin users to a stale proxy.
 	const port = Number(env.PROXY_PORT) || undefined;
 	const readyTimeoutMs = Number(env.PROXY_READY_TIMEOUT_MS);
 	const state = await ensureProxyRunning({
 		env,
-		proxyPath: env.PROXY_PATH,
+		proxyPath: resolveProxyPath(env),
 		port,
 		logPath: env.PROXY_LOG,
 		readyTimeoutMs:
@@ -63,6 +66,10 @@ async function main() {
 	}
 	if (state === "started") {
 		process.stdout.write("cc-proxy started.\n");
+		return;
+	}
+	if (state === "restarted") {
+		process.stdout.write("cc-proxy restarted (stale version replaced).\n");
 		return;
 	}
 	if (state === "missing-path") {

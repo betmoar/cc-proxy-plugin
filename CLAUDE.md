@@ -101,19 +101,31 @@ Each is locked by tests; the test names tell you what you broke.
   probe honors PROXY_PORT from ~/.env"). When adding a script, put `loadEnv()`
   directly under the imports.
 - **Keys vs plumbing split.** API keys (`GLM_API_KEY`, `OPENROUTER_API_KEY`)
-  live in `~/.env`; non-secret plumbing (`PROXY_PATH`, `PROXY_PORT`, `PROXY_LOG`,
+  live in `~/.env`; non-secret plumbing (`PROXY_PORT`, `PROXY_LOG`,
   `ANTHROPIC_BASE_URL`, `ANTHROPIC_CUSTOM_MODEL_OPTION*`) lives in settings.json
   `env`. Both are loaded by the shared `src/env.js` (`loadEnv()`): repo `.env`
   first (dev/inline), then `~/.env`, with `process.env` always winning. All key
   consumers (`bin/cc-proxy.js`, `scripts/status.js`, `scripts/statusline.js`)
   call `loadEnv()` — don't add a fourth inline `process.loadEnvFile`; that's how
   the proxy shipped without `~/.env` support (the bug behind v0.3.4).
+- **Proxy binary is self-resolved; version handshake replaces stale proxies.**
+  `resolveProxyPath()` (`hooks/proxy-lifecycle.js`) uses the plugin tree's own
+  `bin/cc-proxy.js`; env `PROXY_PATH` is only a legacy fallback for trees
+  without a bin. `/_status` carries the proxy's `version` (from
+  `package.json` via `src/config.js`), and `ensureProxyRunning()` replaces a
+  version-mismatched proxy via POST `/_shutdown` + respawn. Never make setup
+  write `PROXY_PATH` again — a version-pinned path in settings.json is how
+  users silently stopped receiving proxy updates (the running process outlives
+  the plugin cache update). Foreign listeners (no `/_status` contract) are
+  never killed. → `test/proxy-lifecycle.test.js` "version handshake",
+  `test/start-proxy.test.js` "ignores a stale settings.json PROXY_PATH…",
+  `test/server.test.js` "/_shutdown".
 
 ## Traps for the unwary
 
 - **Plumbing can't move to `~/.env`.** The `SessionStart` hook reads
-  `PROXY_PORT`/`PROXY_PATH`/`PROXY_LOG` from `process.env` (settings.json
-  injection) *before* the proxy process exists to load `~/.env`. So those stay in
+  `PROXY_PORT`/`PROXY_LOG` from `process.env` (settings.json injection)
+  *before* the proxy process exists to load `~/.env`. So those stay in
   settings.json `env`; only keys (loaded by the proxy itself) go in `~/.env`.
 - **Setup order matters.** The moment `ANTHROPIC_BASE_URL` lands in
   settings.json, *already-open* sessions retarget immediately. That's why

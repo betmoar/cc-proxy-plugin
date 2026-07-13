@@ -2,6 +2,16 @@
 
 All notable changes to cc-proxy are recorded here. Versions follow [semver](https://semver.org/); `package.json` is the single source of truth and propagates to `.claude-plugin/plugin.json` via `scripts/sync-version.mjs`.
 
+## [0.4.0] — 2026-07-13
+
+### Fixed
+- **Plugin updates now actually reach the running proxy.** Two compounding pins kept users on stale proxies forever: `/cc-proxy:setup` wrote a **version-pinned** `PROXY_PATH` (`…/cache/betmoar/cc-proxy/<version>/bin/cc-proxy.js`) into settings.json, and the SessionStart hook's port probe treated *any* listener as "already up" — so after `claude plugin update`, the new cache dir sat unused while the old detached process kept serving. Fix, in three parts:
+  1. **Self-resolved binary.** `resolveProxyPath()` (`hooks/proxy-lifecycle.js`) spawns `bin/cc-proxy.js` from the hook's **own plugin tree** — by construction the installed version. A settings.json/env `PROXY_PATH` is demoted to a legacy fallback for trees without a `bin/`, and `/cc-proxy:setup` no longer writes it (and deletes an existing one).
+  2. **Version handshake.** `/_status` now reports the proxy's `version`; `ensureProxyRunning()` compares it against the plugin tree's `package.json` and gracefully replaces a mismatched proxy (new state: `restarted`). A listener that doesn't speak the `/_status` contract is foreign and is never touched; if the stale proxy won't vacate the port, it is left alone (one stale proxy beats two proxies racing one port).
+  3. **`POST /_shutdown`.** New loopback endpoint for that replacement: closes the listener, drains in-flight responses, severs idle keep-alive sockets, exits when the event loop empties. GET gets a `405` so a stray browser hit can't kill the proxy.
+
+  Locked by `test/proxy-lifecycle.test.js` (resolveProxyPath precedence, version handshake: restart / same-version / foreign), `test/start-proxy.test.js` ("ignores a stale settings.json PROXY_PATH…"), and `test/server.test.js` (`/_status` version, `/_shutdown` POST/GET). Existing installs converge on next plugin update + new session: the updated hook resolves its own bin and replaces the old proxy; the stale `PROXY_PATH` left in settings.json is inert (and removed by the next `/cc-proxy:setup`).
+
 ## [0.3.5] — 2026-07-10
 
 ### Fixed

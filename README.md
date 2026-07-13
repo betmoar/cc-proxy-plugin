@@ -49,7 +49,8 @@ It writes your **API keys to `~/.env`** (the single source of truth the proxy re
 | --- | --- | --- |
 | `GLM_API_KEY` | `~/.env` | Your Z.ai key (forwarded as `x-api-key`) |
 | `ANTHROPIC_BASE_URL=http://127.0.0.1:4000` | settings.json `env` | Route API calls through the proxy |
-| `PROXY_PATH` | settings.json `env` | Absolute path to `bin/cc-proxy.js` (SessionStart hook spawns it) |
+
+The proxy binary is found automatically: the SessionStart hook spawns `bin/cc-proxy.js` from its own plugin tree, which is always the installed version. After a plugin update, the hook also detects a still-running older proxy (via the version on `/_status`) and replaces it gracefully — no manual restart.
 
 **`/cc-proxy:setup` starts the proxy before it finishes**, so a fresh session connects with no `ECONNREFUSED`. Claude Code re-applies `ANTHROPIC_BASE_URL` to *already-open* sessions immediately, though — if one errors before the proxy came up, `/exit` + `/resume` it to reconnect (the SessionStart hook also ensures the proxy is running).
 
@@ -133,7 +134,7 @@ The statusline runs as its own subprocess and only inherits `settings.json`'s `e
 | `ANTHROPIC_BASE_URL` | — | Set by setup to `http://127.0.0.1:4000` |
 | `GLM_API_KEY` | — | Z.ai API key (lives in `~/.env`) |
 | `OPENROUTER_API_KEY` | — | Enable OpenRouter (slash-namespaced models; lives in `~/.env`) |
-| `PROXY_PATH` | — | Absolute path to `bin/cc-proxy.js` (SessionStart hook) |
+| `PROXY_PATH` | auto | Legacy override for the proxy entry point; the plugin tree's own `bin/cc-proxy.js` wins when present |
 | `PROXY_PORT` | `4000` | Proxy listen port |
 | `PROXY_HOST` | `127.0.0.1` | Interface the proxy binds to (loopback by default) |
 | `PROXY_UPSTREAM_TIMEOUT_MS` | `120000` | Upstream socket-inactivity timeout; raise for 1M-context cold calls |

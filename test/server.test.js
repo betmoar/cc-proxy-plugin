@@ -88,6 +88,34 @@ async function post(port, body, extraHeaders = {}, path = "/v1/messages") {
 	});
 }
 
+/** GET a path on the proxy and return { status, body }. */
+function get(port, path) {
+	return new Promise((resolve, reject) => {
+		const req = http.request({ hostname: "127.0.0.1", port, path, method: "GET" }, (res) => {
+			const chunks = [];
+			res.on("data", (c) => chunks.push(c));
+			res.on("end", () =>
+				resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString() }),
+			);
+		});
+		req.on("error", reject);
+		req.end();
+	});
+}
+
+/** True while something accepts TCP connects on 127.0.0.1:port. */
+function portOpen(port) {
+	return new Promise((resolve) => {
+		const sock = http
+			.request({ hostname: "127.0.0.1", port, path: "/_status", method: "GET" }, (res) => {
+				res.resume();
+				resolve(true);
+			})
+			.on("error", () => resolve(false));
+		sock.end();
+	});
+}
+
 const OVERFLOW_200 = JSON.stringify({
 	id: "msg_x",
 	type: "message",
@@ -706,6 +734,43 @@ describe("server end-to-end routing", () => {
 		const route = logged.find((l) => / -> /.test(l));
 		assert.ok(route, "a routing line was logged");
 		assert.match(route, /] glm-5\.2 -> glm \/v1\/messages\?beta=true$/);
+	});
+
+	// The version handshake that fixes PROXY_PATH staleness: the SessionStart
+	// hook compares /_status.version against its own plugin tree and restarts a
+	// mismatched proxy via /_shutdown. Without version in /_status a stale proxy
+	// is indistinguishable from a current one.
+	it("GET /_status reports the proxy version from config", async () => {
+		glm = await startBackend(() => ({ status: 200, headers: {}, body: "{}" }));
+		const providers = buildProviders({ GLM_API_KEY: "glm-test" }, "claude");
+		proxy = await startProxy({ port: 0, providers, version: "9.9.9" });
+		const res = await get(proxy.port, "/_status");
+		assert.equal(res.status, 200);
+		assert.equal(JSON.parse(res.body).version, "9.9.9");
+	});
+
+	it("POST /_shutdown responds 200 and the server stops accepting connections", async () => {
+		glm = await startBackend(() => ({ status: 200, headers: {}, body: "{}" }));
+		const providers = buildProviders({ GLM_API_KEY: "glm-test" }, "claude");
+		proxy = await startProxy({ port: 0, providers, version: "9.9.9" });
+		const res = await post(proxy.port, {}, {}, "/_shutdown");
+		assert.equal(res.status, 200);
+		let open = true;
+		for (let i = 0; i < 40 && open; i++) {
+			open = await portOpen(proxy.port);
+			if (open) await new Promise((r) => setTimeout(r, 50));
+		}
+		assert.equal(open, false, "listener should be released after /_shutdown");
+		proxy = undefined; // already closed; afterEach close() would hang on it
+	});
+
+	it("GET /_shutdown is rejected with 405 and the server keeps serving", async () => {
+		glm = await startBackend(() => ({ status: 200, headers: {}, body: "{}" }));
+		const providers = buildProviders({ GLM_API_KEY: "glm-test" }, "claude");
+		proxy = await startProxy({ port: 0, providers, version: "9.9.9" });
+		const res = await get(proxy.port, "/_shutdown");
+		assert.equal(res.status, 405);
+		assert.equal(await portOpen(proxy.port), true, "server must survive a GET /_shutdown");
 	});
 
 	it("routing log line falls back to 'unknown' model but still records the path", async () => {

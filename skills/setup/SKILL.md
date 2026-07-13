@@ -1,24 +1,26 @@
 ---
 name: setup
-description: One-time setup for the cc-proxy plugin. Writes API keys (GLM_API_KEY, optionally OPENROUTER_API_KEY) to ~/.env, and configures ANTHROPIC_BASE_URL, PROXY_PATH, and the glm-5.2[1m] custom model option in ~/.claude/settings.json so the SessionStart hook can auto-start the proxy and /model can route to GLM. Invoke via /cc-proxy:setup.
+description: One-time setup for the cc-proxy plugin. Writes API keys (GLM_API_KEY, optionally OPENROUTER_API_KEY) to ~/.env, and configures ANTHROPIC_BASE_URL and the glm-5.2[1m] custom model option in ~/.claude/settings.json so the SessionStart hook can auto-start the proxy and /model can route to GLM. Invoke via /cc-proxy:setup.
 ---
 
 # cc-proxy setup
 
 One-time configuration of `~/.claude/settings.json` so the proxy runs automatically on every Claude Code session.
 
+The proxy binary needs **no configuration**: the SessionStart hook and `scripts/start-proxy.js` resolve `bin/cc-proxy.js` from their own plugin tree, which is always the currently-installed version. Do **not** write `PROXY_PATH` into settings.json — a version-pinned path there is exactly how users used to get stuck on stale proxies after plugin updates. If a `PROXY_PATH` already exists in settings.json `env`, **remove it** during step 3 (it is a legacy pin; the tree's own bin outranks it anyway).
+
 ## What to do
 
 Follow these steps **exactly**. Do not skip any.
 
-### 1. Determine `PROXY_PATH`
+### 1. Locate the plugin tree (for the statusline path only)
 
-Check these locations in order and use the first one that exists. The plugin is the whole repo, so `bin/cc-proxy.js` ships inside the versioned cache dir:
+Check these locations in order and use the first one that exists:
 
-1. `~/.claude/plugins/cache/betmoar/cc-proxy/*/bin/cc-proxy.js` (marketplace install — the normal case; glob the `*` version segment and take the newest if there is more than one)
-2. `~/dev/cc-proxy-plugin/bin/cc-proxy.js` (dev-repo fallback, if the user cloned source)
+1. `~/.claude/plugins/cache/betmoar/cc-proxy/*/` (marketplace install — the normal case; glob the `*` version segment and take the newest if there is more than one)
+2. `~/dev/cc-proxy-plugin/` (dev-repo fallback, if the user cloned source)
 
-Resolve the glob to a concrete absolute path before writing it. If neither exists, ask the user where `cc-proxy.js` is located and use that absolute path.
+This concrete path is needed **only** for the optional statusline command in step 4 (which runs outside plugin context). It is *not* written as `PROXY_PATH`.
 
 ### 2. Collect provider API keys (written to `~/.env`)
 
@@ -42,13 +44,12 @@ The proxy only registers OpenRouter when `OPENROUTER_API_KEY` is set, and routes
 
 ### 3. Update `~/.claude/settings.json` (plumbing only — no keys)
 
-Read the current file, then merge the following into the `env` object (create `env` if missing). Preserve every other existing key unchanged. **Do not add `GLM_API_KEY` or `OPENROUTER_API_KEY` here** — they go in `~/.env` (step 2).
+Read the current file, then merge the following into the `env` object (create `env` if missing). Preserve every other existing key unchanged, **except `PROXY_PATH`: delete it if present** (legacy version-pinned path; the hook resolves the binary from its own tree now). **Do not add `GLM_API_KEY` or `OPENROUTER_API_KEY` here** — they go in `~/.env` (step 2).
 
 ```json
 {
   "env": {
     "ANTHROPIC_BASE_URL": "http://127.0.0.1:4000",
-    "PROXY_PATH": "<from step 1>",
     "ANTHROPIC_CUSTOM_MODEL_OPTION": "glm-5.2[1m]",
     "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME": "GLM-5.2 (1M)",
     "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION": "Z.ai GLM-5.2 1M-context (routed via cc-proxy)"
@@ -75,7 +76,7 @@ If yes, merge this **top-level** key into `~/.claude/settings.json` (it is *not*
 }
 ```
 
-Derive `<PROXY_DIR>` from the `PROXY_PATH` chosen in step 1 by stripping the trailing `/bin/cc-proxy.js` (e.g. `~/.claude/plugins/cache/betmoar/cc-proxy/<version>`). The statusline command runs outside plugin context, so `${CLAUDE_PLUGIN_ROOT}` is unavailable — an absolute path is required here. If the user already has a `statusLine` configured, show them the command and let them decide rather than overwriting it.
+`<PROXY_DIR>` is the plugin tree located in step 1 (e.g. `~/.claude/plugins/cache/betmoar/cc-proxy/<version>`). The statusline command runs outside plugin context, so `${CLAUDE_PLUGIN_ROOT}` is unavailable — an absolute path is required here, and it *is* version-pinned (a statusline pointing at an older cache dir still renders; it does not affect which proxy runs). If the user already has a `statusLine` configured, show them the command and let them decide rather than overwriting it.
 
 ### 5. Start the proxy now
 
@@ -85,12 +86,12 @@ Spawn the proxy so it is already up when `ANTHROPIC_BASE_URL` takes effect, elim
 node "$CLAUDE_PLUGIN_ROOT/scripts/start-proxy.js"
 ```
 
-`scripts/start-proxy.js` reuses the SessionStart hook's `ensureProxyRunning()`: it TCP-probes `PROXY_PORT` first (idempotent — a no-op if the proxy is already up), then spawns `bin/cc-proxy.js` detached + `unref`'d so it survives this turn. It reads the `env` block you just wrote to `~/.claude/settings.json` and passes it to the spawn, because the proxy reads config from env (not settings.json) and nothing has injected those vars into this process yet on a first-run setup.
+`scripts/start-proxy.js` reuses the SessionStart hook's `ensureProxyRunning()`: it probes `PROXY_PORT` first (idempotent — a same-version proxy is left running; a stale-version one is gracefully replaced), then spawns its own tree's `bin/cc-proxy.js` detached + `unref`'d so it survives this turn. It reads the `env` block you just wrote to `~/.claude/settings.json` and passes it to the spawn, because the proxy reads config from env (not settings.json) and nothing has injected those vars into this process yet on a first-run setup.
 
 Interpret the script's stdout/stderr:
 
-- `cc-proxy already up` or `cc-proxy started` → success. Proceed to step 6.
-- `PROXY_PATH is unset` → step 1 failed to resolve a path. Re-run `/cc-proxy:setup`; do not tell the user to start it by hand.
+- `cc-proxy already up`, `cc-proxy started`, or `cc-proxy restarted` → success. Proceed to step 6.
+- `PROXY_PATH is unset` → the plugin tree has no `bin/cc-proxy.js` (hand-rolled install) and no legacy `PROXY_PATH` exists. Ask the user where `cc-proxy.js` is and put that absolute path in settings.json `env` as `PROXY_PATH` — the one case where it is still legitimate.
 - `did not become reachable in time` → spawn fired but readiness timed out. Treat as a fallback: keep `/exit` + `/resume` as the path to recovery (step 6 covers this). Show the user the `/tmp/cc-proxy.log` tail if they ask.
 
 ### 6. Inform the user
@@ -105,5 +106,5 @@ Tell the user, verbatim:
 
 - **Do not** overwrite unrelated keys in `settings.json` or unrelated lines in `~/.env`. Use a merge strategy for both, not a full rewrite from template.
 - **Do not** commit the user's API key anywhere. API keys stay only in `~/.env` (it is gitignored). They must **not** appear in `~/.claude/settings.json`.
-- **Do not** start the proxy by hand with `node bin/cc-proxy.js` or similar — use `scripts/start-proxy.js` (step 5), which is idempotent and passes settings.json's plumbing env to the spawn. Raw starts risk duplicate proxies on the port or a spawn missing `PROXY_PATH`.
+- **Do not** start the proxy by hand with `node bin/cc-proxy.js` or similar — use `scripts/start-proxy.js` (step 5), which is idempotent and passes settings.json's plumbing env to the spawn. Raw starts risk duplicate proxies on the port.
 - If `~/.claude/settings.json` does not exist, create it with just the `env` block above (and valid JSON structure).

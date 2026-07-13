@@ -116,7 +116,7 @@ cc-proxy-plugin/                    ← the plugin IS the repo root; the marketp
 └── docs/                           ARCHITECTURE.md, OPERATIONS.md
 ```
 
-The marketplace manifest lives in a separate repo ([`betmoar/ccp-market`](https://github.com/betmoar/ccp-market)) and points at this repo by github source. Because the plugin is now the repo root, `bin/cc-proxy.js` is inside the cached tree, but it is still referenced by absolute path via `PROXY_PATH`: the SessionStart hook spawns the proxy detached, and the statusline runs outside plugin context where `${CLAUDE_PLUGIN_ROOT}` is unavailable.
+The marketplace manifest lives in a separate repo ([`betmoar/ccp-market`](https://github.com/betmoar/ccp-market)) and points at this repo by github source. Because the plugin is the repo root, `bin/cc-proxy.js` is inside the cached tree, and the SessionStart hook resolves it from its own location (`resolveProxyPath()`), so the spawned proxy is always the installed version — a `PROXY_PATH` in settings.json is only a legacy fallback. The one absolute version-pinned path that remains is the optional statusline command, which runs outside plugin context where `${CLAUDE_PLUGIN_ROOT}` is unavailable; it only renders gauges, so a stale pin there is cosmetic. Because the proxy process outlives updates, `/_status` reports the proxy's version and the hook gracefully replaces a mismatched one via POST `/_shutdown`.
 
 ## Out of scope
 
