@@ -1,13 +1,17 @@
 import { strict as assert } from "node:assert";
 import fs from "node:fs";
+import http from "node:http";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { after, before, describe, it } from "node:test";
+import { fileURLToPath } from "node:url";
 import {
 	LOG_MAX_BYTES,
 	checkPort,
 	ensureProxyRunning,
+	pluginVersion,
+	resolveProxyPath,
 	rotateLogIfLarge,
 	waitReady,
 } from "../hooks/proxy-lifecycle.js";
@@ -94,17 +98,14 @@ describe("proxy-lifecycle", () => {
 			}
 		});
 
-		it("returns 'missing-path' when proxy is down and PROXY_PATH is unset", async () => {
+		// In the dev repo (and any marketplace cache) resolveProxyPath() always
+		// finds the tree's own bin, so missing-path needs an explicit empty
+		// proxyPath — the resolution-failure case itself is covered by the
+		// resolveProxyPath suite ("returns undefined when neither exists").
+		it("returns 'missing-path' when proxy is down and no proxy path resolves", async () => {
 			const port = await freePort();
-			const saved = process.env.PROXY_PATH;
-			process.env.PROXY_PATH = "";
-			try {
-				const state = await ensureProxyRunning({ port });
-				assert.equal(state, "missing-path");
-			} finally {
-				if (saved === undefined) process.env.PROXY_PATH = undefined;
-				else process.env.PROXY_PATH = saved;
-			}
+			const state = await ensureProxyRunning({ port, proxyPath: "" });
+			assert.equal(state, "missing-path");
 		});
 
 		// /cc-proxy:setup spawns the proxy before SessionStart has injected
@@ -151,6 +152,153 @@ s.listen(${port}, "127.0.0.1", () => {
 			} finally {
 				fs.rmSync(path.dirname(script), { recursive: true, force: true });
 				fs.rmSync(path.dirname(out), { recursive: true, force: true });
+			}
+		});
+	});
+
+	// PROXY_PATH staleness fix: the hook must derive the proxy binary from its
+	// own plugin tree (the cache dir it runs from IS the current version), so a
+	// version-pinned PROXY_PATH left in settings.json by an old setup can no
+	// longer pin users to a stale proxy forever.
+	describe("resolveProxyPath", () => {
+		const hooksDir = path.dirname(fileURLToPath(new URL("../hooks/x", import.meta.url)));
+		const repoBin = path.resolve(hooksDir, "..", "bin", "cc-proxy.js");
+
+		it("returns the plugin tree's own bin/cc-proxy.js", () => {
+			assert.equal(resolveProxyPath({}), repoBin);
+		});
+
+		it("prefers the plugin tree's bin over a (stale) env PROXY_PATH", () => {
+			assert.equal(resolveProxyPath({ PROXY_PATH: "/stale/0.0.1/bin/cc-proxy.js" }), repoBin);
+		});
+
+		it("falls back to env PROXY_PATH when the sibling bin is absent", () => {
+			const empty = fs.mkdtempSync(path.join(os.tmpdir(), "cc-proxy-nobin-"));
+			try {
+				const got = resolveProxyPath(
+					{ PROXY_PATH: "/legacy/bin/cc-proxy.js" },
+					path.join(empty, "hooks"),
+				);
+				assert.equal(got, "/legacy/bin/cc-proxy.js");
+			} finally {
+				fs.rmSync(empty, { recursive: true, force: true });
+			}
+		});
+
+		it("returns undefined when neither exists", () => {
+			const empty = fs.mkdtempSync(path.join(os.tmpdir(), "cc-proxy-nobin-"));
+			try {
+				assert.equal(resolveProxyPath({}, path.join(empty, "hooks")), undefined);
+			} finally {
+				fs.rmSync(empty, { recursive: true, force: true });
+			}
+		});
+	});
+
+	describe("pluginVersion", () => {
+		it("reads the plugin tree's package.json version", () => {
+			const pkg = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+			assert.equal(pluginVersion(), pkg.version);
+		});
+
+		it("returns undefined when package.json is absent", () => {
+			const empty = fs.mkdtempSync(path.join(os.tmpdir(), "cc-proxy-nopkg-"));
+			try {
+				assert.equal(pluginVersion(path.join(empty, "hooks")), undefined);
+			} finally {
+				fs.rmSync(empty, { recursive: true, force: true });
+			}
+		});
+	});
+
+	// The other half of the staleness fix: an already-listening proxy is version
+	// -probed via /_status; a mismatch gets a graceful POST /_shutdown and a
+	// respawn from the (current) proxyPath. Anything that doesn't speak the
+	// /_status contract is foreign — never killed.
+	describe("ensureProxyRunning version handshake", () => {
+		/** Stand-in "old proxy": answers /_status with `version`, closes on /_shutdown. */
+		function startOldProxy(port, version) {
+			return new Promise((resolve) => {
+				const srv = http.createServer((req, res) => {
+					if (req.url === "/_status" && req.method === "GET") {
+						res.writeHead(200, { "content-type": "application/json" });
+						res.end(JSON.stringify({ port, version, providers: [] }));
+						return;
+					}
+					if (req.url === "/_shutdown" && req.method === "POST") {
+						res.writeHead(200, { "content-type": "application/json" });
+						res.end("{}");
+						srv.close();
+						srv.closeIdleConnections();
+						return;
+					}
+					res.writeHead(404).end();
+				});
+				srv.listen(port, "127.0.0.1", () => resolve(srv));
+			});
+		}
+
+		function standinSpawnScript(port, flagFile) {
+			const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cc-proxy-new-"));
+			const script = path.join(dir, "proxy.mjs");
+			fs.writeFileSync(
+				script,
+				`import net from "node:net";
+import fs from "node:fs";
+const s = net.createServer();
+s.listen(${port}, "127.0.0.1", () => {
+  fs.writeFileSync(${JSON.stringify(flagFile)}, String(process.pid));
+});
+`,
+			);
+			return script;
+		}
+
+		it("restarts a proxy whose /_status version mismatches the plugin's", async () => {
+			const port = await freePort();
+			const old = await startOldProxy(port, "0.0.0-stale");
+			const flag = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "cc-proxy-flag-")), "pid");
+			const script = standinSpawnScript(port, flag);
+			try {
+				const state = await ensureProxyRunning({
+					port,
+					proxyPath: script,
+					readyTimeoutMs: 5000,
+				});
+				assert.equal(state, "restarted");
+				for (let i = 0; i < 50 && !fs.existsSync(flag); i++) {
+					await new Promise((r) => setTimeout(r, 50));
+				}
+				assert.ok(fs.existsSync(flag), "replacement proxy should have spawned on the port");
+			} finally {
+				old.close();
+				try {
+					process.kill(Number(fs.readFileSync(flag, "utf8")));
+				} catch {}
+				fs.rmSync(path.dirname(script), { recursive: true, force: true });
+				fs.rmSync(path.dirname(flag), { recursive: true, force: true });
+			}
+		});
+
+		it("leaves a same-version proxy alone", async () => {
+			const port = await freePort();
+			const old = await startOldProxy(port, pluginVersion());
+			try {
+				const state = await ensureProxyRunning({ port, proxyPath: "/unused" });
+				assert.equal(state, "already-up");
+			} finally {
+				old.close();
+			}
+		});
+
+		it("leaves a foreign (non-/_status) listener alone", async () => {
+			const port = await freePort();
+			const srv = await listenOn(port); // bare TCP, never answers HTTP
+			try {
+				const state = await ensureProxyRunning({ port, proxyPath: "/unused" });
+				assert.equal(state, "already-up");
+			} finally {
+				srv.close();
 			}
 		});
 	});

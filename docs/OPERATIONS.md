@@ -11,9 +11,11 @@ Runtime facts, known traps, and debugging. For design rationale, see [`ARCHITECT
 | `~/.claude/plugins/marketplaces/betmoar/` | marketplace clone (`betmoar/ccp-market`) | `claude plugin marketplace update betmoar` |
 | `~/.claude/plugins/cache/betmoar/cc-proxy/<version>/` | full plugin tree (the whole `cc-proxy-plugin` repo) | `claude plugin update cc-proxy@betmoar` |
 
-**The plugin is the repo root**, so the cache holds the whole tree — `src/`, `bin/`, hooks, scripts, skills, and commands. Hooks import siblings inside the cache (`./proxy-lifecycle.js`); the proxy entry point (`bin/cc-proxy.js`) is still referenced by absolute path via `PROXY_PATH` because the statusline runs outside plugin context, where `${CLAUDE_PLUGIN_ROOT}` is unavailable.
+**The plugin is the repo root**, so the cache holds the whole tree — `src/`, `bin/`, hooks, scripts, skills, and commands. Hooks import siblings inside the cache (`./proxy-lifecycle.js`), and the proxy entry point is resolved the same way: `resolveProxyPath()` in `hooks/proxy-lifecycle.js` uses its own tree's `bin/cc-proxy.js`, so the hook always spawns the version it shipped with. `PROXY_PATH` survives only as a legacy fallback for installs whose tree carries no `bin/`.
 
 **Cache key = `plugin.json` version.** A new cache dir is created only when the `version` string changes. Bump it to force end users to pick up new hook/skill content.
+
+**Stale-proxy replacement.** The proxy process outlives plugin updates (it's detached), so after an update an old version can still be serving the port. The SessionStart hook detects this: `/_status` reports the proxy's version, and `ensureProxyRunning()` compares it to the hook's own tree. On mismatch it POSTs `/_shutdown` (graceful: the listener closes, in-flight responses drain, idle keep-alive sockets are severed) and spawns the current version. A listener that doesn't speak the `/_status` contract is treated as foreign and never touched; if the old proxy doesn't vacate the port in time, it is likewise left alone — one stale proxy beats two proxies racing one port.
 
 `${CLAUDE_PLUGIN_ROOT}` (injected when a hook runs) points to the cache path — use it in `hooks.json`.
 
@@ -32,7 +34,7 @@ Runtime facts, known traps, and debugging. For design rationale, see [`ARCHITECT
 
 ## Hooks
 
-`SessionStart` runs `hooks/session-start.js`, which calls `ensureProxyRunning()` from the shared `proxy-lifecycle.js`: TCP-probe `PROXY_PORT`; if dead, spawn the proxy detached (stdio → `PROXY_LOG`) and poll readiness up to `PROXY_READY_TIMEOUT_MS` (3s). Skipped cleanly if `PROXY_PATH` is unset.
+`SessionStart` runs `hooks/session-start.js`, which calls `ensureProxyRunning()` from the shared `proxy-lifecycle.js`: TCP-probe `PROXY_PORT`; if dead, spawn the proxy detached (stdio → `PROXY_LOG`) and poll readiness up to `PROXY_READY_TIMEOUT_MS` (3s). If something is listening, its `/_status` version is compared to the plugin tree's; a stale cc-proxy is replaced via `/_shutdown` + respawn (see "Stale-proxy replacement" above). The binary comes from `resolveProxyPath()` — the tree's own `bin/cc-proxy.js`, with env `PROXY_PATH` as legacy fallback; skipped cleanly when neither resolves.
 
 The proxy is spawned **detached** (`spawn + unref`), so it survives the hook exiting. If it dies mid-session, recovery needs a new session (`/exit` + `/resume`) to re-trigger SessionStart; the statusline shows `proxy down` until then.
 
@@ -42,7 +44,8 @@ The proxy is spawned **detached** (`spawn + unref`), so it survives the hook exi
 
 - **Auth:** Claude route preserves `Authorization` (OAuth); GLM sets `x-api-key`; OpenRouter sets `Authorization: Bearer`.
 - **SSE streaming** is straight `pipe()` passthrough with back-pressure (no parsing).
-- **`/_status`** (GET) returns `{ port, defaultBackend, providers }`.
+- **`/_status`** (GET) returns `{ port, version, defaultBackend, providers }`. `version` is what the stale-proxy handshake compares against the plugin tree.
+- **`/_shutdown`** (POST only; GET gets a 405) gracefully stops the proxy: listener closes, in-flight responses finish, process exits when the event loop drains. Used by the SessionStart hook to replace a stale version. Loopback-bound like everything else; carries no auth because anyone who can reach the port can already spend the injected keys.
 - **Orphan log inode trap:** `rm -f $PROXY_LOG && touch $PROXY_LOG` while the proxy runs leaves it writing to the deleted inode — output "disappears". Truncate in place (`truncate -s 0`) or restart the proxy; never `rm && touch` a file a live process holds open.
 
 ## Context-overflow handling

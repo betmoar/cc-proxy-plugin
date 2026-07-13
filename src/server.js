@@ -33,9 +33,24 @@ function writeBufferedResponse(clientRes, status, headers, bodyBuffer) {
 function handleStatus(res, config) {
 	sendJson(res, 200, {
 		port: config.port,
+		version: config.version,
 		defaultBackend: defaultProvider(config).id,
 		providers: config.providers.map((p) => p.id),
 	});
+}
+
+// Graceful self-shutdown, used by the SessionStart hook to replace a stale
+// (version-mismatched) proxy. Loopback-only by construction in the default
+// config (invariant 7); like /_status it carries no auth because anyone who
+// can reach the port can already spend the injected keys. In-flight responses
+// finish (close() waits for active sockets); only idle keep-alive connections
+// are severed. process.exit is NOT called — the process ends when the last
+// socket drains and the event loop empties.
+function handleShutdown(server, res) {
+	console.log("[shutdown] /_shutdown received — closing listener, draining in-flight requests");
+	sendJson(res, 200, { ok: true });
+	server.close();
+	server.closeIdleConnections();
 }
 
 // Cap on buffering a non-streaming response. The overflow signal is tiny (an
@@ -145,7 +160,7 @@ function parseJsonOrEmpty(buffer) {
 }
 
 export function createServer(config) {
-	return http.createServer((req, res) => {
+	const server = http.createServer((req, res) => {
 		const chunks = [];
 		// A client that resets the connection mid-upload emits 'error' on the
 		// request stream; without a listener that is an uncaught exception that
@@ -158,7 +173,15 @@ export function createServer(config) {
 				handleStatus(res, config);
 				return;
 			}
+			if (req.url === "/_shutdown") {
+				// POST only: a stray GET (browser, curl without -X, link prefetch)
+				// must never take the proxy down.
+				if (req.method === "POST") handleShutdown(server, res);
+				else sendJson(res, 405, { error: { message: "POST required" } });
+				return;
+			}
 			handleProxy(req, res, parseJsonOrEmpty(bodyBuffer), bodyBuffer, config);
 		});
 	});
+	return server;
 }

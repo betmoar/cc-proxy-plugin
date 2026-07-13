@@ -1,4 +1,5 @@
 // @ts-check
+import fs from "node:fs";
 import { buildProviders } from "./providers.js";
 
 /**
@@ -7,7 +8,19 @@ import { buildProviders } from "./providers.js";
  * @property {number} port
  * @property {string} host - interface the server binds to (loopback by default).
  * @property {Provider[]} providers - the routing registry (see providers.js).
+ * @property {string} [version] - plugin version, reported on /_status so the
+ *   SessionStart hook can detect (and replace) a stale running proxy.
  */
+
+/** @returns {string | undefined} */
+function packageVersion() {
+	try {
+		const pkg = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+		return typeof pkg.version === "string" ? pkg.version : undefined;
+	} catch {
+		return undefined;
+	}
+}
 
 /**
  * Load config from env vars. Claude auth is OAuth passthrough so no Claude key
@@ -24,5 +37,6 @@ export function load(overrides = {}) {
 		// must not be reachable from the LAN. PROXY_HOST is an explicit opt-out.
 		host: overrides.host || process.env.PROXY_HOST || "127.0.0.1",
 		providers: buildProviders(process.env, defaultId),
+		version: packageVersion(),
 	};
 }
