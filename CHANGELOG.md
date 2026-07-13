@@ -2,6 +2,11 @@
 
 All notable changes to cc-proxy are recorded here. Versions follow [semver](https://semver.org/); `package.json` is the single source of truth and propagates to `.claude-plugin/plugin.json` via `scripts/sync-version.mjs`.
 
+## [0.4.3] — 2026-07-13
+
+### Changed
+- Backfilled release metadata for `v0.4.3`: `package.json`, `.claude-plugin/plugin.json`, and the newest CHANGELOG heading now match so the release gate can publish this tag.
+
 ## [0.4.2] — 2026-07-13
 
 ### Fixed
