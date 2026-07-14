@@ -50,7 +50,7 @@ describe("config models fields", () => {
 				["foo/bar", "baz/qux"],
 			);
 		} finally {
-			if (prev === undefined) process.env.OPENROUTER_MODELS = undefined;
+			if (prev === undefined) Reflect.deleteProperty(process.env, "OPENROUTER_MODELS");
 			else process.env.OPENROUTER_MODELS = prev;
 		}
 	});
