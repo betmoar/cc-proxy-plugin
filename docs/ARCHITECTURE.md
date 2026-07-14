@@ -84,6 +84,17 @@ There is no automatic replay and no circuit breaker. Recovery is the user's resp
 
 The second active normalization, same spirit as overflow: GLM's `1302` request-rate-limit response is HTTP `429` but carries **no** `Retry-After` header, so Claude Code surfaces it as a hard error instead of backing off. The proxy detects the `1302` body (on both forward paths) and injects `Retry-After: 30`, letting Claude Code's own client retry handle the wait. This keeps the [stateless invariant](#invariants) — no in-proxy sleep or replay, which would hold the client connection open and could collide with the client's own backoff. The detection is gated strictly on code `1302`: the sibling `1113` (insufficient balance) and every other `429` pass through untouched, so a non-retryable error never gets a misleading retry hint (avoiding the documented infinite-cooldown loop other clients hit by treating all `429`s alike). On the streaming path a `429` is a small JSON body (the limit short-circuits before any SSE), so the proxy buffers only `429` responses to inspect them — real SSE streams stay a pure pipe.
 
+### Model discovery (`/v1/models`)
+
+`GET /v1/models` synthesizes a merged model list rather than forwarding. It lives
+outside the router because it aggregates across backends: GLM is fetched live
+(the only provider whose catalog the proxy doesn't already know), while Claude
+and OpenRouter come from curated static lists — the discovery list advertises
+only generally-reachable models (Glasswing-gated and region-blocked ids are
+omitted). Best-effort by design: a failed live leg yields an `_errors` entry, not
+a failed response, keeping the endpoint stateless (invariant 2) and the fan-out
+non-blocking.
+
 ### Registering models in `/model`
 
 Claude Code's picker rejects unknown ids unless injected via `ANTHROPIC_CUSTOM_MODEL_OPTION` (exactly one slot; validation skipped). `/cc-proxy:setup` registers `glm-5.2[1m]`.
@@ -105,7 +116,8 @@ cc-proxy-plugin/                    ← the plugin IS the repo root; the marketp
 │   ├── router.js                   resolve() — stateless model→provider lookup
 │   ├── proxy.js                    upstream forwarding (transparent pipe)
 │   ├── server.js                   HTTP server, overflow conversion, /_status
-│   └── sanitize.js                 strips thinking blocks from history
+│   ├── sanitize.js                 strips thinking blocks from history
+│   └── models.js                   /v1/models discovery: fans out to GLM (live) + Claude/OpenRouter (static), merges best-effort
 ├── hooks/                          SessionStart proxy auto-start (proxy-lifecycle.js)
 ├── scripts/statusline.js           quota / credits / proxy-down indicator
 ├── scripts/status.js               /cc-proxy:status report builder

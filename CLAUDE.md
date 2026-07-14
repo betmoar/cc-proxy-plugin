@@ -148,6 +148,13 @@ Each is locked by tests; the test names tell you what you broke.
 - **CC internals may drift**: the `[1m]` model suffix, internal `claude-haiku-*`
   ids, and `ANTHROPIC_CUSTOM_MODEL_OPTION` (exactly one slot) are not public
   API. When routing looks wrong after a Claude Code update, check these first.
+- **`/v1/models` is synthesized, not forwarded.** It's intercepted before
+  `handleProxy` (like `/_status`/`/_shutdown`) but matches via parsed pathname
+  (query-string tolerant), and `/v1/models/<id>` deliberately falls through to
+  forwarding. GLM is the only live leg; Claude/OpenRouter are static config
+  (`src/models.js`). `modelsTimeoutMs` is config-only (no env var — keep it out
+  of `.env.example` or the coupling test will demand doc entries). The
+  `[models]` summary log line is not parsed by `status.js`.
 
 ## Decision procedures
 

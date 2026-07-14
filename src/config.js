@@ -1,5 +1,10 @@
 // @ts-check
 import fs from "node:fs";
+import {
+	DEFAULT_CLAUDE_MODELS,
+	DEFAULT_OPENROUTER_MODELS,
+	parseOpenRouterModels,
+} from "./models.js";
 import { buildProviders } from "./providers.js";
 
 /**
@@ -10,6 +15,9 @@ import { buildProviders } from "./providers.js";
  * @property {Provider[]} providers - the routing registry (see providers.js).
  * @property {string} [version] - plugin version, reported on /_status so the
  *   SessionStart hook can detect (and replace) a stale running proxy.
+ * @property {import("./models.js").ModelEntry[]} [claudeModels] - static Claude discovery list.
+ * @property {import("./models.js").ModelEntry[]} [openRouterModels] - OpenRouter allowlist for discovery.
+ * @property {number} [modelsTimeoutMs] - per-leg timeout for the /v1/models fan-out.
  */
 
 /** @returns {string | undefined} */
@@ -38,5 +46,11 @@ export function load(overrides = {}) {
 		host: overrides.host || process.env.PROXY_HOST || "127.0.0.1",
 		providers: buildProviders(process.env, defaultId),
 		version: packageVersion(),
+		claudeModels: DEFAULT_CLAUDE_MODELS.filter((m) => m?.id),
+		openRouterModels: (() => {
+			const parsed = parseOpenRouterModels(process.env.OPENROUTER_MODELS);
+			return (parsed.length ? parsed : DEFAULT_OPENROUTER_MODELS).filter((m) => m?.id);
+		})(),
+		modelsTimeoutMs: Number(overrides.modelsTimeoutMs || 3000),
 	};
 }

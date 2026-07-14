@@ -5,6 +5,7 @@ import {
 	isContextLimitByStopReason,
 	isRateLimitError,
 } from "./fallback.js";
+import { collectModels } from "./models.js";
 import { defaultProvider } from "./providers.js";
 import {
 	abortUpstreamOnClientClose,
@@ -51,6 +52,30 @@ function handleShutdown(server, res) {
 	sendJson(res, 200, { ok: true });
 	server.close();
 	server.closeIdleConnections();
+}
+
+// GET /v1/models — synthesized discovery list (not forwarded). Best-effort:
+// collectModels never rejects except the test seam; the .catch keeps a throw from
+// killing the shared proxy process (one request must not take the process down).
+async function handleModels(res, config) {
+	let result;
+	try {
+		result = await collectModels(config);
+	} catch {
+		result = { data: [], _errors: [{ provider: "proxy", message: "internal error" }] };
+	}
+	const { data, _errors } = result;
+	const payload = {
+		data,
+		has_more: false,
+		first_id: data.length ? data[0].id : null,
+		last_id: data.length ? data[data.length - 1].id : null,
+	};
+	if (_errors.length) payload._errors = _errors;
+	// One summary line (not the routing-log format — status.js's parseRoutingLines
+	// keys on `[<iso>] <model> -> <provider> <path>`, which this does not match).
+	console.log(`[models] ${data.length} models, ${_errors.length} errors`);
+	sendJson(res, 200, payload);
 }
 
 // Cap on buffering a non-streaming response. The overflow signal is tiny (an
@@ -178,6 +203,17 @@ export function createServer(config) {
 				// must never take the proxy down.
 				if (req.method === "POST") handleShutdown(server, res);
 				else sendJson(res, 405, { error: { message: "POST required" } });
+				return;
+			}
+			// GET /v1/models — synthesized, query-string tolerant, exact path only.
+			// (/v1/models/<id> retrieve falls through to forwarding.)
+			// Split on "?" rather than new URL(): matches the existing string-equality
+			// interception style and avoids URL() throwing on a malformed request target
+			// inside the shared long-running process.
+			const pathname = req.url.split("?")[0];
+			if (pathname === "/v1/models") {
+				if (req.method === "GET") handleModels(res, config);
+				else sendJson(res, 405, { error: { message: "GET required" } });
 				return;
 			}
 			handleProxy(req, res, parseJsonOrEmpty(bodyBuffer), bodyBuffer, config);
