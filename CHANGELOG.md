@@ -2,6 +2,11 @@
 
 All notable changes to cc-proxy are recorded here. Versions follow [semver](https://semver.org/); `package.json` is the single source of truth and propagates to `.claude-plugin/plugin.json` via `scripts/sync-version.mjs`.
 
+## [0.4.3] — 2026-07-14
+
+### Added
+- **`GET /v1/models` discovery endpoint.** Returns a merged, best-effort list of reachable models in the Anthropic models format. GLM's catalog is fetched live (z.ai already speaks the Anthropic shape); Claude and OpenRouter come from curated static lists that advertise only generally-reachable models (the Glasswing-gated `claude-mythos-5` and the region-blocked `x-ai/grok-4.5` are deliberately omitted, the internal `claude-haiku-*` pin is excluded). A failed live leg is named in a non-standard `_errors` array and the response is still `200` (best-effort, stateless — no cache, no retry). Bounded by a per-leg timeout; inbound credentials never reach the GLM upstream. New `OPENROUTER_MODELS` env var overrides the OpenRouter allowlist (discovery only; does not affect routing). Locked by `test/models.test.js`.
+
 ## [0.4.2] — 2026-07-13
 
 ### Fixed

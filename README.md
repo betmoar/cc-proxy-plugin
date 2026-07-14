@@ -64,6 +64,14 @@ Switch backends with `/model`:
 
 Routing decisions land in `/tmp/cc-proxy.log` (`PROXY_DEBUG=1` for per-request detail).
 
+## Model discovery
+
+`GET http://127.0.0.1:4000/v1/models` returns a best-effort, Anthropic-format
+list of reachable models: GLM is fetched live, Claude and OpenRouter come from
+curated lists. If a live leg fails, the response is still `200` and names the
+failed provider in a non-standard `_errors` array. Set `OPENROUTER_MODELS` to
+override which OpenRouter ids appear.
+
 ## Commands
 
 The plugin ships slash commands that reach proxy backends **without changing your session model**.
@@ -134,6 +142,7 @@ The statusline runs as its own subprocess and only inherits `settings.json`'s `e
 | `ANTHROPIC_BASE_URL` | — | Set by setup to `http://127.0.0.1:4000` |
 | `GLM_API_KEY` | — | Z.ai API key (lives in `~/.env`) |
 | `OPENROUTER_API_KEY` | — | Enable OpenRouter (slash-namespaced models; lives in `~/.env`) |
+| `OPENROUTER_MODELS` | curated | Override the OpenRouter allowlist in `GET /v1/models` (comma-separated ids); discovery only |
 | `PROXY_PATH` | auto | Legacy override for the proxy entry point; the plugin tree's own `bin/cc-proxy.js` wins when present |
 | `PROXY_PORT` | `4000` | Proxy listen port |
 | `PROXY_HOST` | `127.0.0.1` | Interface the proxy binds to (loopback by default) |
