@@ -9,6 +9,7 @@ import {
 	parseOpenRouterModels,
 } from "../src/models.js";
 import { buildProviders } from "../src/providers.js";
+import { createServer } from "../src/server.js";
 
 describe("models.js pure helpers", () => {
 	it("DEFAULT_CLAUDE_MODELS holds only reachable Claude ids (no haiku, no mythos)", () => {
@@ -287,5 +288,183 @@ describe("collectModels fan-out", () => {
 		// unused high port; the throw fires before any fetch so it's never dialed
 		const config = wireConfig("http://127.0.0.1:59999", { modelsForceThrow: true });
 		await assert.rejects(() => collectModels(config), /forced throw/);
+	});
+});
+
+/** GET a path on the proxy, resolving { status, headers, body } (+ optional inbound headers). */
+function getReq(port, path, extraHeaders = {}) {
+	return new Promise((resolve, reject) => {
+		const req = http.request(
+			{ hostname: "127.0.0.1", port, path, method: "GET", headers: extraHeaders },
+			(res) => {
+				const chunks = [];
+				res.on("data", (c) => chunks.push(c));
+				res.on("end", () =>
+					resolve({
+						status: res.statusCode,
+						headers: res.headers,
+						body: Buffer.concat(chunks).toString(),
+					}),
+				);
+			},
+		);
+		req.on("error", reject);
+		req.end();
+	});
+}
+
+function reqOn(port, path, method) {
+	return new Promise((resolve, reject) => {
+		const req = http.request({ hostname: "127.0.0.1", port, path, method }, (res) => {
+			res.resume();
+			res.on("end", () => resolve({ status: res.statusCode }));
+		});
+		req.on("error", reject);
+		req.end();
+	});
+}
+
+function startProxy(config) {
+	const server = createServer(config);
+	return new Promise((resolve) => {
+		server.listen(0, "127.0.0.1", () => resolve({ server, port: server.address().port }));
+	});
+}
+
+describe("GET /v1/models endpoint", () => {
+	let glm;
+	let claude;
+	let proxy;
+	afterEach(async () => {
+		await close(proxy?.server, glm?.server, claude?.server);
+		glm = claude = proxy = undefined;
+	});
+
+	async function up(opts = {}) {
+		glm = await startBackend(
+			opts.glmHandler ??
+				(() => ({
+					status: 200,
+					headers: { "content-type": "application/json" },
+					body: GLM_MODELS_BODY,
+				})),
+		);
+		// A claude stub stands in for api.anthropic.com so any *forwarded* request
+		// (the /v1/models/<id> retrieve path routes to the default backend = claude)
+		// stays local. Records its calls for the passthrough assertion.
+		claude = await startBackend(() => ({
+			status: 200,
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ id: "m", type: "model" }),
+		}));
+		const config = wireConfig(glm.baseUrl, { ...opts.configOpts, claudeBaseUrl: claude.baseUrl });
+		proxy = await startProxy(config);
+		return config;
+	}
+
+	it("returns 200 JSON envelope with snake_case fields, rebuilt from data (not upstream envelope)", async () => {
+		// upstream envelope deliberately LIES: its lastId="zzz-not-in-data" disagrees
+		// with the actual data tail. The proxy must ignore the upstream envelope and
+		// compute last_id from data — proving the envelope is rebuilt, not forwarded.
+		await up({
+			glmHandler: () => ({
+				status: 200,
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					data: [
+						{
+							id: "glm-5",
+							display_name: "GLM-5",
+							type: "model",
+							created_at: "2026-02-11T00:00:00Z",
+						},
+					],
+					firstId: "aaa-not-in-data",
+					hasMore: true,
+					lastId: "zzz-not-in-data",
+				}),
+			}),
+			configOpts: { orKey: "or-test" },
+		});
+		const res = await getReq(proxy.port, "/v1/models");
+		assert.equal(res.status, 200);
+		assert.match(res.headers["content-type"], /application\/json/);
+		const body = JSON.parse(res.body);
+		assert.equal(body.has_more, false); // ours, not upstream's `true`
+		assert.equal(body.first_id, body.data[0].id);
+		assert.equal(body.last_id, body.data[body.data.length - 1].id);
+		assert.equal(body.last_id, "claude-sonnet-5"); // last static claude id, NOT upstream's "zzz-not-in-data"
+		assert.equal(body._errors, undefined); // absent on full success
+		assert.ok(!("firstId" in body) && !("lastId" in body)); // upstream camelCase envelope discarded
+	});
+
+	it("does not leak inbound credentials to the GLM upstream", async () => {
+		await up();
+		await getReq(proxy.port, "/v1/models", { authorization: "Bearer leak", "x-api-key": "leak" });
+		const h = glm.calls[0].headers;
+		assert.equal(h["x-api-key"], "glm-test");
+		assert.equal(h.authorization, undefined);
+	});
+
+	it("surfaces _errors on a failed leg but still 200", async () => {
+		await up({ glmHandler: () => ({ status: 502, headers: {}, body: "x" }) });
+		const res = await getReq(proxy.port, "/v1/models");
+		assert.equal(res.status, 200);
+		const body = JSON.parse(res.body);
+		assert.deepEqual(body._errors, [{ provider: "glm", message: "HTTP 502" }]);
+	});
+
+	it("matches with a query string", async () => {
+		await up();
+		const res = await getReq(proxy.port, "/v1/models?foo=bar");
+		assert.equal(res.status, 200);
+		assert.ok(JSON.parse(res.body).data.length > 0);
+	});
+
+	it("non-GET on /v1/models is 405 (not forwarded) — POST, PUT, DELETE", async () => {
+		await up();
+		for (const method of ["POST", "PUT", "DELETE"]) {
+			const res = await reqOn(proxy.port, "/v1/models", method);
+			assert.equal(res.status, 405, `${method} should 405`);
+		}
+	});
+
+	it("GET /v1/models/<id> is NOT intercepted (forwarded to default backend)", async () => {
+		await up();
+		// /v1/models/<id> has no exact-path match → falls through to handleProxy →
+		// empty GET body → resolve(undefined) → default backend (claude stub). Assert
+		// the claude stub actually received the forwarded request (proves passthrough,
+		// not a synthesized envelope).
+		const res = await getReq(proxy.port, "/v1/models/glm-5.2");
+		assert.equal(claude.calls.length, 1);
+		assert.match(claude.calls[0].url, /^\/v1\/models\/glm-5\.2/);
+		assert.ok(
+			!("has_more" in JSON.parse(res.body || "{}")),
+			"retrieve path must not be synthesized",
+		);
+	});
+
+	it("empty union: glm fails and static lists empty → empty data + null ids", async () => {
+		await up({
+			glmHandler: () => ({ status: 502, headers: {}, body: "x" }),
+			configOpts: { claudeModels: [], openRouterModels: [] },
+		});
+		const res = await getReq(proxy.port, "/v1/models");
+		const body = JSON.parse(res.body);
+		assert.deepEqual(body.data, []);
+		assert.equal(body.first_id, null);
+		assert.equal(body.last_id, null);
+		assert.deepEqual(body._errors, [{ provider: "glm", message: "HTTP 502" }]);
+	});
+
+	it("process-safety: a collectModels throw yields 200 + _errors, proxy stays up", async () => {
+		await up({ configOpts: { modelsForceThrow: true } });
+		const res = await getReq(proxy.port, "/v1/models");
+		assert.equal(res.status, 200);
+		const body = JSON.parse(res.body);
+		assert.deepEqual(body._errors, [{ provider: "proxy", message: "internal error" }]);
+		// proxy still serving:
+		const status = await getReq(proxy.port, "/_status");
+		assert.equal(status.status, 200);
 	});
 });
