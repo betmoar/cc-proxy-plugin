@@ -1,5 +1,7 @@
 // @ts-check
 
+import { providerById } from "./providers.js";
+
 /**
  * @typedef {{ type: "model", id: string, display_name: string, created_at: string | null }} ModelEntry
  */
@@ -62,4 +64,98 @@ export function parseOpenRouterModels(str) {
  */
 export function coerceCreated(v) {
 	return typeof v === "string" ? v : null;
+}
+
+/**
+ * Coerce one upstream GLM entry to a ModelEntry, or null if it has no usable id.
+ * @param {any} e
+ * @returns {ModelEntry | null}
+ */
+function coerceEntry(e) {
+	if (!e || !e.id) return null;
+	return {
+		type: e.type || "model",
+		id: e.id,
+		display_name: e.display_name || e.id,
+		created_at: coerceCreated(e.created_at ?? e.created),
+	};
+}
+
+/**
+ * Fetch GLM's live model list. Resolves to { entries } on success or { error }
+ * (a pinned message string) on any failure. Never throws.
+ * @param {import("./providers.js").Provider} glm
+ * @param {number} timeoutMs
+ * @returns {Promise<{ entries?: ModelEntry[], error?: string }>}
+ */
+async function fetchGlmModels(glm, timeoutMs) {
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), timeoutMs);
+	try {
+		const res = await fetch(`${glm.baseUrl}/v1/models`, {
+			headers: { "x-api-key": glm.apiKey, "anthropic-version": "2023-06-01" },
+			signal: controller.signal,
+		});
+		if (res.status < 200 || res.status >= 300) return { error: `HTTP ${res.status}` };
+		let body;
+		try {
+			body = await res.json();
+		} catch {
+			return { error: "invalid response shape" };
+		}
+		if (!body || !Array.isArray(body.data)) return { error: "invalid response shape" };
+		return { entries: body.data.map(coerceEntry).filter(Boolean) };
+	} catch (err) {
+		if (err && err.name === "AbortError") return { error: "timeout" };
+		return { error: "fetch failed" };
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+/**
+ * Assemble the merged discovery list. Best-effort: a failed live leg contributes
+ * an _errors entry, never rejects (except the modelsForceThrow test seam).
+ * @param {import("./config.js").Config & { claudeModels: ModelEntry[], openRouterModels: ModelEntry[], modelsTimeoutMs: number, modelsForceThrow?: boolean }} config
+ * @returns {Promise<{ data: ModelEntry[], _errors: Array<{ provider: string, message: string }> }>}
+ */
+export async function collectModels(config) {
+	if (config.modelsForceThrow) throw new Error("forced throw (test seam)");
+
+	const glm = providerById(config, "glm");
+	const openrouter = providerById(config, "openrouter");
+
+	// Assemble leg thunks in registry order: glm, openrouter, claude.
+	/** @type {Array<() => Promise<{ provider: string, entries?: ModelEntry[], error?: string }>>} */
+	const legs = [];
+	if (glm?.apiKey) {
+		legs.push(async () => ({
+			provider: "glm",
+			...(await fetchGlmModels(glm, config.modelsTimeoutMs)),
+		}));
+	}
+	if (openrouter) {
+		legs.push(async () => ({ provider: "openrouter", entries: config.openRouterModels }));
+	}
+	legs.push(async () => ({ provider: "claude", entries: config.claudeModels }));
+
+	const settled = await Promise.allSettled(legs.map((leg) => leg()));
+
+	const data = [];
+	const seen = new Set();
+	const _errors = [];
+	for (const s of settled) {
+		// leg thunks never reject, but guard defensively.
+		const r = s.status === "fulfilled" ? s.value : { provider: "unknown", error: "fetch failed" };
+		if (r.error) {
+			_errors.push({ provider: r.provider, message: r.error });
+			continue;
+		}
+		for (const entry of r.entries || []) {
+			if (seen.has(entry.id)) continue;
+			seen.add(entry.id);
+			data.push(entry);
+		}
+	}
+	return { data, _errors };
 }
