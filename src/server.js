@@ -44,8 +44,10 @@ function handleStatus(res, config) {
 // "is the proxy process up" check (no JSON serialization, no config read). For
 // anything richer (version, providers) use /_status. Like /_status it carries no
 // auth — safe because the proxy is loopback-bound by default (invariant 7).
+// Deliberately no content-type: the body is empty, and advertising
+// application/json would make a client's res.json() throw a parse error.
 function handlePing(res) {
-	res.writeHead(200, { "content-type": "application/json" });
+	res.writeHead(200);
 	res.end();
 }
 
@@ -203,14 +205,21 @@ export function createServer(config) {
 		req.on("data", (c) => chunks.push(c));
 		req.on("end", () => {
 			const bodyBuffer = Buffer.concat(chunks);
-			if (req.url === "/_ping" && req.method === "GET") {
+			// Split on "?" rather than new URL(): matches the existing string-equality
+			// interception style and avoids URL() throwing on a malformed request target
+			// inside the shared long-running process. The read-only probes match on this
+			// pathname so a cache-busting `?t=…` can't make them get forwarded upstream.
+			const pathname = req.url.split("?")[0];
+			if (pathname === "/_ping" && req.method === "GET") {
 				handlePing(res);
 				return;
 			}
-			if (req.url === "/_status" && req.method === "GET") {
+			if (pathname === "/_status" && req.method === "GET") {
 				handleStatus(res, config);
 				return;
 			}
+			// Exact match, deliberately unlike the probes above: shutdown is
+			// destructive, so it stays as narrow as possible.
 			if (req.url === "/_shutdown") {
 				// POST only: a stray GET (browser, curl without -X, link prefetch)
 				// must never take the proxy down.
@@ -220,10 +229,6 @@ export function createServer(config) {
 			}
 			// GET /v1/models — synthesized, query-string tolerant, exact path only.
 			// (/v1/models/<id> retrieve falls through to forwarding.)
-			// Split on "?" rather than new URL(): matches the existing string-equality
-			// interception style and avoids URL() throwing on a malformed request target
-			// inside the shared long-running process.
-			const pathname = req.url.split("?")[0];
 			if (pathname === "/v1/models") {
 				if (req.method === "GET") handleModels(res, config);
 				else sendJson(res, 405, { error: { message: "GET required" } });

@@ -95,7 +95,11 @@ function get(port, path) {
 			const chunks = [];
 			res.on("data", (c) => chunks.push(c));
 			res.on("end", () =>
-				resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString() }),
+				resolve({
+					status: res.statusCode,
+					headers: res.headers,
+					body: Buffer.concat(chunks).toString(),
+				}),
 			);
 		});
 		req.on("error", reject);
@@ -759,8 +763,25 @@ describe("server end-to-end routing", () => {
 		const res = await get(proxy.port, "/_ping");
 		assert.equal(res.status, 200);
 		assert.equal(res.body, "", "/_ping must have an empty body");
+		// An empty body must not claim to be JSON — a client's res.json() would throw.
+		assert.equal(res.headers["content-type"], undefined);
 		// Intercepted, not forwarded: the upstream stub was never hit.
 		assert.equal(glm.calls.length, 0, "/_ping must not be forwarded upstream");
+	});
+
+	// A cache-busting query string is the natural way to write a probe; matching on
+	// the raw url would forward it upstream (burning quota on a liveness check).
+	it("GET /_ping and /_status tolerate a query string, still not forwarded", async () => {
+		glm = await startBackend(() => ({ status: 200, headers: {}, body: "{}" }));
+		const providers = buildProviders({ GLM_API_KEY: "glm-test" }, "claude");
+		proxy = await startProxy({ port: 0, providers, version: "9.9.9" });
+		const ping = await get(proxy.port, "/_ping?t=123");
+		assert.equal(ping.status, 200);
+		assert.equal(ping.body, "");
+		const status = await get(proxy.port, "/_status?t=123");
+		assert.equal(status.status, 200);
+		assert.equal(JSON.parse(status.body).version, "9.9.9");
+		assert.equal(glm.calls.length, 0, "probes must not be forwarded upstream");
 	});
 
 	it("POST /_shutdown responds 200 and the server stops accepting connections", async () => {
