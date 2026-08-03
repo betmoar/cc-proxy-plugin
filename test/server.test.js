@@ -749,6 +749,20 @@ describe("server end-to-end routing", () => {
 		assert.equal(JSON.parse(res.body).version, "9.9.9");
 	});
 
+	// Minimal liveness probe — the fastest possible "is the proxy up" check. A bare
+	// 200 with an empty body, no config read or serialization. Cheaper than /_status
+	// (which still happens to be fast, but this is the designated hot-path probe).
+	it("GET /_ping returns a bare 200 with an empty body (fast liveness)", async () => {
+		glm = await startBackend(() => ({ status: 200, headers: {}, body: "{}" }));
+		const providers = buildProviders({ GLM_API_KEY: "glm-test" }, "claude");
+		proxy = await startProxy({ port: 0, providers, version: "9.9.9" });
+		const res = await get(proxy.port, "/_ping");
+		assert.equal(res.status, 200);
+		assert.equal(res.body, "", "/_ping must have an empty body");
+		// Intercepted, not forwarded: the upstream stub was never hit.
+		assert.equal(glm.calls.length, 0, "/_ping must not be forwarded upstream");
+	});
+
 	it("POST /_shutdown responds 200 and the server stops accepting connections", async () => {
 		glm = await startBackend(() => ({ status: 200, headers: {}, body: "{}" }));
 		const providers = buildProviders({ GLM_API_KEY: "glm-test" }, "claude");

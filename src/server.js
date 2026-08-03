@@ -40,6 +40,15 @@ function handleStatus(res, config) {
 	});
 }
 
+// Minimal liveness probe: a bare 200 with an empty body, the fastest possible
+// "is the proxy process up" check (no JSON serialization, no config read). For
+// anything richer (version, providers) use /_status. Like /_status it carries no
+// auth — safe because the proxy is loopback-bound by default (invariant 7).
+function handlePing(res) {
+	res.writeHead(200, { "content-type": "application/json" });
+	res.end();
+}
+
 // Graceful self-shutdown, used by the SessionStart hook to replace a stale
 // (version-mismatched) proxy. Loopback-only by construction in the default
 // config (invariant 7); like /_status it carries no auth because anyone who
@@ -194,6 +203,10 @@ export function createServer(config) {
 		req.on("data", (c) => chunks.push(c));
 		req.on("end", () => {
 			const bodyBuffer = Buffer.concat(chunks);
+			if (req.url === "/_ping" && req.method === "GET") {
+				handlePing(res);
+				return;
+			}
 			if (req.url === "/_status" && req.method === "GET") {
 				handleStatus(res, config);
 				return;
