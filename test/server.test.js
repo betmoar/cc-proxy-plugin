@@ -784,6 +784,30 @@ describe("server end-to-end routing", () => {
 		assert.equal(glm.calls.length, 0, "probes must not be forwarded upstream");
 	});
 
+	// The probes answer before any body is buffered, so a client that sends a body
+	// and never ends the request still gets an immediate response. Gating the reply
+	// on 'end' would hang the hot-path liveness check and let a slow uploader pin
+	// memory in the shared proxy process.
+	it("GET /_ping answers without waiting for the request body", async () => {
+		glm = await startBackend(() => ({ status: 200, headers: {}, body: "{}" }));
+		const providers = buildProviders({ GLM_API_KEY: "glm-test" }, "claude");
+		proxy = await startProxy({ port: 0, providers, version: "9.9.9" });
+		const status = await new Promise((resolve, reject) => {
+			const req = http.request(
+				{ hostname: "127.0.0.1", port: proxy.port, path: "/_ping", method: "GET" },
+				(res) => {
+					res.resume();
+					resolve(res.statusCode);
+				},
+			);
+			req.on("error", reject);
+			// A body, deliberately never ended: the response must arrive anyway.
+			req.write("x".repeat(1024));
+		});
+		assert.equal(status, 200);
+		assert.equal(glm.calls.length, 0);
+	});
+
 	it("POST /_shutdown responds 200 and the server stops accepting connections", async () => {
 		glm = await startBackend(() => ({ status: 200, headers: {}, body: "{}" }));
 		const providers = buildProviders({ GLM_API_KEY: "glm-test" }, "claude");

@@ -202,22 +202,27 @@ export function createServer(config) {
 		// request stream; without a listener that is an uncaught exception that
 		// kills the shared long-running proxy process for every session.
 		req.on("error", () => res.destroy());
+
+		// Split on "?" rather than new URL(): matches the existing string-equality
+		// interception style and avoids URL() throwing on a malformed request target
+		// inside the shared long-running process. The read-only probes match on this
+		// pathname so a cache-busting `?t=…` can't make them get forwarded upstream.
+		const pathname = req.url.split("?")[0];
+
+		// The GET probes answer before any body is buffered — they take no input, and
+		// /_ping is the designated hot-path check, so it must not be gated on reading
+		// a body first. req.resume() discards whatever a client sent anyway, so a
+		// keep-alive socket isn't left with an unread body stalling the next request.
+		if (req.method === "GET" && (pathname === "/_ping" || pathname === "/_status")) {
+			req.resume();
+			if (pathname === "/_ping") handlePing(res);
+			else handleStatus(res, config);
+			return;
+		}
+
 		req.on("data", (c) => chunks.push(c));
 		req.on("end", () => {
 			const bodyBuffer = Buffer.concat(chunks);
-			// Split on "?" rather than new URL(): matches the existing string-equality
-			// interception style and avoids URL() throwing on a malformed request target
-			// inside the shared long-running process. The read-only probes match on this
-			// pathname so a cache-busting `?t=…` can't make them get forwarded upstream.
-			const pathname = req.url.split("?")[0];
-			if (pathname === "/_ping" && req.method === "GET") {
-				handlePing(res);
-				return;
-			}
-			if (pathname === "/_status" && req.method === "GET") {
-				handleStatus(res, config);
-				return;
-			}
 			// Exact match, deliberately unlike the probes above: shutdown is
 			// destructive, so it stays as narrow as possible.
 			if (req.url === "/_shutdown") {
