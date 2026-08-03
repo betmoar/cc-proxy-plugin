@@ -25,6 +25,18 @@ function seedOpenRouterCache(remaining) {
 	return dir;
 }
 
+// Same idea for the DeepSeek balance cache: a fresh `_ts` keeps the loader on the
+// cache branch so it never touches the network. `remaining` is the single
+// total_balance DeepSeek reports (no used-percentage, unlike OpenRouter).
+function seedDeepSeekCache(remaining) {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "statusline-test-"));
+	fs.writeFileSync(
+		path.join(dir, "deepseek_balance_cache.json"),
+		JSON.stringify({ remaining, currency: "USD", _ts: Date.now() }),
+	);
+	return dir;
+}
+
 // Strip ANSI color codes for label/shape assertions.
 function plain(s) {
 	return s.replace(new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g"), "");
@@ -133,6 +145,56 @@ describe("statusline.js", () => {
 			} finally {
 				fs.rmSync(dir, { recursive: true, force: true });
 			}
+		}
+	});
+
+	it("renders ds: $-tiers from the DeepSeek balance cache", async () => {
+		const cases = [
+			[0, "$0"],
+			[0.5, "$"], // non-empty sub-$1 floors to 0 but must still show one $
+			[42, "$$"],
+			[1200, "$$$$"], // unbounded by design, same as or:
+			[undefined, "--"], // non-finite balance (corrupt/schema drift) → placeholder
+		];
+		for (const [remaining, expected] of cases) {
+			const dir = seedDeepSeekCache(remaining);
+			try {
+				const { stdout } = await run(
+					{},
+					{
+						GLM_API_KEY: "",
+						OPENROUTER_API_KEY: "",
+						DEEPSEEK_API_KEY: "dummy",
+						CLAUDE_PLUGIN_DATA: dir,
+					},
+				);
+				assert.ok(
+					plain(stdout).includes(`ds:${expected} `) || plain(stdout).endsWith(`ds:${expected}`),
+					`remaining=${remaining}: expected ds:${expected}, got: ${plain(stdout)}`,
+				);
+			} finally {
+				fs.rmSync(dir, { recursive: true, force: true });
+			}
+		}
+	});
+
+	it("omits the ds: segment entirely when DEEPSEEK_API_KEY is unset", async () => {
+		// A seeded cache must not be enough — the no-key guard short-circuits first,
+		// so an unconfigured user never sees a DeepSeek gauge.
+		const dir = seedDeepSeekCache(42);
+		try {
+			const { stdout } = await run(
+				{},
+				{
+					GLM_API_KEY: "",
+					OPENROUTER_API_KEY: "",
+					DEEPSEEK_API_KEY: "",
+					CLAUDE_PLUGIN_DATA: dir,
+				},
+			);
+			assert.ok(!plain(stdout).includes("ds:"), `Expected no ds: segment, got: ${plain(stdout)}`);
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
 		}
 	});
 

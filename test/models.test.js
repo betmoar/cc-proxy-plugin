@@ -301,7 +301,7 @@ describe("collectModels fan-out", () => {
 		assert.ok(ids.includes("deepseek-v4-flash"));
 		assert.equal(data.find((m) => m.id === "deepseek-v4-pro").display_name, "deepseek-v4-pro");
 		assert.equal(
-			data.indexOf("deepseek-v4-pro") < ids.indexOf("claude-fable-5"),
+			ids.indexOf("deepseek-v4-pro") < ids.indexOf("claude-fable-5"),
 			true,
 			"deepseek before claude",
 		);
@@ -352,6 +352,20 @@ describe("collectModels fan-out", () => {
 		const config = wireConfig(glm.baseUrl, { glmKey: "", dsKey: "ds-test" });
 		const { _errors } = await collectModels(config);
 		assert.deepEqual(_errors, [{ provider: "deepseek", message: "invalid response shape" }]);
+	});
+
+	it("DeepSeek timeout → _errors timeout, fast (bounded by modelsTimeoutMs)", async () => {
+		// Handler never resolves, so the abort timer is the only thing that can end this.
+		glm = await startBackend(() => new Promise(() => {}));
+		const config = wireConfig(glm.baseUrl, {
+			glmKey: "",
+			dsKey: "ds-test",
+			modelsTimeoutMs: 50,
+		});
+		const t0 = Date.now();
+		const { _errors } = await collectModels(config);
+		assert.deepEqual(_errors, [{ provider: "deepseek", message: "timeout" }]);
+		assert.ok(Date.now() - t0 < 1000, "should abort near modelsTimeoutMs, not hang");
 	});
 
 	it("dedup: glm and claude both claim an id → first (glm) wins, single entry", async () => {
