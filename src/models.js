@@ -15,8 +15,10 @@ export const DEFAULT_CLAUDE_MODELS = [
 	{ type: "model", id: "claude-sonnet-5", display_name: "Claude Sonnet 5", created_at: null },
 ];
 
-/** OpenRouter ids verified 2026-07-14 as Anthropic-skin compatible (HTTP 200 + message
- * shape at POST /v1/messages). x-ai/grok-4.5 excluded: region-blocked, not incompatible. */
+/** OpenRouter ids as Anthropic-skin compatible (HTTP 200 + message shape at POST
+ * /v1/messages). All but kimi-k3 were live-verified 2026-07-14; kimi-k3 is advertised on
+ * OpenRouter but not yet live-verified against the skin — added for discovery, verify on
+ * next release. x-ai/grok-4.5 excluded: region-blocked, not incompatible. */
 export const DEFAULT_OPENROUTER_MODELS = [
 	{
 		type: "model",
@@ -37,6 +39,7 @@ export const DEFAULT_OPENROUTER_MODELS = [
 		display_name: "Kimi K2.7 Code",
 		created_at: null,
 	},
+	{ type: "model", id: "moonshotai/kimi-k3", display_name: "Kimi K3", created_at: null },
 	{ type: "model", id: "qwen/qwen3.7-max", display_name: "Qwen3.7 Max", created_at: null },
 ];
 
@@ -114,6 +117,56 @@ async function fetchGlmModels(glm, timeoutMs) {
 }
 
 /**
+ * DeepSeek exposes no pricing API (the /pricing page is HTML-only), so per-1M-token
+ * prices are curated here against the documented table and updated per release.
+ * The models themselves stay live-fetched (fetchDeepSeekModels); this is the only
+ * static data. Note: DeepSeek charges 2× during peak hours (9–12, 14–18 UTC+8) —
+ * documented here for reference, not modeled (the proxy has no clock and shouldn't).
+ * @type {Record<string, { in: number, out: number, cached: number }>}
+ */
+export const DEEPSEEK_PRICING = {
+	"deepseek-v4-pro": { in: 0.435, out: 0.87, cached: 0.003625 },
+	"deepseek-v4-flash": { in: 0.14, out: 0.28, cached: 0.0028 },
+};
+
+/**
+ * Fetch DeepSeek's live model list. Unlike the Messages skin (x-api-key at /anthropic),
+ * the model-list endpoint is OpenAI-native: GET /models with Bearer auth, shape
+ * { object:"list", data:[{id,object,owned_by}] }. Resolves to { entries } on success or
+ * { error } on any failure. Never throws.
+ * @param {import("./providers.js").Provider} deepseek
+ * @param {number} timeoutMs
+ * @returns {Promise<{ entries?: ModelEntry[], error?: string }>}
+ */
+async function fetchDeepSeekModels(deepseek, timeoutMs) {
+	// /models is OpenAI-native — it sits on the api.deepseek.com root, not the /anthropic
+	// base the forwarding path uses. Derive the root from the provider's skin baseUrl.
+	const root = deepseek.baseUrl.replace(/\/anthropic$/, "");
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), timeoutMs);
+	try {
+		const res = await fetch(`${root}/models`, {
+			headers: { Authorization: `Bearer ${deepseek.apiKey}` },
+			signal: controller.signal,
+		});
+		if (res.status < 200 || res.status >= 300) return { error: `HTTP ${res.status}` };
+		let body;
+		try {
+			body = await res.json();
+		} catch {
+			return { error: "invalid response shape" };
+		}
+		if (!body || !Array.isArray(body.data)) return { error: "invalid response shape" };
+		return { entries: body.data.map(coerceEntry).filter(Boolean) };
+	} catch (err) {
+		if (err && err.name === "AbortError") return { error: "timeout" };
+		return { error: "fetch failed" };
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+/**
  * Assemble the merged discovery list. Best-effort: a failed live leg contributes
  * an _errors entry, never rejects (except the modelsForceThrow test seam).
  * @param {import("./config.js").Config & { claudeModels: ModelEntry[], openRouterModels: ModelEntry[], modelsTimeoutMs: number, modelsForceThrow?: boolean }} config
@@ -123,15 +176,22 @@ export async function collectModels(config) {
 	if (config.modelsForceThrow) throw new Error("forced throw (test seam)");
 
 	const glm = providerById(config, "glm");
+	const deepseek = providerById(config, "deepseek");
 	const openrouter = providerById(config, "openrouter");
 
-	// Assemble leg thunks in registry order: glm, openrouter, claude.
+	// Assemble leg thunks in registry order: glm, deepseek, openrouter, claude.
 	/** @type {Array<() => Promise<{ provider: string, entries?: ModelEntry[], error?: string }>>} */
 	const legs = [];
 	if (glm?.apiKey) {
 		legs.push(async () => ({
 			provider: "glm",
 			...(await fetchGlmModels(glm, config.modelsTimeoutMs)),
+		}));
+	}
+	if (deepseek?.apiKey) {
+		legs.push(async () => ({
+			provider: "deepseek",
+			...(await fetchDeepSeekModels(deepseek, config.modelsTimeoutMs)),
 		}));
 	}
 	if (openrouter) {

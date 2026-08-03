@@ -36,15 +36,19 @@ Read `~/.env` first (create the file if absent). For each key, reuse a value alr
 
 > "Enter your OpenRouter API key (https://openrouter.ai/settings/keys). It will be stored in ~/.env:"
 
+**DeepSeek — optional.** Ask the user whether they also want DeepSeek routing. If yes and `DEEPSEEK_API_KEY` is missing or empty in `~/.env`, ask:
+
+> "Enter your DeepSeek API key (https://platform.deepseek.com/api_keys). It will be stored in ~/.env:"
+
 Write each collected key to `~/.env` as a `KEY=value` line, one per line (e.g. `GLM_API_KEY=<value>`). If `~/.env` already exists, **merge** — update only the key lines you collected and preserve every other line unchanged. If it does not exist, create it with just the key line(s).
 
-The proxy only registers OpenRouter when `OPENROUTER_API_KEY` is set, and routes any model id containing a slash to it (e.g. `z-ai/glm-4.7`, `anthropic/claude-opus-4`). **Tell the user this constraint:** Claude Code allows only **one** custom `/model` picker entry, and GLM uses it — so OpenRouter models do **not** appear in the `/model` picker. They are reached only by (a) setting `DEFAULT_BACKEND=openrouter` so unmatched requests fall through to it, or (b) a subagent/slash-command whose frontmatter pins a `vendor/model` id (which the proxy then routes verbatim).
+The proxy only registers OpenRouter when `OPENROUTER_API_KEY` is set, and routes any model id containing a slash to it (e.g. `z-ai/glm-4.7`, `anthropic/claude-opus-4`). It only registers DeepSeek when `DEEPSEEK_API_KEY` is set, and routes any bare `deepseek-*` id to it (e.g. `deepseek-v4-pro`, `deepseek-v4-flash`). **Tell the user this constraint:** Claude Code allows only **one** custom `/model` picker entry, and GLM uses it — so OpenRouter and DeepSeek models do **not** appear in the `/model` picker. They are reached only by (a) setting `DEFAULT_BACKEND=openrouter` (or `deepseek`) so unmatched requests fall through to it, or (b) a subagent/slash-command whose frontmatter pins the model id (which the proxy then routes verbatim).
 
-**Migrate existing keys (one source of truth).** Read `~/.claude/settings.json`. If its `env` block contains `GLM_API_KEY` or `OPENROUTER_API_KEY` (legacy setups), move them to `~/.env`: if `~/.env` already has the key, keep the `~/.env` value and just drop the settings.json copy; otherwise copy the value over then **remove** the key from settings.json `env`. After setup, keys must exist **only** in `~/.env`.
+**Migrate existing keys (one source of truth).** Read `~/.claude/settings.json`. If its `env` block contains `GLM_API_KEY`, `OPENROUTER_API_KEY`, or `DEEPSEEK_API_KEY` (legacy setups), move them to `~/.env`: if `~/.env` already has the key, keep the `~/.env` value and just drop the settings.json copy; otherwise copy the value over then **remove** the key from settings.json `env`. After setup, keys must exist **only** in `~/.env`.
 
 ### 3. Update `~/.claude/settings.json` (plumbing only — no keys)
 
-Read the current file, then merge the following into the `env` object (create `env` if missing). Preserve every other existing key unchanged, **except `PROXY_PATH`: delete it if present** (legacy version-pinned path; the hook resolves the binary from its own tree now). **Do not add `GLM_API_KEY` or `OPENROUTER_API_KEY` here** — they go in `~/.env` (step 2).
+Read the current file, then merge the following into the `env` object (create `env` if missing). Preserve every other existing key unchanged, **except `PROXY_PATH`: delete it if present** (legacy version-pinned path; the hook resolves the binary from its own tree now). **Do not add `GLM_API_KEY`, `OPENROUTER_API_KEY`, or `DEEPSEEK_API_KEY` here** — they go in `~/.env` (step 2).
 
 ```json
 {

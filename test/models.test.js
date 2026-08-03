@@ -2,6 +2,7 @@ import { strict as assert } from "node:assert";
 import http from "node:http";
 import { afterEach, describe, it } from "node:test";
 import {
+	DEEPSEEK_PRICING,
 	DEFAULT_CLAUDE_MODELS,
 	DEFAULT_OPENROUTER_MODELS,
 	coerceCreated,
@@ -43,8 +44,20 @@ describe("models.js pure helpers", () => {
 				display_name: "Kimi K2.7 Code",
 				created_at: null,
 			},
+			{ type: "model", id: "moonshotai/kimi-k3", display_name: "Kimi K3", created_at: null },
 			{ type: "model", id: "qwen/qwen3.7-max", display_name: "Qwen3.7 Max", created_at: null },
 		]);
+	});
+
+	it("DEEPSEEK_PRICING holds the curated per-1M-token prices for both live models", () => {
+		// Curated (no pricing API exists). Pins the two documented ids + their prices
+		// so a silent edit or a dropped model is caught.
+		assert.deepEqual(Object.keys(DEEPSEEK_PRICING).sort(), [
+			"deepseek-v4-flash",
+			"deepseek-v4-pro",
+		]);
+		assert.equal(DEEPSEEK_PRICING["deepseek-v4-pro"].out, 0.87);
+		assert.equal(DEEPSEEK_PRICING["deepseek-v4-flash"].out, 0.28);
 	});
 
 	it("parseOpenRouterModels splits, trims, drops empties; display_name is the id", () => {
@@ -113,6 +126,7 @@ function wireConfig(
 	{
 		glmKey = "glm-test",
 		orKey,
+		dsKey,
 		openRouterModels,
 		claudeModels,
 		claudeBaseUrl,
@@ -122,9 +136,14 @@ function wireConfig(
 ) {
 	const env = { GLM_API_KEY: glmKey };
 	if (orKey) env.OPENROUTER_API_KEY = orKey;
+	if (dsKey) env.DEEPSEEK_API_KEY = dsKey;
 	const providers = buildProviders(env, "claude");
 	const glm = providers.find((p) => p.id === "glm");
 	if (glm) glm.baseUrl = glmBaseUrl;
+	// DeepSeek: point the provider baseUrl at the stub root (no /anthropic suffix), so
+	// fetchDeepSeekModels' `.replace(/\/anthropic$/,"")` leaves the stub and GETs ${stub}/models.
+	const deepseek = providers.find((p) => p.id === "deepseek");
+	if (deepseek && dsKey) deepseek.baseUrl = glmBaseUrl;
 	if (claudeBaseUrl) providers.find((p) => p.id === "claude").baseUrl = claudeBaseUrl;
 	return {
 		providers,
@@ -162,8 +181,8 @@ describe("collectModels fan-out", () => {
 			data.find((m) => m.id === "deepseek/deepseek-v4-pro").display_name,
 			"DeepSeek V4 Pro",
 		);
-		// full count: 2 glm + 5 openrouter + 3 claude, no drops
-		assert.equal(data.length, 10);
+		// full count: 2 glm + 6 openrouter + 3 claude, no drops
+		assert.equal(data.length, 11);
 		assert.deepEqual(_errors, []);
 	});
 
@@ -258,6 +277,81 @@ describe("collectModels fan-out", () => {
 		const config = wireConfig(glm.baseUrl); // no orKey
 		const { data } = await collectModels(config);
 		assert.ok(!data.some((m) => m.id.includes("/")));
+	});
+
+	const DEEPSEEK_MODELS_BODY = JSON.stringify({
+		object: "list",
+		data: [
+			{ id: "deepseek-v4-pro", object: "model", owned_by: "deepseek" },
+			{ id: "deepseek-v4-flash", object: "model", owned_by: "deepseek" },
+		],
+	});
+
+	it("DeepSeek leg: live /models (OpenAI shape) merges in registry order, no _errors", async () => {
+		glm = await startBackend(() => ({
+			status: 200,
+			headers: { "content-type": "application/json" },
+			body: DEEPSEEK_MODELS_BODY,
+		}));
+		const config = wireConfig(glm.baseUrl, { glmKey: "", dsKey: "ds-test" });
+		const { data, _errors } = await collectModels(config);
+		const ids = data.map((m) => m.id);
+		// deepseek entries appear before claude (registry order), display_name = id.
+		assert.ok(ids.includes("deepseek-v4-pro"));
+		assert.ok(ids.includes("deepseek-v4-flash"));
+		assert.equal(data.find((m) => m.id === "deepseek-v4-pro").display_name, "deepseek-v4-pro");
+		assert.equal(
+			data.indexOf("deepseek-v4-pro") < ids.indexOf("claude-fable-5"),
+			true,
+			"deepseek before claude",
+		);
+		assert.deepEqual(_errors, []);
+	});
+
+	it("DeepSeek leg sends Bearer key, never inbound auth or x-api-key", async () => {
+		glm = await startBackend(() => ({
+			status: 200,
+			headers: { "content-type": "application/json" },
+			body: DEEPSEEK_MODELS_BODY,
+		}));
+		const config = wireConfig(glm.baseUrl, { glmKey: "", dsKey: "ds-test" });
+		await collectModels(config);
+		const h = glm.calls[0].headers;
+		assert.equal(h.authorization, "Bearer ds-test");
+		assert.equal(h["x-api-key"], undefined, "DeepSeek /models uses Bearer, not x-api-key");
+		assert.match(glm.calls[0].url, /\/models$/);
+	});
+
+	it("DeepSeek not configured (no key) → no deepseek entries, not an error", async () => {
+		glm = await startBackend(() => ({
+			status: 200,
+			headers: { "content-type": "application/json" },
+			body: GLM_MODELS_BODY,
+		}));
+		const config = wireConfig(glm.baseUrl); // no dsKey
+		const { data, _errors } = await collectModels(config);
+		assert.ok(!data.some((m) => m.id.startsWith("deepseek-")));
+		assert.ok(!_errors.some((e) => e.provider === "deepseek"));
+	});
+
+	it("DeepSeek 502 → _errors HTTP 502, other legs survive", async () => {
+		glm = await startBackend(() => ({ status: 502, headers: {}, body: "bad" }));
+		const config = wireConfig(glm.baseUrl, { glmKey: "", dsKey: "ds-test" });
+		const { data, _errors } = await collectModels(config);
+		assert.deepEqual(_errors, [{ provider: "deepseek", message: "HTTP 502" }]);
+		assert.ok(data.some((m) => m.id === "claude-fable-5"));
+		assert.ok(!data.some((m) => m.id.startsWith("deepseek-")));
+	});
+
+	it("DeepSeek unparseable / no data → _errors invalid response shape", async () => {
+		glm = await startBackend(() => ({
+			status: 200,
+			headers: { "content-type": "application/json" },
+			body: "{}",
+		}));
+		const config = wireConfig(glm.baseUrl, { glmKey: "", dsKey: "ds-test" });
+		const { _errors } = await collectModels(config);
+		assert.deepEqual(_errors, [{ provider: "deepseek", message: "invalid response shape" }]);
 	});
 
 	it("dedup: glm and claude both claim an id → first (glm) wins, single entry", async () => {

@@ -38,7 +38,7 @@ Runtime facts, known traps, and debugging. For design rationale, see [`ARCHITECT
 
 The proxy is spawned **detached** (`spawn + unref`), so it survives the hook exiting. If it dies mid-session, recovery needs a new session (`/exit` + `/resume`) to re-trigger SessionStart; the statusline shows `proxy down` until then.
 
-`/cc-proxy:setup` runs `scripts/start-proxy.js`, which calls the same `ensureProxyRunning()` so the proxy is up the moment setup finishes. The one difference from the hook: it passes an explicit `env` (merged from settings.json over `process.env`), because on a first-run setup nothing has injected the plumbing vars into the process yet. The spawned child then loads `~/.env` itself for `GLM_API_KEY`/`OPENROUTER_API_KEY`. `spawnProxy()` takes an optional `env` arg for this; it defaults to `process.env`, leaving the SessionStart path unchanged.
+`/cc-proxy:setup` runs `scripts/start-proxy.js`, which calls the same `ensureProxyRunning()` so the proxy is up the moment setup finishes. The one difference from the hook: it passes an explicit `env` (merged from settings.json over `process.env`), because on a first-run setup nothing has injected the plumbing vars into the process yet. The spawned child then loads `~/.env` itself for `GLM_API_KEY`/`OPENROUTER_API_KEY`/`DEEPSEEK_API_KEY`. `spawnProxy()` takes an optional `env` arg for this; it defaults to `process.env`, leaving the SessionStart path unchanged.
 
 ## Proxy infrastructure
 

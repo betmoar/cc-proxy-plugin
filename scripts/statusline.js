@@ -16,6 +16,7 @@ loadEnv();
 
 const QUOTA_URL = "https://api.z.ai/api/monitor/usage/quota/limit";
 const OPENROUTER_CREDITS_URL = "https://openrouter.ai/api/v1/credits";
+const DEEPSEEK_BALANCE_URL = "https://api.deepseek.com/user/balance";
 const CACHE_TTL_MS = 60_000;
 const PROXY_PORT = Number(process.env.PROXY_PORT || 4000);
 const PROXY_PROBE_TIMEOUT_MS = 300;
@@ -220,6 +221,64 @@ async function loadOpenRouterCredits(cacheDir) {
 	}
 }
 
+// DeepSeek balance (opt-in via DEEPSEEK_API_KEY). Same 60s cache + stale fallback as
+// the GLM/OpenRouter fetchers. The /user/balance response is per-currency; we render
+// the USD row if present, else the first balance_infos entry. Unlike OpenRouter (which
+// reports credits used/remaining), DeepSeek reports a single total_balance, so the
+// gauge reflects remaining balance (= total) and carries no used-percentage.
+async function loadDeepSeekBalance(cacheDir) {
+	const key = process.env.DEEPSEEK_API_KEY;
+	if (!key) return null;
+
+	const cachePath = cacheDir ? path.join(cacheDir, "deepseek_balance_cache.json") : null;
+	if (cachePath) {
+		try {
+			const cached = JSON.parse(fs.readFileSync(cachePath, "utf8"));
+			if (Date.now() - cached._ts < CACHE_TTL_MS) return cached;
+		} catch {
+			// miss → fetch
+		}
+	}
+
+	try {
+		const res = await fetch(DEEPSEEK_BALANCE_URL, {
+			headers: { Authorization: `Bearer ${key}` },
+			signal: AbortSignal.timeout(QUOTA_FETCH_TIMEOUT_MS),
+		});
+		if (!res.ok) throw new Error(`HTTP ${res.status}`);
+		const json = await res.json();
+		// Prefer a USD balance_infos row; fall back to the first entry.
+		const infos = Array.isArray(json?.balance_infos) ? json.balance_infos : [];
+		const row = infos.find((b) => b?.currency === "USD") || infos[0] || null;
+		const remaining = row ? Number(row.total_balance) : Number.NaN;
+		const result = {
+			remaining,
+			currency: row?.currency || null,
+			_ts: Date.now(),
+		};
+		if (cachePath) {
+			try {
+				fs.mkdirSync(path.dirname(cachePath), { recursive: true });
+				fs.writeFileSync(cachePath, JSON.stringify(result));
+			} catch {
+				// non-fatal
+			}
+		}
+		return result;
+	} catch {
+		if (cachePath) {
+			try {
+				const stale = JSON.parse(fs.readFileSync(cachePath, "utf8"));
+				stale._stale = true;
+				return stale;
+			} catch {
+				return null;
+			}
+		}
+		return null;
+	}
+}
+
 const chunks = [];
 process.stdin.on("data", (chunk) => chunks.push(chunk));
 process.stdin.on("end", async () => {
@@ -265,23 +324,33 @@ process.stdin.on("end", async () => {
 		}
 	}
 
-	// OpenRouter section (`api:`, only when OPENROUTER_API_KEY is set)
+	// One $ per digit of whole-dollar balance remaining: $1–9=$, $10–99=$$,
+	// $100–999=$$$, $1000+=$$$$ (unbounded by design). An empty balance renders a
+	// distinct `$0`; any non-empty balance — including a sub-$1 amount that floors
+	// to 0 — shows at least one `$`. A non-finite balance (stale/corrupt cache,
+	// schema drift) renders `--` rather than deriving a misleading tier from NaN
+	// (String(NaN).length === 3 would yield "$$$"). Shared by the OpenRouter and
+	// DeepSeek balance gauges.
+	function dollarTier(remaining) {
+		const r = Number(remaining);
+		if (!Number.isFinite(r)) return "--";
+		if (r <= 0) return "$0";
+		return "$".repeat(Math.max(1, String(Math.floor(r)).length));
+	}
+
+	// OpenRouter section (`or:`, only when OPENROUTER_API_KEY is set)
 	const or = await loadOpenRouterCredits(cacheDir);
 	if (or) {
 		const stale = or._stale ? "!" : "";
 		const c = colorize(or.usedPct);
-		// One $ per digit of whole-dollar credits remaining: $1–9=$, $10–99=$$,
-		// $100–999=$$$, $1000+=$$$$ (unbounded by design). An empty balance
-		// renders a distinct `$0`; any non-empty balance — including a sub-$1
-		// amount that floors to 0 — shows at least one `$`. A non-finite balance
-		// (stale/corrupt cache, schema drift) renders `--` rather than deriving a
-		// misleading tier from NaN (String(NaN).length === 3 would yield "$$$").
-		const remaining = Number(or.remaining);
-		let tier;
-		if (!Number.isFinite(remaining)) tier = "--";
-		else if (remaining <= 0) tier = "$0";
-		else tier = "$".repeat(Math.max(1, String(Math.floor(remaining)).length));
-		parts.push(`api:${c}${tier}${stale}${RESET}`);
+		parts.push(`or:${c}${dollarTier(or.remaining)}${stale}${RESET}`);
+	}
+
+	// DeepSeek section (`ds:`, only when DEEPSEEK_API_KEY is set)
+	const ds = await loadDeepSeekBalance(cacheDir);
+	if (ds) {
+		const stale = ds._stale ? "!" : "";
+		parts.push(`ds:${dollarTier(ds.remaining)}${stale}${RESET}`);
 	}
 
 	if (!proxyAlive) {

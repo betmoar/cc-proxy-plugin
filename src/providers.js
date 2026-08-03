@@ -52,6 +52,21 @@ export function buildProviders(env = process.env, defaultId = env.DEFAULT_BACKEN
 		});
 	}
 
+	// DeepSeek speaks an Anthropic-compatible "skin" at /anthropic with x-api-key auth
+	// (same as GLM). Opt-in: only registered when a key is present. Its model ids are bare
+	// (`deepseek-v4-pro`, `deepseek-v4-flash`) — no slash — so the deepseek- prefix is
+	// disjoint from OpenRouter's vendor/model ids (e.g. `deepseek/deepseek-v4-pro`). No
+	// quirks: DeepSeek has no Z.ai-style 1313 flag or 200-stop_reason overflow signal.
+	if (env.DEEPSEEK_API_KEY) {
+		providers.push({
+			id: "deepseek",
+			baseUrl: "https://api.deepseek.com/anthropic",
+			apiKey: env.DEEPSEEK_API_KEY,
+			auth: "apiKey",
+			match: (m) => typeof m === "string" && m.startsWith("deepseek-"),
+		});
+	}
+
 	providers.push({
 		id: "claude",
 		baseUrl: "https://api.anthropic.com",

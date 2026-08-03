@@ -2,6 +2,19 @@
 
 All notable changes to cc-proxy are recorded here. Versions follow [semver](https://semver.org/); `package.json` is the single source of truth and propagates to `.claude-plugin/plugin.json` via `scripts/sync-version.mjs`.
 
+## [0.5.0] — 2026-08-03
+
+### Added
+- **`moonshotai/kimi-k3` in the OpenRouter discovery list.** Kimi K3 (Moonshot AI's 2.8T flagship) joins the curated OpenRouter allowlist for `GET /v1/models`; it routes to OpenRouter via the slash-namespaced match like the existing entries. Advertised on OpenRouter but not yet live-verified against the Anthropic skin — flagged in the source comment to verify on the next release.
+
+
+- **DeepSeek provider (Anthropic skin).** DeepSeek's Anthropic-compatible endpoint (`api.deepseek.com/anthropic`) is now a routed backend: bare `deepseek-*` model ids (e.g. `deepseek-v4-pro`, `deepseek-v4-flash`) route to DeepSeek with `x-api-key` auth, the same strategy GLM uses. Opt-in via `DEEPSEEK_API_KEY` in `~/.env`. The `deepseek-` prefix is disjoint from OpenRouter's slash-namespaced `deepseek/deepseek-v4-pro` — the two never collide (locked by `test/router.test.js` + `test/providers.test.js`). No format translation; invariants hold. Per CONTRIBUTING, it's one gated entry in `buildProviders` — no router/server change.
+- **Live model discovery for DeepSeek.** `GET /v1/models` now fetches DeepSeek's catalog live (`GET /models`, OpenAI shape) alongside GLM, merging in registry order with the existing best-effort fan-out (a failed leg surfaces in `_errors`, never blocks the `200`). A curated `DEEPSEEK_PRICING` table (the only static data — DeepSeek exposes no pricing API) is exported for downstream use.
+- **`ds:` statusline segment.** A DeepSeek balance gauge, opt-in via `DEEPSEEK_API_KEY`, mirroring the OpenRouter/`$`-tier convention. Reads `GET /user/balance` (Bearer), 60s-cached with stale fallback.
+
+### Changed
+- **Statusline `api:` → `or:`.** The OpenRouter credits gauge is renamed from the generic `api:` to `or:` — it was always OpenRouter-only, and the name became misleading now that a second provider gauge exists. Final bar order: `cc` → `glm` → `or` → `ds` → `proxy down`.
+
 ## [0.4.3] — 2026-07-14
 
 ### Added

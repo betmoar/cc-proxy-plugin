@@ -109,7 +109,7 @@ describe("statusline.js", () => {
 		assert.ok(!stdout.includes("⏱"), `Expected no countdown below 100%, got: ${stdout}`);
 	});
 
-	it("renders api: $-tiers by digit count, unbounded above $999", async () => {
+	it("renders or: $-tiers by digit count, unbounded above $999", async () => {
 		const cases = [
 			[0, "$0"],
 			[0.5, "$"], // non-empty sub-$1 floors to 0 but must still show one $
@@ -127,8 +127,8 @@ describe("statusline.js", () => {
 					{ GLM_API_KEY: "", OPENROUTER_API_KEY: "dummy", CLAUDE_PLUGIN_DATA: dir },
 				);
 				assert.ok(
-					plain(stdout).includes(`api:${expected} `) || plain(stdout).endsWith(`api:${expected}`),
-					`remaining=${remaining}: expected api:${expected}, got: ${plain(stdout)}`,
+					plain(stdout).includes(`or:${expected} `) || plain(stdout).endsWith(`or:${expected}`),
+					`remaining=${remaining}: expected or:${expected}, got: ${plain(stdout)}`,
 				);
 			} finally {
 				fs.rmSync(dir, { recursive: true, force: true });
@@ -225,12 +225,12 @@ describe("statusline.js", () => {
 		{ skip: !process.env.OPENROUTER_API_KEY },
 		async () => {
 			const { stdout } = await run({}, { GLM_API_KEY: "" });
-			// Strip ANSI color codes: the script emits `api:<color>$$<reset>`,
-			// so a color code sits between `api:` and the $ tier on a live run.
+			// Strip ANSI color codes: the script emits `or:<color>$$<reset>`,
+			// so a color code sits between `or:` and the $ tier on a live run.
 			// ESC built via fromCharCode to avoid a literal control char in the regex.
 			const ansi = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
 			const plain = stdout.replace(ansi, "");
-			assert.match(plain, /api:\$+/, `Expected api section, got: ${stdout}`);
+			assert.match(plain, /or:\$+/, `Expected or section, got: ${stdout}`);
 		},
 	);
 });

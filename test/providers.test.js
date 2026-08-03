@@ -66,6 +66,47 @@ describe("buildProviders", () => {
 		assert.equal(or.match(undefined), false);
 	});
 
+	it("omits DeepSeek unless DEEPSEEK_API_KEY is set", () => {
+		assert.equal(
+			buildProviders({}).some((p) => p.id === "deepseek"),
+			false,
+		);
+	});
+
+	it("registers DeepSeek (apiKey, no quirks) when its key is set", () => {
+		const providers = buildProviders({ DEEPSEEK_API_KEY: "ds-key" });
+		const ds = providers.find((p) => p.id === "deepseek");
+		assert.ok(ds, "deepseek provider present");
+		assert.equal(ds.auth, "apiKey");
+		assert.equal(ds.apiKey, "ds-key");
+		assert.equal(ds.baseUrl, "https://api.deepseek.com/anthropic");
+		assert.equal(ds.quirks, undefined);
+		// claude stays last / default.
+		assert.equal(providers[providers.length - 1].id, "claude");
+	});
+
+	// COLLISION-LOCK: DeepSeek's bare ids (no slash) must never match OpenRouter's
+	// slash-namespaced space. OpenRouter already advertises `deepseek/deepseek-v4-pro`;
+	// the bare `deepseek-v4-pro` belongs to the native DeepSeek provider. The two
+	// match() predicates are disjoint by construction — this pins it.
+	it("DeepSeek matches bare deepseek- ids, never slash-namespaced ones", () => {
+		const ds = buildProviders({ DEEPSEEK_API_KEY: "k" }).find((p) => p.id === "deepseek");
+		assert.equal(ds.match("deepseek-v4-pro"), true);
+		assert.equal(ds.match("deepseek-v4-flash"), true);
+		assert.equal(ds.match("deepseek/deepseek-v4-pro"), false, "slash id belongs to OpenRouter");
+		assert.equal(ds.match("glm-5.2"), false);
+		assert.equal(ds.match("claude-opus-4-6"), false);
+		assert.equal(ds.match(undefined), false);
+	});
+
+	it("DeepSeek sits before claude and after openrouter in registry order", () => {
+		const ids = buildProviders({
+			OPENROUTER_API_KEY: "or",
+			DEEPSEEK_API_KEY: "ds",
+		}).map((p) => p.id);
+		assert.deepEqual(ids, ["glm", "openrouter", "deepseek", "claude"]);
+	});
+
 	it("match predicates key off the model prefix", () => {
 		const providers = buildProviders({});
 		const glm = providers.find((p) => p.id === "glm");
