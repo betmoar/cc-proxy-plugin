@@ -3,16 +3,23 @@
 // status.js: loadEnv() before any process.env read (port plumbing may live only
 // in ~/.env), fetch the proxy over loopback, print plain text.
 //
-// Attribution (the "which provider does this route to?" column) is DERIVED, not
-// trusted: ids are matched against the registered providers' match() predicates
-// — first match wins, mirroring the router — falling back to the default
-// backend. The predicates here deliberately restate src/providers.js; if one
-// changes there, change it here (locked by test/list-models.test.js).
+// Attribution uses the REAL router — buildProviders(process.env) + resolve() —
+// so "which provider does this route to?" can never drift from what the proxy
+// actually does. No predicates are restated here. Providers are filtered to the
+// set the running proxy reports as registered (/ _status is the live truth) and
+// claude is always present, so resolve()'s default-backend fallback stays valid.
+//
+// DeepSeek rows also show the curated out-price (DEEPSEEK_PRICING) — the only
+// static data DeepSeek exposes (no pricing API); it's surfaced here so the
+// export has a real consumer instead of guarding dead data.
 //
 // DECISION: one flat column with a provider suffix, no --json. The raw shape is
 // one `curl localhost:4000/v1/models` away; this script is the human view.
 
 import { loadEnv } from "../src/env.js";
+import { DEEPSEEK_PRICING } from "../src/models.js";
+import { buildProviders } from "../src/providers.js";
+import { resolve } from "../src/router.js";
 
 // MUST stay directly under the imports: PROXY_PORT is evaluated at load time,
 // and a loadEnv() call below it would silently ignore a port set only in ~/.env
@@ -31,21 +38,15 @@ const DISPLAY = {
 };
 
 /**
- * Mirror the router: which provider does this model id route to, given the
- * registered provider ids and the default backend? Same disjoint predicates as
- * src/providers.js, restated against the /_status provider list.
+ * Route a model id through the real router. `providers` must be the array
+ * buildProviders() returned (isDefault flags set), so resolve()'s haiku pin,
+ * disjoint match()es, and default-backend fallback all apply unchanged.
  * @param {string} id
- * @param {string[]} providers registered provider ids from /_status
- * @param {string} [defaultBackend]
+ * @param {import("../src/providers.js").Provider[]} providers
  * @returns {string} provider id
  */
-export function attribute(id, providers, defaultBackend) {
-	if (id.startsWith("claude-haiku")) return "claude"; // pinned, internal ops
-	if (providers.includes("glm") && id.startsWith("glm-")) return "glm";
-	if (providers.includes("deepseek") && id.startsWith("deepseek-")) return "deepseek";
-	if (providers.includes("qwen") && id.startsWith("qwen") && !id.includes("/")) return "qwen";
-	if (providers.includes("openrouter") && id.includes("/")) return "openrouter";
-	return defaultBackend || "claude";
+export function attribute(id, providers) {
+	return resolve(id, { providers }).id;
 }
 
 async function fetchJson(url) {
@@ -73,19 +74,35 @@ async function main() {
 		process.exit(1);
 	}
 
-	const providers = Array.isArray(status.providers) ? status.providers : [];
 	const defaultBackend = status.defaultBackend || "claude";
+	const registered = (status.providers || []).includes("claude")
+		? status.providers
+		: [...(status.providers || []), "claude"];
+
+	// The live router, restricted to what / _status says is actually on. claude is
+	// always registered, so resolve() can always fall back to the default backend.
+	const providers = buildProviders(process.env, defaultBackend).filter((p) =>
+		registered.includes(p.id),
+	);
+
 	const rows = (models.data || []).map((m) => {
-		const pid = attribute(m.id, providers, defaultBackend);
-		return [m.id, DISPLAY[pid] || pid];
+		const pid = attribute(m.id, providers);
+		const name = DISPLAY[pid] || pid;
+		const price =
+			pid === "deepseek" && DEEPSEEK_PRICING[m.id]
+				? `$${DEEPSEEK_PRICING[m.id].out.toFixed(2)}/M out`
+				: "";
+		return { id: m.id, name, price };
 	});
 
-	const width = Math.max(4, ...rows.map(([id]) => id.length));
+	const idw = Math.max(4, ...rows.map((r) => r.id.length));
+	const nmw = Math.max(4, ...rows.map((r) => r.name.length));
 	process.stdout.write(
 		`models: ${rows.length} reachable via cc-proxy (default backend: ${defaultBackend})\n\n`,
 	);
-	for (const [id, name] of rows) {
-		process.stdout.write(`  ${id.padEnd(width)}  ${name}\n`);
+	for (const r of rows) {
+		const line = `  ${r.id.padEnd(idw)}  ${r.name.padEnd(nmw)}`;
+		process.stdout.write(r.price ? `${line}  ${r.price}\n` : `${line}\n`);
 	}
 	for (const e of models._errors || []) {
 		process.stdout.write(

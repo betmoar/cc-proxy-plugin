@@ -17,6 +17,7 @@ All notable changes to cc-proxy are recorded here. Versions follow [semver](http
 
 ### Changed
 - **Statusline `api:` → `or:`.** The OpenRouter credits gauge is renamed from the generic `api:` to `or:` — it was always OpenRouter-only, and the name became misleading now that a second provider gauge exists. Final bar order: `cc` → `glm` → `or` → `ds` → `qw` → `proxy down`.
+- **Claude discovery list: `claude-opus-4-8` → `claude-opus-5`.** `GET /v1/models` now advertises Opus 5 instead of the retired Opus 4.8, matching the other Claude ids already on current-gen.
 
 ### Fixed
 - **Unpaired ANSI `RESET` in the `ds:` statusline segment.** The DeepSeek gauge emitted a `RESET` escape with no preceding color escape (unlike `or:`, whose gauge is colorized). Harmless on most terminals but wrong by construction; the bare `RESET` is removed.

@@ -12,7 +12,7 @@ Claude Code → cc-proxy (:4000) → GLM | OpenRouter | DeepSeek | Qwen | Claude
   glm-*              → GLM         (x-api-key)
   vendor/model       → OpenRouter  (Bearer, opt-in)
   deepseek-*         → DeepSeek    (x-api-key, opt-in)
-  qwen3.x-*          → Qwen        (Bearer, opt-in)
+  qwen*             → Qwen        (Bearer, opt-in)
   claude-*           → Claude      (OAuth passthrough)
   claude-haiku-*     → Claude      (internal ops, always)
   unknown            → default backend (claude)
@@ -149,7 +149,7 @@ The statusline runs as its own subprocess and only inherits `settings.json`'s `e
 | `GLM_API_KEY` | — | Z.ai API key (lives in `~/.env`) |
 | `OPENROUTER_API_KEY` | — | Enable OpenRouter (slash-namespaced models; lives in `~/.env`) |
 | `DEEPSEEK_API_KEY` | — | Enable DeepSeek (bare `deepseek-*` models; lives in `~/.env`) |
-| `DASHSCOPE_API_KEY` | — | Enable Qwen (bare `qwen3.x-*` models, Token Plan skin; lives in `~/.env`) |
+| `DASHSCOPE_API_KEY` | — | Enable Qwen (bare `qwen`-prefixed models, Token Plan skin; lives in `~/.env`) |
 | `OPENROUTER_MODELS` | curated | Override the OpenRouter allowlist in `GET /v1/models` (comma-separated ids); discovery only |
 | `PROXY_PATH` | auto | Legacy override for the proxy entry point; the plugin tree's own `bin/cc-proxy.js` wins when present |
 | `PROXY_PORT` | `4000` | Proxy listen port |
