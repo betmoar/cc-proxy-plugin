@@ -32,7 +32,7 @@ done <<EOF
 ${CLAUDE_PLUGIN_ROOT:-}
 $([ -n "${PROXY_PATH:-}" ] && dirname "$(dirname "$PROXY_PATH")")
 $(ls -d "$HOME"/.claude/plugins/cache/*/cc-proxy/*/ 2>/dev/null | sort -V -r | sed 's:/*$::')
-$(dirname "$0")/..
+$PWD
 EOF
 [ -n "$root" ] || { echo 'cc-proxy: cannot locate plugin root; run /cc-proxy:setup or /resume'; exit 1; }
 node "$root/scripts/list-models.js"
