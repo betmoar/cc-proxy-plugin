@@ -13,6 +13,16 @@
 // static data DeepSeek exposes (no pricing API); it's surfaced here so the
 // export has a real consumer instead of guarding dead data.
 //
+// Context windows are curated per model — the Anthropic format has no
+// context_window field, and only OpenRouter serves one live, so this is
+// deliberately the display layer's concern (not the proxy's). All values below
+// were read from the vendors' own docs 2026-08-04:
+//   GLM:     docs.z.ai/guides/llm/glm-*.md  (4.5=128K; 4.6/4.7/5/5-Turbo/5.1=200K; 5.2=1M)
+//   DeepSeek: api-docs.deepseek.com/quick_start/pricing (1M)
+//   Qwen:    Alibaba Cloud Model Studio (1M, incl. 3.8-max-preview)
+// No number here is guessed; re-verify against the docs before a release
+// touching these models, exactly like DEEPSEEK_PRICING.
+//
 // DECISION: one flat column with a provider suffix, no --json. The raw shape is
 // one `curl localhost:4000/v1/models` away; this script is the human view.
 
@@ -28,6 +38,30 @@ loadEnv();
 
 const PORT = Number(process.env.PROXY_PORT || 4000);
 const FETCH_TIMEOUT_MS = 3000;
+
+// Curated context windows (tokens) per reachable id. All verified against the
+// vendors' docs 2026-08-04 — see the header comment for sources. ids without an
+// entry render no window column.
+export const CONTEXT_WINDOW = {
+	// GLM (docs.z.ai/guides/llm/glm-*)
+	"glm-4.5": "128K",
+	"glm-4.5-air": "128K",
+	"glm-4.6": "200K",
+	"glm-4.7": "200K",
+	"glm-5": "200K",
+	"glm-5-turbo": "200K",
+	"glm-5.1": "200K",
+	"glm-5.2": "1M",
+	// DeepSeek (api-docs.deepseek.com/quick_start/pricing)
+	"deepseek-v4-pro": "1M",
+	"deepseek-v4-flash": "1M",
+	// Qwen (Alibaba Cloud Model Studio)
+	"qwen3.8-max": "1M",
+	"qwen3.8-max-preview": "1M",
+	"qwen3.7-max": "1M",
+	"qwen3.7-plus": "1M",
+	"qwen3.6-flash": "1M",
+};
 
 const DISPLAY = {
 	glm: "GLM",
@@ -88,21 +122,26 @@ async function main() {
 	const rows = (models.data || []).map((m) => {
 		const pid = attribute(m.id, providers);
 		const name = DISPLAY[pid] || pid;
+		const ctx = CONTEXT_WINDOW[m.id] || "";
 		const price =
 			pid === "deepseek" && DEEPSEEK_PRICING[m.id]
 				? `$${DEEPSEEK_PRICING[m.id].out.toFixed(2)}/M out`
 				: "";
-		return { id: m.id, name, price };
+		return { id: m.id, name, ctx, price };
 	});
 
 	const idw = Math.max(4, ...rows.map((r) => r.id.length));
 	const nmw = Math.max(4, ...rows.map((r) => r.name.length));
+	const cw = Math.max(4, ...rows.map((r) => r.ctx.length));
 	process.stdout.write(
 		`models: ${rows.length} reachable via cc-proxy (default backend: ${defaultBackend})\n\n`,
 	);
 	for (const r of rows) {
-		const line = `  ${r.id.padEnd(idw)}  ${r.name.padEnd(nmw)}`;
-		process.stdout.write(r.price ? `${line}  ${r.price}\n` : `${line}\n`);
+		// ctx column only when the id has a known window; price column only for
+		// DeepSeek. Trailing fields are trimmed so short rows don't pad wastefully.
+		const base = `  ${r.id.padEnd(idw)}  ${r.name.padEnd(nmw)}`;
+		const withCtx = r.ctx ? `${base}  ${r.ctx.padEnd(cw)}` : base;
+		process.stdout.write(r.price ? `${withCtx}  ${r.price}\n` : `${withCtx}\n`);
 	}
 	for (const e of models._errors || []) {
 		process.stdout.write(

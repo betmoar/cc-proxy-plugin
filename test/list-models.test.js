@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { describe, it } from "node:test";
-import { attribute } from "../scripts/list-models.js";
+import { CONTEXT_WINDOW, attribute } from "../scripts/list-models.js";
 import { buildProviders } from "../src/providers.js";
 
 // The command's attribution IS the router: attribute() routes through
@@ -65,6 +65,37 @@ describe("list-models attribute()", () => {
 	it("routes any slash id to OpenRouter when registered", () => {
 		assert.equal(attribute("anthropic/claude-opus-4", ALL), "openrouter");
 		assert.equal(attribute("z-ai/glm-4.7", ALL), "openrouter");
+	});
+
+	// Curated, like DEEPSEEK_PRICING: values were verified against vendor docs
+	// 2026-08-04 (see list-models.js header). This pins the KEYS only — a dropped
+	// or mistyped model id (one the curated list forgets to cover) is caught even
+	// though the value itself is informational.
+	it("CONTEXT_WINDOW covers every bare glm/deepseek/qwen discovery id", () => {
+		const bare = [
+			"glm-4.5",
+			"glm-4.5-air",
+			"glm-4.6",
+			"glm-4.7",
+			"glm-5",
+			"glm-5-turbo",
+			"glm-5.1",
+			"glm-5.2",
+			"deepseek-v4-pro",
+			"deepseek-v4-flash",
+			"qwen3.8-max",
+			"qwen3.8-max-preview",
+			"qwen3.7-max",
+			"qwen3.7-plus",
+			"qwen3.6-flash",
+		];
+		for (const id of bare) {
+			assert.ok(CONTEXT_WINDOW[id], `CONTEXT_WINDOW missing ${id}`);
+		}
+		// And every context value is a known token string, never a guess.
+		for (const v of Object.values(CONTEXT_WINDOW)) {
+			assert.match(v, /^\d+K$|^1M$/, `suspicious context value: ${v}`);
+		}
 	});
 
 	it("falls back to the default backend for unmatched ids", () => {
