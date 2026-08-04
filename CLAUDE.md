@@ -264,3 +264,51 @@ tests in `providers.test.js` + `router.test.js`. Never a router/server change.
    Not a fallback mechanism: "use the plan when the Z.ai quota is spent" needs
    cross-request state (invariant 2). An explicit alias the user selects is
    stateless; automatic failover is not.
+9. **Publish a capability tier per model in `GET /v1/models`**, so cc-operator
+   stops guessing when a model it has never seen appears in the catalog.
+   Direction matters and only one direction is allowed: cc-proxy **publishes**,
+   cc-operator **consumes**. cc-operator already depends on this proxy one way
+   (`ops-tiers.sh --check` reads `/v1/models`), because routing is the layer
+   underneath it. Reading `tiers.env` back would invert that and make neither
+   plugin installable alone. A tier field on the discovery response respects the
+   arrow; a tiers.env read does not.
+
+   **The judgment already exists**: `MODEL_TIERS` in `scripts/render-models.js`
+   (Flagship / Strong / Specialist / Economy, unknown ids default Specialist).
+   Shipping it means moving that map from `scripts/` into `src/models.js` — a
+   real decision, because today the header of that file says the tier is
+   deliberately display-layer judgment, NOT src/. Moving it makes a curated
+   opinion part of the API surface: every new model then needs a tier before
+   discovery is correct, and a wrong one silently mis-tiers a dispatch. The
+   existing `test/render-models.test.js` coverage assertion (every curated
+   discovery id has a tier) becomes load-bearing rather than cosmetic.
+
+   **The two tier vocabularies are not the same axis** — this is the part to
+   think through before building. cc-proxy's are *capability grades* (how strong
+   is this model); cc-operator's are *roles* (JUDGMENT / IMPLEMENT / MECHANICAL
+   / RECON — what job is it for). They do not map 1:1: Specialist is a shape,
+   not a rung, and a cheap-but-fast model is a good MECHANICAL pick precisely
+   because it is *not* Flagship. So publish the capability grade and let
+   cc-operator own the role mapping; do not publish role names from here, or
+   this repo starts encoding another plugin's policy.
+
+   Trap for the consumer side: a bound id need NOT appear in `/v1/models`.
+   `claude-haiku-4-5-20251001` (the RECON default) is deliberately absent —
+   invariant 4 pins haiku to Claude and discovery advertises only three Claude
+   ids — so a tier lookup must tolerate a miss rather than dropping the row.
+
+   **Grades need evals before they are published.** Today `MODEL_TIERS` is one
+   person's read of vendor marketing; that is fine for an infographic and not
+   fine for a field another tool dispatches on. Whatever harness is built, two
+   properties matter more than the score itself: (a) it must be **re-runnable
+   per model**, because the catalog changes under us — the whole reason this
+   item exists is new ids arriving — so a one-off spreadsheet rots immediately;
+   (b) it must record *when* and *against which id spelling*, since a dated
+   alias (`deepseek-v4-flash-0731`) and its bare form can be different weights
+   on different hosts (see item 8). Cheap first cut: rank within a provider
+   only (vendors are internally consistent — `glm-5.2` > `glm-5.1` > `glm-4.x`
+   needs no eval), and reserve measurement for CROSS-provider placement, which
+   is the only part actually in doubt. Note the eval itself is billed: GLM and
+   Qwen are plan capacity (effectively free to re-run), DeepSeek and OpenRouter
+   are metered — so a full-matrix sweep has a real cost that a
+   rank-within-provider approach mostly avoids.
