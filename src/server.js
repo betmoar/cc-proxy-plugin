@@ -72,7 +72,11 @@ async function handleModels(res, config) {
 	let result;
 	try {
 		result = await collectModels(config);
-	} catch {
+	} catch (err) {
+		// Log the real bug rather than returning a generic 200 with an empty list
+		// and no trace — collectModels only throws via the test seam, so a hit here
+		// is a genuine regression worth surfacing in the proxy log.
+		console.error(`[models] collectModels threw: ${err?.message || err}`);
 		result = { data: [], _errors: [{ provider: "proxy", message: "internal error" }] };
 	}
 	const { data, _errors } = result;

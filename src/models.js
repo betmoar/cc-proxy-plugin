@@ -138,6 +138,9 @@ async function fetchGlmModels(glm, timeoutMs) {
 		return { entries: body.data.map(coerceEntry).filter(Boolean) };
 	} catch (err) {
 		if (err && err.name === "AbortError") return { error: "timeout" };
+		// Log the real cause — see fetchDeepSeekModels for why the proxy log must
+		// carry err.message even though the API response stays a pinned string.
+		console.error(`[models] glm fetch failed: ${err?.message || err}`);
 		return { error: "fetch failed" };
 	} finally {
 		clearTimeout(timer);
@@ -188,6 +191,11 @@ async function fetchDeepSeekModels(deepseek, timeoutMs) {
 		return { entries: body.data.map(coerceEntry).filter(Boolean) };
 	} catch (err) {
 		if (err && err.name === "AbortError") return { error: "timeout" };
+		// Log the real cause — the API response keeps a pinned string, but the
+		// proxy log must say WHY (DNS/TLS/refused vs a code bug), or "glm missing
+		// from /v1/models" becomes undebuggable. Never the stack (keys aren't in it,
+		// but the URL/headers might be).
+		console.error(`[models] deepseek fetch failed: ${err?.message || err}`);
 		return { error: "fetch failed" };
 	} finally {
 		clearTimeout(timer);

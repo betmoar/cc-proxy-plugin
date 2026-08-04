@@ -83,6 +83,20 @@ export function attribute(id, providers) {
 	return resolve(id, { providers }).id;
 }
 
+/**
+ * Restrict the full provider list to the set / _status reports as actually
+ * registered. claude is ALWAYS kept so resolve()'s default-backend fallback stays
+ * valid — / _status omits it only when it's the implicit default and the flag is
+ * absent, but it's always routable, so treating it as present is safe.
+ * @param {import("../src/providers.js").Provider[]} providers
+ * @param {string[]} [statusProviders]
+ * @returns {import("../src/providers.js").Provider[]}
+ */
+export function registeredProviders(providers, statusProviders = []) {
+	const on = statusProviders.includes("claude") ? statusProviders : [...statusProviders, "claude"];
+	return providers.filter((p) => on.includes(p.id));
+}
+
 async function fetchJson(url) {
 	const res = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
 	if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -93,10 +107,21 @@ async function main() {
 	let status;
 	try {
 		status = await fetchJson(`http://127.0.0.1:${PORT}/_status`);
-	} catch {
-		process.stderr.write(
-			`cc-proxy: proxy down on port ${PORT} — run /exit + /resume to re-trigger the SessionStart hook, or check /tmp/cc-proxy.log\n`,
-		);
+	} catch (err) {
+		// Distinguish "proxy down" (connection refused — restart the session) from a
+		// proxy that's up but returned a bad response (a code bug — the log won't show
+		// a dead proxy). Conflating them sends an operator chasing a restart for a bug.
+		const down =
+			err instanceof TypeError || /ECONNREFUSED|ENOTFOUND|fetch failed/i.test(err?.message || "");
+		if (down) {
+			process.stderr.write(
+				`cc-proxy: proxy down on port ${PORT} — run /exit + /resume to re-trigger the SessionStart hook, or check /tmp/cc-proxy.log\n`,
+			);
+		} else {
+			process.stderr.write(
+				`cc-proxy: /_status returned a bad response on port ${PORT} (${err.message})\n`,
+			);
+		}
 		process.exit(1);
 	}
 
@@ -109,14 +134,11 @@ async function main() {
 	}
 
 	const defaultBackend = status.defaultBackend || "claude";
-	const registered = (status.providers || []).includes("claude")
-		? status.providers
-		: [...(status.providers || []), "claude"];
-
 	// The live router, restricted to what / _status says is actually on. claude is
-	// always registered, so resolve() can always fall back to the default backend.
-	const providers = buildProviders(process.env, defaultBackend).filter((p) =>
-		registered.includes(p.id),
+	// always kept so resolve() can always fall back to the default backend.
+	const providers = registeredProviders(
+		buildProviders(process.env, defaultBackend),
+		status.providers,
 	);
 
 	const rows = (models.data || []).map((m) => {
@@ -157,3 +179,11 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 		process.exit(1);
 	});
 }
+
+// A downstream consumer closing the pipe early (e.g. `node list-models.js | head`)
+// makes stdout emit EPIPE. That's a normal CLI interaction, not an error to crash
+// on — swallow it and exit quietly instead of printing a stack trace.
+process.stdout.on("error", (err) => {
+	if (err && err.code === "EPIPE") process.exit(0);
+	throw err;
+});

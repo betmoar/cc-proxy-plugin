@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { describe, it } from "node:test";
-import { CONTEXT_WINDOW, attribute } from "../scripts/list-models.js";
+import { CONTEXT_WINDOW, attribute, registeredProviders } from "../scripts/list-models.js";
 import { DEEPSEEK_PRICING, DEFAULT_QWEN_MODELS } from "../src/models.js";
 import { buildProviders } from "../src/providers.js";
 
@@ -105,5 +105,37 @@ describe("list-models attribute()", () => {
 			"qwen",
 		);
 		assert.equal(attribute("some-future-model", buildProviders({}, "claude")), "claude");
+	});
+
+	// The registered-providers filter decides what /_status actually routes to.
+	// The claude fallback is load-bearing: resolve()'s default-backend fallback
+	// must always have claude available even when /_status omits it.
+	describe("registeredProviders()", () => {
+		const all = buildProviders({ DEEPSEEK_API_KEY: "d", DASHSCOPE_API_KEY: "q" }, "claude");
+
+		it("drops providers /_status doesn't report", () => {
+			const on = registeredProviders(all, ["glm", "claude"]).map((p) => p.id);
+			assert.ok(on.includes("glm"));
+			assert.ok(on.includes("claude"));
+			assert.ok(!on.includes("deepseek"), "deepseek not in /_status, must be dropped");
+			assert.ok(!on.includes("qwen"), "qwen not in /_status, must be dropped");
+		});
+
+		it("always keeps claude even when /_status omits it", () => {
+			// /_status could omit claude when it's the implicit default; the filter
+			// must still keep it so resolve()'s default-backend fallback works.
+			const on = registeredProviders(all, ["glm", "deepseek", "qwen"]).map((p) => p.id);
+			assert.ok(on.includes("claude"), "claude must be kept for default-backend fallback");
+		});
+
+		it("keeps every provider when /_status lists them all", () => {
+			const on = registeredProviders(all, ["glm", "deepseek", "qwen", "claude"]).map((p) => p.id);
+			assert.deepEqual(on.sort(), ["claude", "deepseek", "glm", "qwen"]);
+		});
+
+		it("handles a missing /_status providers array (treats it as only claude)", () => {
+			const on = registeredProviders(all).map((p) => p.id);
+			assert.deepEqual(on, ["claude"], "no providers array → only the default backend stays");
+		});
 	});
 });
