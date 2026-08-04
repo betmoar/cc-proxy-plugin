@@ -247,10 +247,14 @@ async function loadDeepSeekBalance(cacheDir) {
 		});
 		if (!res.ok) throw new Error(`HTTP ${res.status}`);
 		const json = await res.json();
-		// Prefer a USD balance_infos row; fall back to the first entry.
+		// The gauge is denominated in dollars (`dollarTier`), so only a USD
+		// balance_infos row can drive it. A CNY-only account keeps its currency
+		// for reporting but leaves `remaining` NaN, which renders `--` rather
+		// than a wrong-currency dollar tier.
 		const infos = Array.isArray(json?.balance_infos) ? json.balance_infos : [];
-		const row = infos.find((b) => b?.currency === "USD") || infos[0] || null;
-		const remaining = row ? Number(row.total_balance) : Number.NaN;
+		const usd = infos.find((b) => b?.currency === "USD") || null;
+		const row = usd || infos[0] || null;
+		const remaining = usd ? Number(usd.total_balance) : Number.NaN;
 		const result = {
 			remaining,
 			currency: row?.currency || null,
