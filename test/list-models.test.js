@@ -1,6 +1,11 @@
 import { strict as assert } from "node:assert";
 import { describe, it } from "node:test";
-import { CONTEXT_WINDOW, attribute, registeredProviders } from "../scripts/list-models.js";
+import {
+	CONTEXT_WINDOW,
+	attribute,
+	formatContextWindow,
+	registeredProviders,
+} from "../scripts/list-models.js";
 import {
 	CONTEXT_WINDOW as CONTEXT_WINDOW_TOKENS,
 	DEEPSEEK_PRICING,
@@ -118,7 +123,12 @@ describe("list-models attribute()", () => {
 			"display and wire CONTEXT_WINDOW tables cover different id sets — they must derive from one source",
 		);
 		for (const [id, tokens] of Object.entries(CONTEXT_WINDOW_TOKENS)) {
-			const expected = tokens >= 1000000 ? `${tokens / 1000000}M` : `${tokens / 1000}K`;
+			// Call the REAL formatter rather than restating its arithmetic. A
+			// mirrored copy silently diverges the moment the original changes — and
+			// it already had: this line divided exactly while formatContextWindow()
+			// rounds, so a curated value corrected to a true power of two (131072)
+			// would fail here against a display string that is exactly right.
+			const expected = formatContextWindow(tokens);
 			assert.equal(
 				CONTEXT_WINDOW[id],
 				expected,

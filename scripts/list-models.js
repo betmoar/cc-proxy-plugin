@@ -58,7 +58,7 @@ const FETCH_TIMEOUT_MS = 3000;
  * @param {number} tokens
  * @returns {string}
  */
-function formatContextWindow(tokens) {
+export function formatContextWindow(tokens) {
 	// Rounded, not exact division: vendor windows are often powers of two, and
 	// the vendor's own "128K" means 131072. Correcting the table to the true
 	// integer would otherwise render "131.072K". Rounding keeps the column

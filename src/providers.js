@@ -174,15 +174,19 @@ export function buildProviders(env = process.env, defaultId = env.DEFAULT_BACKEN
 			baseUrl: "https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic",
 			apiKey: env.DASHSCOPE_API_KEY,
 			auth: "bearer",
-			// `qwen*` plus DATED third-party ids the plan resells under its own
-			// spelling. Bare `deepseek-v4-pro`/`glm-5.2` are deliberately NOT claimed
-			// even though the plan serves them: the id alone can't say which account
-			// pays, and silently moving them off their native backend would change
-			// both the bill and the context (the plan's gateway injects a preamble —
-			// +79 input tokens on deepseek-v4-pro). Only the dated ids are
-			// unambiguous, because they exist nowhere else. Slash ids stay
-			// OpenRouter's. → CLAUDE.md backlog item 8 for the explicit-prefix scheme
-			// that would cover the ambiguous ones.
+			// Three disjoint claims, no slash ids (those are OpenRouter's):
+			//   1. `qwen*` — the plan's own models.
+			//   2. DATED third-party builds (`deepseek-v4-flash-0731`) — plan-only
+			//      spellings; the origin vendor 400s them, so there is no ambiguity.
+			//   3. QWEN_PLAN_RESELLS — bare ids the plan serves whose NATIVE route
+			//      bills metered credits ("plan before credits"). Currently just
+			//      `deepseek-v4-pro`. `glm-5.2` is served by the plan too but is
+			//      NOT here: Z.ai is itself a plan, and a native plan outranks a
+			//      resold one.
+			// Case 3 is the one that trades a known cost for a saving: the plan's
+			// gateway injects a preamble (+79 input tokens on deepseek-v4-pro), so
+			// the routes are not interchangeable, and there is currently no spelling
+			// that reaches the native one. → CLAUDE.md backlog item 8.
 			match: (m) =>
 				typeof m === "string" &&
 				!m.includes("/") &&
