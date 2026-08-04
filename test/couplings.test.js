@@ -72,6 +72,36 @@ describe("cross-file couplings", () => {
 		assert.equal(market, pkg, "marketplace.json entry description drifted from package.json");
 	});
 
+	// COUPLING: scripts/list-models.js's display CONTEXT_WINDOW must be
+	// DERIVED from src/models.js's CONTEXT_WINDOW (the wire source of truth
+	// for GET /v1/models' context_window field), never a second
+	// hand-maintained literal. This is the exact "same data in two files"
+	// drift class this test file exists to catch — before the 0.5.1
+	// promotion, list-models.js declared its own curated { id: "128K" } map
+	// that could silently disagree with the number now shipped on the wire.
+	it("scripts/list-models.js imports its context-window source from src/models.js instead of restating it", () => {
+		const src = read("scripts/list-models.js");
+		assert.ok(
+			/import\s*\{[^}]*CONTEXT_WINDOW as CONTEXT_WINDOW_TOKENS[^}]*\}\s*from\s*"\.\.\/src\/models\.js"/.test(
+				src,
+			),
+			"list-models.js must import CONTEXT_WINDOW from src/models.js (aliased), not restate it",
+		);
+		// Re-declaration is caught semantically (key set + every value) by
+		// test/list-models.test.js "display CONTEXT_WINDOW is derived
+		// byte-for-byte…"; a hand-written table diverges there the moment it
+		// differs at all. This half only pins the DERIVATION SITE, so the
+		// export stays a mapping over the imported table rather than a literal
+		// that happens to agree today. A text probe for a literal's opening
+		// comment was near-inert — it only fired on `{\n // GLM`.
+		assert.ok(
+			/export const CONTEXT_WINDOW\s*=\s*Object\.fromEntries\(\s*\n?\s*Object\.entries\(CONTEXT_WINDOW_TOKENS\)/.test(
+				src,
+			),
+			"list-models.js's CONTEXT_WINDOW must stay a derivation over the imported table, not a hand-written literal",
+		);
+	});
+
 	// COUPLING: every env var offered in .env.example must be documented in the
 	// README env table and in docs/OPERATIONS.md (new knobs go in all three).
 	it("every .env.example key is documented in README.md and docs/OPERATIONS.md", () => {

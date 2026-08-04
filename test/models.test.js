@@ -2,6 +2,7 @@ import { strict as assert } from "node:assert";
 import http from "node:http";
 import { afterEach, describe, it } from "node:test";
 import {
+	CONTEXT_WINDOW,
 	DEEPSEEK_PRICING,
 	DEFAULT_CLAUDE_MODELS,
 	DEFAULT_OPENROUTER_MODELS,
@@ -9,6 +10,7 @@ import {
 	coerceCreated,
 	collectModels,
 	parseOpenRouterModels,
+	withContextWindow,
 } from "../src/models.js";
 import { buildProviders } from "../src/providers.js";
 import { createServer } from "../src/server.js";
@@ -90,6 +92,65 @@ describe("models.js pure helpers", () => {
 		assert.equal(coerceCreated(1700000000), null);
 		assert.equal(coerceCreated(undefined), null);
 		assert.equal(coerceCreated(null), null);
+	});
+
+	it("CONTEXT_WINDOW holds integer token counts, never display strings", () => {
+		assert.equal(CONTEXT_WINDOW["glm-4.5"], 128000);
+		assert.equal(CONTEXT_WINDOW["glm-5.2"], 1000000);
+		assert.equal(CONTEXT_WINDOW["deepseek-v4-pro"], 1000000);
+		assert.equal(CONTEXT_WINDOW["qwen3.7-max"], 1000000);
+		for (const v of Object.values(CONTEXT_WINDOW)) {
+			assert.equal(
+				typeof v,
+				"number",
+				"CONTEXT_WINDOW values must be integers, not '128K'-style strings",
+			);
+			assert.ok(Number.isInteger(v) && v > 0);
+		}
+	});
+
+	it("withContextWindow attaches context_window for a covered id", () => {
+		const entry = { type: "model", id: "glm-4.5", display_name: "GLM-4.5", created_at: null };
+		assert.deepEqual(withContextWindow(entry), { ...entry, context_window: 128000 });
+	});
+
+	it("withContextWindow omits context_window (never null) for an uncovered id", () => {
+		const entry = {
+			type: "model",
+			id: "deepseek/deepseek-v4-pro",
+			display_name: "DeepSeek V4 Pro",
+			created_at: null,
+		};
+		const out = withContextWindow(entry);
+		assert.deepEqual(out, entry);
+		assert.ok(!("context_window" in out), "uncovered id must omit the field, not emit null");
+	});
+
+	// GUARDRAIL: CONTEXT_WINDOW is an object literal, so a bare
+	// `CONTEXT_WINDOW[id]` lookup inherits from Object.prototype. Model ids come
+	// from live vendor catalogs (GLM/DeepSeek `/models`) and coerceEntry only
+	// rejects a falsy id, so the key space is theirs. Pre-fix, an id of
+	// `__proto__` shipped `"context_window": {}` on the wire, and
+	// `constructor`/`toString` attached a FUNCTION — dropped by JSON.stringify
+	// but present in the object collectModels() hands back in-process. A
+	// consumer following the documented contract (`"context_window" in entry`
+	// → a token count) then budgets against an object.
+	it("withContextWindow omits for prototype-inherited ids (__proto__, constructor, toString)", () => {
+		for (const id of ["__proto__", "constructor", "toString", "hasOwnProperty", "valueOf"]) {
+			const entry = { type: "model", id, display_name: "hostile", created_at: null };
+			const out = withContextWindow(entry);
+			assert.ok(
+				!("context_window" in out),
+				`${id}: prototype member leaked as a context_window (${JSON.stringify(out.context_window)})`,
+			);
+			assert.deepEqual(out, entry);
+		}
+	});
+
+	it("withContextWindow omits for the curated claude-* ids too", () => {
+		for (const m of DEFAULT_CLAUDE_MODELS) {
+			assert.ok(!("context_window" in withContextWindow(m)), `${m.id} must omit context_window`);
+		}
 	});
 });
 
@@ -474,6 +535,23 @@ describe("collectModels fan-out", () => {
 		assert.equal(dupes[0].display_name, "GLM Dupe");
 	});
 
+	it("collectModels attaches context_window to a covered id, omits it for an uncovered one", async () => {
+		glm = await startBackend(() => ({
+			status: 200,
+			headers: { "content-type": "application/json" },
+			body: GLM_MODELS_BODY, // glm-5, glm-5.2 — both covered
+		}));
+		const config = wireConfig(glm.baseUrl, { orKey: "or-test" }); // openrouter: uncovered
+		const { data } = await collectModels(config);
+		const glm5 = data.find((m) => m.id === "glm-5");
+		assert.equal(glm5.context_window, 200000);
+		const glm52 = data.find((m) => m.id === "glm-5.2");
+		assert.equal(glm52.context_window, 1000000);
+		const orEntry = data.find((m) => m.id === "deepseek/deepseek-v4-pro");
+		assert.ok(orEntry, "openrouter entry should be present");
+		assert.ok(!("context_window" in orEntry), "uncovered openrouter id must omit context_window");
+	});
+
 	it("modelsForceThrow makes collectModels reject (process-safety seam)", async () => {
 		// unused high port; the throw fires before any fetch so it's never dialed
 		const config = wireConfig("http://127.0.0.1:59999", { modelsForceThrow: true });
@@ -602,6 +680,16 @@ describe("GET /v1/models endpoint", () => {
 		assert.equal(res.status, 200);
 		const body = JSON.parse(res.body);
 		assert.deepEqual(body._errors, [{ provider: "glm", message: "HTTP 502" }]);
+	});
+
+	it("wire entries carry integer context_window for covered ids, omit it for uncovered ones", async () => {
+		await up({ configOpts: { orKey: "or-test" } });
+		const res = await getReq(proxy.port, "/v1/models");
+		const body = JSON.parse(res.body);
+		const glm5 = body.data.find((m) => m.id === "glm-5");
+		assert.equal(glm5.context_window, 200000);
+		const claudeEntry = body.data.find((m) => m.id === "claude-fable-5");
+		assert.ok(!("context_window" in claudeEntry), "claude-* ids must omit context_window");
 	});
 
 	it("matches with a query string", async () => {

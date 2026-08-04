@@ -95,6 +95,16 @@ omitted). Best-effort by design: a failed live leg yields an `_errors` entry, no
 a failed response, keeping the endpoint stateless (invariant 2) and the fan-out
 non-blocking.
 
+Each entry carries a non-standard `context_window` when its id has a curated
+window (`src/models.js` `CONTEXT_WINDOW`, attached uniformly by
+`withContextWindow()`): an **integer token count**, never a display string.
+ids with no curated window — the OpenRouter-prefixed `vendor/model` ids and
+`claude-*` — omit the field rather than emit `null`, so "unknown" is
+distinguishable from "known" via `"context_window" in entry`. This is a
+published contract with a named downstream consumer (cc-reload budgets a
+session against it), which is why the table lives in `src/` rather than in the
+display layer — see CLAUDE.md "Reversed decisions".
+
 ### Registering models in `/model`
 
 Claude Code's picker rejects unknown ids unless injected via `ANTHROPIC_CUSTOM_MODEL_OPTION` (exactly one slot; validation skipped). `/cc-proxy:setup` registers `glm-5.2[1m]`.

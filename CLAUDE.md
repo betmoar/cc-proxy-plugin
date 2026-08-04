@@ -170,6 +170,15 @@ Each is locked by tests; the test names tell you what you broke.
   (`src/models.js`). `modelsTimeoutMs` is config-only (no env var — keep it out
   of `.env.example` or the coupling test will demand doc entries). The
   `[models]` summary log line is not parsed by `status.js`.
+  Entries carry a non-standard **`context_window`** (integer tokens) when the id
+  is in `CONTEXT_WINDOW`; uncurated ids OMIT it rather than send `null`
+  (`"context_window" in entry` is the check). Two traps when touching it: (a)
+  attach via `withContextWindow()`, which uses `Object.hasOwn` — a bare
+  `CONTEXT_WINDOW[id]` lookup inherits from `Object.prototype`, and a vendor id
+  of `__proto__`/`constructor` then ships `{}` or a function as the window
+  (fixed 0.5.1, locked by `test/models.test.js`); (b) the response shape is
+  documented in README + OPERATIONS + ARCHITECTURE and no test enforces that —
+  a new wire field must be added to all three by hand.
 
 ## Decision procedures
 
@@ -191,6 +200,31 @@ tests in `providers.test.js` + `router.test.js`. Never a router/server change.
 2. `pnpm version patch|minor` (never hand-edit versions).
 3. `pnpm check`, push. The marketplace repo (`betmoar/ccp-market`) points at
    this repo; users pick it up via `claude plugin update cc-proxy@betmoar`.
+
+## Reversed decisions
+
+- **`context_window` is now published on `GET /v1/models` (0.5.1), reversing
+  the 0.4.3-era call that it was deliberately display-layer-only.** The
+  curated integer table lived in `scripts/list-models.js` as `CONTEXT_WINDOW`
+  (human strings like `"128K"`), with a header comment stating "the Anthropic
+  format has no context_window field ... deliberately the display layer's
+  concern (not the proxy's)". That held until a second consumer needed the
+  number: the `cc-reload` Claude Code plugin budgets a session's context usage
+  against its model's window, and was hard-coding its own model-id table —
+  the exact "same curated data in two places" drift this repo's own
+  `test/couplings.test.js` exists to catch, just one repo removed. The table
+  is now `CONTEXT_WINDOW` in `src/models.js` (integer tokens, not display
+  strings), attached to discovery entries via `withContextWindow()` in
+  `collectModels()`. ids with no curated window (OpenRouter-prefixed ids,
+  `claude-*`) OMIT the field — never `null` — so a consumer can tell "unknown"
+  from "known" with `"context_window" in entry`. `scripts/list-models.js`
+  keeps its `CONTEXT_WINDOW` export but it is now a pure format-derivation
+  (`formatContextWindow()`) of the `src/models.js` table, locked against
+  redrift by `test/couplings.test.js` and `test/list-models.test.js`. If you
+  are tempted to reverse this again (move it back to display-only), first
+  check whether `cc-reload` (or any other consumer) still reads it — direction
+  matters here too, same as `MODEL_TIERS`/cc-operator: cc-proxy **publishes**
+  curated model facts, downstream plugins **consume**.
 
 ## Backlog (prioritized, with context)
 

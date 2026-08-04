@@ -1,7 +1,11 @@
 import { strict as assert } from "node:assert";
 import { describe, it } from "node:test";
 import { CONTEXT_WINDOW, attribute, registeredProviders } from "../scripts/list-models.js";
-import { DEEPSEEK_PRICING, DEFAULT_QWEN_MODELS } from "../src/models.js";
+import {
+	CONTEXT_WINDOW as CONTEXT_WINDOW_TOKENS,
+	DEEPSEEK_PRICING,
+	DEFAULT_QWEN_MODELS,
+} from "../src/models.js";
 import { buildProviders } from "../src/providers.js";
 
 // The command's attribution IS the router: attribute() routes through
@@ -93,9 +97,33 @@ describe("list-models attribute()", () => {
 		for (const id of [...derived, ...glmIds]) {
 			assert.ok(CONTEXT_WINDOW[id], `CONTEXT_WINDOW missing ${id}`);
 		}
-		// And every context value is a known token string, never a guess.
+		// And every context value is a whole-unit token string, never a guess and
+		// never fractional. `^1M$` would have rejected a legitimate future 2M
+		// model, so the M side is `\d+` too — the property being asserted is
+		// "no decimal point", not "no window larger than 1M".
 		for (const v of Object.values(CONTEXT_WINDOW)) {
-			assert.match(v, /^\d+K$|^1M$/, `suspicious context value: ${v}`);
+			assert.match(v, /^\d+[KM]$/, `suspicious context value: ${v}`);
+		}
+	});
+
+	// COUPLING: list-models.js's display CONTEXT_WINDOW must be a pure
+	// rendering of src/models.js's integer CONTEXT_WINDOW (the wire source of
+	// truth) — same key set, and each value the human formatting of the
+	// integer. Catches the exact drift class this promotion exists to kill: a
+	// curated id/window edited in one file but not the other.
+	it("display CONTEXT_WINDOW is derived byte-for-byte from src/models.js's integer table", () => {
+		assert.deepEqual(
+			Object.keys(CONTEXT_WINDOW).sort(),
+			Object.keys(CONTEXT_WINDOW_TOKENS).sort(),
+			"display and wire CONTEXT_WINDOW tables cover different id sets — they must derive from one source",
+		);
+		for (const [id, tokens] of Object.entries(CONTEXT_WINDOW_TOKENS)) {
+			const expected = tokens >= 1000000 ? `${tokens / 1000000}M` : `${tokens / 1000}K`;
+			assert.equal(
+				CONTEXT_WINDOW[id],
+				expected,
+				`${id}: display string ${CONTEXT_WINDOW[id]} doesn't match formatted ${tokens}`,
+			);
 		}
 	});
 

@@ -12,12 +12,17 @@
 // predicate restated here. Providers are filtered to the set / _status reports
 // registered (registeredProviders()).
 //
-// The ONLY curated data is the intelligence tier (MODEL_TIERS) — like
-// CONTEXT_WINDOW, it is the display layer's judgment, deliberately NOT in
-// src/. Keys are the model ids as /v1/models returns them. Unknown ids fall back
-// to "Specialist" so a future model still renders a tier. Pinned by
-// test/render-models.test.js so a silent drop (the opus-4-8 class of bug) is
-// caught at the test gate.
+// The ONLY curated data is the intelligence tier (MODEL_TIERS): display-layer
+// judgment, deliberately NOT in src/. Keys are the model ids as /v1/models
+// returns them. Unknown ids fall back to "Specialist" so a future model still
+// renders a tier. Pinned by test/render-models.test.js so a silent drop (the
+// opus-4-8 class of bug) is caught at the test gate.
+//
+// CONTEXT_WINDOW used to sit beside it under the same rule; as of 0.5.1 it is
+// in src/models.js and published on /v1/models, because a second consumer
+// (cc-reload) needed the number. Do NOT read that reversal as precedent for
+// moving MODEL_TIERS too — see CLAUDE.md backlog item 9: publishing a tier
+// makes a curated opinion part of the API surface and wants evals first.
 
 import { loadEnv } from "../src/env.js";
 import { buildProviders } from "../src/providers.js";
@@ -29,8 +34,9 @@ loadEnv();
 const PORT = Number(process.env.PROXY_PORT || 4000);
 const FETCH_TIMEOUT_MS = 3000;
 
-/** Intelligence tier per model id — the display layer's judgment, curated like
- * CONTEXT_WINDOW. A model absent from this map renders the default "Specialist".
+/** Intelligence tier per model id — display-layer judgment, curated here and
+ * not in src/ (see the header note on the 0.5.1 CONTEXT_WINDOW reversal).
+ * A model absent from this map renders the default "Specialist".
  * @type {Record<string, "Flagship" | "Strong" | "Specialist" | "Economy">}
  */
 export const MODEL_TIERS = {

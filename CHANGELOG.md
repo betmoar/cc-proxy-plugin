@@ -2,6 +2,18 @@
 
 All notable changes to cc-proxy are recorded here. Versions follow [semver](https://semver.org/); `package.json` is the single source of truth and propagates to `.claude-plugin/plugin.json` via `scripts/sync-version.mjs`.
 
+## [0.5.1] — 2026-08-04
+
+### Added
+- **`context_window` on `GET /v1/models` entries.** Every discovery entry for a curated id (GLM, DeepSeek native, Qwen) now carries `context_window` as an integer token count (e.g. `128000`, `1000000`) on the wire. ids with no curated window — the OpenRouter-prefixed ids (`deepseek/*`, `qwen/*`, `moonshotai/*`, `tencent/*`) and the `claude-*` ids — OMIT the field entirely; it is never emitted as `null`, so a consumer distinguishes "unknown" from "known" with `"context_window" in entry`. This is a **reversal** of the 0.4.3-era decision (recorded in `scripts/list-models.js`'s header) that context-window data was deliberately the display layer's concern, not the proxy's. Reason: a second consumer (the `cc-reload` Claude Code plugin, which budgets a session's context usage against its model's window) now needs the number programmatically, and hard-coding a duplicate model-id table in every consumer is exactly the drift failure mode this repo's own `test/couplings.test.js` exists to catch — so the curated table was promoted from the display script into `src/models.js` as the single source, and `scripts/list-models.js` now only formats it for humans (`128000` → `"128K"`). Rendered `/cc-proxy:models` output is unchanged (byte-identical) for every currently-covered id.
+
+### Fixed
+- **Prototype-inherited model ids leaked a garbage `context_window`.** `withContextWindow()` looked the id up with `CONTEXT_WINDOW[entry.id]` on an object literal, so ids that name an `Object.prototype` member resolved to the inherited value instead of missing: a vendor id of `__proto__` shipped `"context_window": {}` on the wire, and `constructor`/`toString` attached a *function* (dropped by `JSON.stringify`, but present in the object `collectModels()` returns in-process). A consumer following the documented contract — `"context_window" in entry` means a token count — would then budget against an object. Model ids come from the live GLM/DeepSeek catalogs and `coerceEntry()` only rejects a falsy id, so the key space belongs to the vendor. Now uses `Object.hasOwn`; locked by `test/models.test.js` "withContextWindow omits for prototype-inherited ids".
+- **`formatContextWindow()` could render a fractional display string.** It divided without rounding, so the moment a curated value is corrected to a true power of two (`"glm-4.5": 131072` — which is what the vendor's "128K" means) the `/cc-proxy:models` column would read `"131.072K"`. Now rounds. The guard assertion was also widened from `/^\d+K$|^1M$/` to `/^\d+[KM]$/`, which rejected any legitimate future 2M model — the property being asserted is "no decimal point", not "nothing larger than 1M".
+
+### Changed
+- **Curated `CONTEXT_WINDOW` moved from `scripts/list-models.js` to `src/models.js`** as an integer-token table (`CONTEXT_WINDOW`, plus `withContextWindow()` applied in `collectModels()`). `scripts/list-models.js` re-exports a display-string `CONTEXT_WINDOW` (id → `"128K"`/`"1M"`) derived from the promoted table via `formatContextWindow()`, so the two can no longer independently drift — locked by `test/couplings.test.js` and `test/list-models.test.js`. Source provenance (docs.z.ai for GLM, api-docs.deepseek.com for DeepSeek, Alibaba Model Studio for Qwen, all dated 2026-08-04) and the "re-verify before each release" instruction moved with the table.
+
 ## [0.5.0] — 2026-08-04
 
 ### Added

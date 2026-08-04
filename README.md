@@ -76,6 +76,12 @@ Qwen come from curated lists (Qwen exposes no `/models` endpoint). If a live leg
 the response is still `200` and names the failed provider in a non-standard `_errors`
 array. Set `OPENROUTER_MODELS` to override which OpenRouter ids appear.
 
+Entries whose id has a curated context window also carry a non-standard
+`context_window` — an **integer token count** (`1000000`, not `"1M"`). ids
+without a curated window (the OpenRouter-prefixed `vendor/model` ids, and
+`claude-*`) **omit the field entirely** rather than sending `null`, so a
+consumer tells "unknown" from "known" with `"context_window" in entry`.
+
 ## Commands
 
 The plugin ships slash commands that reach proxy backends **without changing your session model**.
