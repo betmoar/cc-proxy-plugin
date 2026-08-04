@@ -38,15 +38,16 @@ Runtime facts, known traps, and debugging. For design rationale, see [`ARCHITECT
 
 The proxy is spawned **detached** (`spawn + unref`), so it survives the hook exiting. If it dies mid-session, recovery needs a new session (`/exit` + `/resume`) to re-trigger SessionStart; the statusline shows `proxy down` until then.
 
-`/cc-proxy:setup` runs `scripts/start-proxy.js`, which calls the same `ensureProxyRunning()` so the proxy is up the moment setup finishes. The one difference from the hook: it passes an explicit `env` (merged from settings.json over `process.env`), because on a first-run setup nothing has injected the plumbing vars into the process yet. The spawned child then loads `~/.env` itself for `GLM_API_KEY`/`OPENROUTER_API_KEY`. `spawnProxy()` takes an optional `env` arg for this; it defaults to `process.env`, leaving the SessionStart path unchanged.
+`/cc-proxy:setup` runs `scripts/start-proxy.js`, which calls the same `ensureProxyRunning()` so the proxy is up the moment setup finishes. The one difference from the hook: it passes an explicit `env` (merged from settings.json over `process.env`), because on a first-run setup nothing has injected the plumbing vars into the process yet. The spawned child then loads `~/.env` itself for `GLM_API_KEY`/`OPENROUTER_API_KEY`/`DEEPSEEK_API_KEY`/`DASHSCOPE_API_KEY`. `spawnProxy()` takes an optional `env` arg for this; it defaults to `process.env`, leaving the SessionStart path unchanged.
 
 ## Proxy infrastructure
 
-- **Auth:** Claude route preserves `Authorization` (OAuth); GLM sets `x-api-key`; OpenRouter sets `Authorization: Bearer`.
+- **Auth:** Claude route preserves `Authorization` (OAuth); GLM + DeepSeek set `x-api-key`; OpenRouter + Qwen set `Authorization: Bearer`.
 - **SSE streaming** is straight `pipe()` passthrough with back-pressure (no parsing).
+- **`/_ping`** (GET) returns a bare `200` with an empty body — the fastest possible up/down check (no config read, no serialization). Answer before any request body is buffered; query-string tolerant like `/_status`. No `content-type` (empty body).
 - **`/_status`** (GET) returns `{ port, version, defaultBackend, providers }`. `version` is what the stale-proxy handshake compares against the plugin tree.
 - **`/_shutdown`** (POST only; GET gets a 405) gracefully stops the proxy: listener closes, in-flight responses finish, process exits when the event loop drains. Used by the SessionStart hook to replace a stale version. Loopback-bound like everything else; carries no auth because anyone who can reach the port can already spend the injected keys.
-- **`/v1/models`** (GET; other methods 405) returns a merged, best-effort Anthropic-format model list — GLM live, Claude + OpenRouter static. Each live leg is bounded by a ~3 s timeout (`modelsTimeoutMs`, not env-configurable); a failed leg is named in a non-standard `_errors` array and the response is still `200`. Synthesized, not forwarded; `/v1/models/<id>` still forwards.
+- **`/v1/models`** (GET; other methods 405) returns a merged, best-effort Anthropic-format model list — GLM + DeepSeek live, Claude + OpenRouter + Qwen static. Each live leg is bounded by a ~3 s timeout (`modelsTimeoutMs`, not env-configurable); a failed leg is named in a non-standard `_errors` array and the response is still `200`. Synthesized, not forwarded; `/v1/models/<id>` still forwards.
 - **Orphan log inode trap:** `rm -f $PROXY_LOG && touch $PROXY_LOG` while the proxy runs leaves it writing to the deleted inode — output "disappears". Truncate in place (`truncate -s 0`) or restart the proxy; never `rm && touch` a file a live process holds open.
 
 ## Context-overflow handling

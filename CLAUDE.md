@@ -82,6 +82,21 @@ Each is locked by tests; the test names tell you what you broke.
   `name` and `source` must match `plugin.json`; `test/marketplace.test.js` locks
   it. (It carries no version — the central `betmoar/ccp-market` is the primary
   channel; this is the fallback.)
+- **Plugin description** is carried by three manifests (`package.json`,
+  `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json` entry). Change
+  one → all three. Nothing at runtime reads all three, so drift is invisible
+  until a user reads the stale one (package.json advertised "Z.ai and
+  OpenRouter" two providers after DeepSeek and Qwen shipped). → locked by
+  `test/couplings.test.js`.
+- **`docs/models.html` is a generated artifact**, rendered against a *live*
+  proxy (`pnpm models:html`). Two traps: (a) CI can't regenerate it, so it can
+  only be pinned to the static catalog — `test/render-models.test.js` asserts
+  every curated id appears and that the hero's count matches the rows drawn;
+  (b) the running proxy may be older than your working tree — the version
+  handshake replaces a *version*-mismatched proxy, so same-version code changes
+  need a manual `POST /_shutdown` + restart before rendering, or the artifact
+  silently captures the old catalog (this is how it shipped 23 of 24 models).
+  After adding a model: restart the proxy, then `pnpm models:html`.
 - **`upstreamRequestOptions()`** in `src/proxy.js` is the single place upstream
   request options are built, shared by the streaming and buffered paths. Do not
   reintroduce a second copy in `server.js` — that duplication is how the

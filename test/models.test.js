@@ -2,8 +2,10 @@ import { strict as assert } from "node:assert";
 import http from "node:http";
 import { afterEach, describe, it } from "node:test";
 import {
+	DEEPSEEK_PRICING,
 	DEFAULT_CLAUDE_MODELS,
 	DEFAULT_OPENROUTER_MODELS,
+	DEFAULT_QWEN_MODELS,
 	coerceCreated,
 	collectModels,
 	parseOpenRouterModels,
@@ -14,7 +16,7 @@ import { createServer } from "../src/server.js";
 describe("models.js pure helpers", () => {
 	it("DEFAULT_CLAUDE_MODELS holds only reachable Claude ids (no haiku, no mythos)", () => {
 		const ids = DEFAULT_CLAUDE_MODELS.map((m) => m.id);
-		assert.deepEqual(ids, ["claude-fable-5", "claude-opus-4-8", "claude-sonnet-5"]);
+		assert.deepEqual(ids, ["claude-fable-5", "claude-opus-5", "claude-sonnet-5"]);
 		for (const m of DEFAULT_CLAUDE_MODELS) {
 			assert.equal(m.type, "model");
 			assert.equal(m.created_at, null);
@@ -43,8 +45,35 @@ describe("models.js pure helpers", () => {
 				display_name: "Kimi K2.7 Code",
 				created_at: null,
 			},
+			{ type: "model", id: "moonshotai/kimi-k3", display_name: "Kimi K3", created_at: null },
 			{ type: "model", id: "qwen/qwen3.7-max", display_name: "Qwen3.7 Max", created_at: null },
 		]);
+	});
+
+	it("DEEPSEEK_PRICING holds the curated per-1M-token prices for both live models", () => {
+		// Curated (no pricing API exists). Pins the two documented ids + their prices
+		// so a silent edit or a dropped model is caught.
+		assert.deepEqual(Object.keys(DEEPSEEK_PRICING).sort(), [
+			"deepseek-v4-flash",
+			"deepseek-v4-pro",
+		]);
+		assert.equal(DEEPSEEK_PRICING["deepseek-v4-pro"].out, 0.87);
+		assert.equal(DEEPSEEK_PRICING["deepseek-v4-flash"].out, 0.28);
+	});
+
+	it("DEFAULT_QWEN_MODELS holds the curated bare-qwen ids with display names", () => {
+		// Static (Qwen exposes no /models endpoint). Pins the live-verified ids so a
+		// dropped model or a non-`qwen`-prefixed id (routing would miss it) is caught.
+		assert.deepEqual(
+			DEFAULT_QWEN_MODELS.map((m) => m.id),
+			["qwen3.8-max", "qwen3.8-max-preview", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-flash"],
+		);
+		for (const m of DEFAULT_QWEN_MODELS) {
+			assert.equal(m.type, "model");
+			assert.equal(m.created_at, null);
+			assert.ok(m.display_name.length > 0);
+			assert.ok(m.id.startsWith("qwen"), `${m.id} must start with qwen`);
+		}
 	});
 
 	it("parseOpenRouterModels splits, trims, drops empties; display_name is the id", () => {
@@ -113,8 +142,11 @@ function wireConfig(
 	{
 		glmKey = "glm-test",
 		orKey,
+		dsKey,
+		qwenKey,
 		openRouterModels,
 		claudeModels,
+		qwenModels,
 		claudeBaseUrl,
 		modelsTimeoutMs = 2000,
 		modelsForceThrow,
@@ -122,13 +154,20 @@ function wireConfig(
 ) {
 	const env = { GLM_API_KEY: glmKey };
 	if (orKey) env.OPENROUTER_API_KEY = orKey;
+	if (dsKey) env.DEEPSEEK_API_KEY = dsKey;
+	if (qwenKey) env.DASHSCOPE_API_KEY = qwenKey;
 	const providers = buildProviders(env, "claude");
 	const glm = providers.find((p) => p.id === "glm");
 	if (glm) glm.baseUrl = glmBaseUrl;
+	// DeepSeek: point the provider baseUrl at the stub root (no /anthropic suffix), so
+	// fetchDeepSeekModels' `.replace(/\/anthropic$/,"")` leaves the stub and GETs ${stub}/models.
+	const deepseek = providers.find((p) => p.id === "deepseek");
+	if (deepseek && dsKey) deepseek.baseUrl = glmBaseUrl;
 	if (claudeBaseUrl) providers.find((p) => p.id === "claude").baseUrl = claudeBaseUrl;
 	return {
 		providers,
 		claudeModels: claudeModels ?? DEFAULT_CLAUDE_MODELS,
+		qwenModels: qwenModels ?? DEFAULT_QWEN_MODELS,
 		openRouterModels: openRouterModels ?? DEFAULT_OPENROUTER_MODELS,
 		modelsTimeoutMs,
 		modelsForceThrow,
@@ -162,8 +201,8 @@ describe("collectModels fan-out", () => {
 			data.find((m) => m.id === "deepseek/deepseek-v4-pro").display_name,
 			"DeepSeek V4 Pro",
 		);
-		// full count: 2 glm + 5 openrouter + 3 claude, no drops
-		assert.equal(data.length, 10);
+		// full count: 2 glm + 6 openrouter + 3 claude, no drops
+		assert.equal(data.length, 11);
 		assert.deepEqual(_errors, []);
 	});
 
@@ -258,6 +297,157 @@ describe("collectModels fan-out", () => {
 		const config = wireConfig(glm.baseUrl); // no orKey
 		const { data } = await collectModels(config);
 		assert.ok(!data.some((m) => m.id.includes("/")));
+	});
+
+	const DEEPSEEK_MODELS_BODY = JSON.stringify({
+		object: "list",
+		data: [
+			{ id: "deepseek-v4-pro", object: "model", owned_by: "deepseek" },
+			{ id: "deepseek-v4-flash", object: "model", owned_by: "deepseek" },
+		],
+	});
+
+	// GUARDRAIL: in production the deepseek provider's baseUrl is the Anthropic skin
+	// (`https://api.deepseek.com/anthropic`), but the /models endpoint is OpenAI-native
+	// and sits on the api.deepseek.com ROOT (Bearer auth, not x-api-key).
+	// fetchDeepSeekModels derives the root by stripping a trailing `/anthropic`. The other
+	// DeepSeek tests point the provider at a bare stub root (no /anthropic suffix) so the
+	// strip is a no-op there — meaning a regression to that regex or the baseUrl constant
+	// (e.g. requesting /anthropic/models) would pass the whole suite while breaking the
+	// live /models fetch. This test pins the production path: a /anthropic-suffixed
+	// baseUrl must be stripped to the root before GET /models.
+	it("DeepSeek /anthropic baseUrl is stripped to the root before GET /models", async () => {
+		glm = await startBackend(() => ({
+			status: 200,
+			headers: { "content-type": "application/json" },
+			body: DEEPSEEK_MODELS_BODY,
+		}));
+		const config = wireConfig(`${glm.baseUrl}/anthropic`, {
+			glmKey: "",
+			dsKey: "ds-test",
+		});
+		await collectModels(config);
+		// The fetch must hit "<root>/models" — if the /anthropic suffix survived, the
+		// request URL would be "/anthropic/models" and the live endpoint would 404.
+		assert.match(
+			glm.calls[0].url,
+			/^\/models$/,
+			"fetchDeepSeekModels must strip a trailing /anthropic from the skin baseUrl before GET /models",
+		);
+	});
+
+	it("DeepSeek leg: live /models (OpenAI shape) merges in registry order, no _errors", async () => {
+		glm = await startBackend(() => ({
+			status: 200,
+			headers: { "content-type": "application/json" },
+			body: DEEPSEEK_MODELS_BODY,
+		}));
+		const config = wireConfig(glm.baseUrl, { glmKey: "", dsKey: "ds-test" });
+		const { data, _errors } = await collectModels(config);
+		const ids = data.map((m) => m.id);
+		// deepseek entries appear before claude (registry order), display_name = id.
+		assert.ok(ids.includes("deepseek-v4-pro"));
+		assert.ok(ids.includes("deepseek-v4-flash"));
+		assert.equal(data.find((m) => m.id === "deepseek-v4-pro").display_name, "deepseek-v4-pro");
+		assert.equal(
+			ids.indexOf("deepseek-v4-pro") < ids.indexOf("claude-fable-5"),
+			true,
+			"deepseek before claude",
+		);
+		assert.deepEqual(_errors, []);
+	});
+
+	it("DeepSeek leg sends Bearer key, never inbound auth or x-api-key", async () => {
+		glm = await startBackend(() => ({
+			status: 200,
+			headers: { "content-type": "application/json" },
+			body: DEEPSEEK_MODELS_BODY,
+		}));
+		const config = wireConfig(glm.baseUrl, { glmKey: "", dsKey: "ds-test" });
+		await collectModels(config);
+		const h = glm.calls[0].headers;
+		assert.equal(h.authorization, "Bearer ds-test");
+		assert.equal(h["x-api-key"], undefined, "DeepSeek /models uses Bearer, not x-api-key");
+		assert.match(glm.calls[0].url, /\/models$/);
+	});
+
+	it("DeepSeek not configured (no key) → no deepseek entries, not an error", async () => {
+		glm = await startBackend(() => ({
+			status: 200,
+			headers: { "content-type": "application/json" },
+			body: GLM_MODELS_BODY,
+		}));
+		const config = wireConfig(glm.baseUrl); // no dsKey
+		const { data, _errors } = await collectModels(config);
+		assert.ok(!data.some((m) => m.id.startsWith("deepseek-")));
+		assert.ok(!_errors.some((e) => e.provider === "deepseek"));
+	});
+
+	it("DeepSeek 502 → _errors HTTP 502, other legs survive", async () => {
+		glm = await startBackend(() => ({ status: 502, headers: {}, body: "bad" }));
+		const config = wireConfig(glm.baseUrl, { glmKey: "", dsKey: "ds-test" });
+		const { data, _errors } = await collectModels(config);
+		assert.deepEqual(_errors, [{ provider: "deepseek", message: "HTTP 502" }]);
+		assert.ok(data.some((m) => m.id === "claude-fable-5"));
+		assert.ok(!data.some((m) => m.id.startsWith("deepseek-")));
+	});
+
+	it("DeepSeek unparseable / no data → _errors invalid response shape", async () => {
+		glm = await startBackend(() => ({
+			status: 200,
+			headers: { "content-type": "application/json" },
+			body: "{}",
+		}));
+		const config = wireConfig(glm.baseUrl, { glmKey: "", dsKey: "ds-test" });
+		const { _errors } = await collectModels(config);
+		assert.deepEqual(_errors, [{ provider: "deepseek", message: "invalid response shape" }]);
+	});
+
+	it("DeepSeek timeout → _errors timeout, fast (bounded by modelsTimeoutMs)", async () => {
+		// Handler never resolves, so the abort timer is the only thing that can end this.
+		glm = await startBackend(() => new Promise(() => {}));
+		const config = wireConfig(glm.baseUrl, {
+			glmKey: "",
+			dsKey: "ds-test",
+			modelsTimeoutMs: 50,
+		});
+		const t0 = Date.now();
+		const { _errors } = await collectModels(config);
+		assert.deepEqual(_errors, [{ provider: "deepseek", message: "timeout" }]);
+		assert.ok(Date.now() - t0 < 1000, "should abort near modelsTimeoutMs, not hang");
+	});
+
+	it("Qwen leg: static curated list merges in registry order (no live fetch), no _errors", async () => {
+		// No GLM backend is started — Qwen is static, so no live leg should dial out.
+		// Point glm at a dead port to prove the qwen leg never depends on it.
+		const config = wireConfig("http://127.0.0.1:59999", {
+			glmKey: "",
+			qwenKey: "qwen-test",
+		});
+		const { data, _errors } = await collectModels(config);
+		const ids = data.map((m) => m.id);
+		// qwen entries appear before claude (registry order), curated display_name.
+		assert.ok(ids.includes("qwen3.7-max"));
+		assert.ok(ids.includes("qwen3.6-flash"));
+		assert.equal(data.find((m) => m.id === "qwen3.7-max").display_name, "Qwen3.7 Max");
+		assert.equal(
+			ids.indexOf("qwen3.7-max") < ids.indexOf("claude-fable-5"),
+			true,
+			"qwen before claude",
+		);
+		assert.deepEqual(_errors, []);
+	});
+
+	it("Qwen not configured (no key) → no qwen entries, not an error", async () => {
+		glm = await startBackend(() => ({
+			status: 200,
+			headers: { "content-type": "application/json" },
+			body: GLM_MODELS_BODY,
+		}));
+		const config = wireConfig(glm.baseUrl); // no qwenKey
+		const { data, _errors } = await collectModels(config);
+		assert.ok(!data.some((m) => m.id.startsWith("qwen")));
+		assert.ok(!_errors.some((e) => e.provider === "qwen"));
 	});
 
 	it("dedup: glm and claude both claim an id → first (glm) wins, single entry", async () => {

@@ -95,7 +95,11 @@ function get(port, path) {
 			const chunks = [];
 			res.on("data", (c) => chunks.push(c));
 			res.on("end", () =>
-				resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString() }),
+				resolve({
+					status: res.statusCode,
+					headers: res.headers,
+					body: Buffer.concat(chunks).toString(),
+				}),
 			);
 		});
 		req.on("error", reject);
@@ -747,6 +751,61 @@ describe("server end-to-end routing", () => {
 		const res = await get(proxy.port, "/_status");
 		assert.equal(res.status, 200);
 		assert.equal(JSON.parse(res.body).version, "9.9.9");
+	});
+
+	// Minimal liveness probe — the fastest possible "is the proxy up" check. A bare
+	// 200 with an empty body, no config read or serialization. Cheaper than /_status
+	// (which still happens to be fast, but this is the designated hot-path probe).
+	it("GET /_ping returns a bare 200 with an empty body (fast liveness)", async () => {
+		glm = await startBackend(() => ({ status: 200, headers: {}, body: "{}" }));
+		const providers = buildProviders({ GLM_API_KEY: "glm-test" }, "claude");
+		proxy = await startProxy({ port: 0, providers, version: "9.9.9" });
+		const res = await get(proxy.port, "/_ping");
+		assert.equal(res.status, 200);
+		assert.equal(res.body, "", "/_ping must have an empty body");
+		// An empty body must not claim to be JSON — a client's res.json() would throw.
+		assert.equal(res.headers["content-type"], undefined);
+		// Intercepted, not forwarded: the upstream stub was never hit.
+		assert.equal(glm.calls.length, 0, "/_ping must not be forwarded upstream");
+	});
+
+	// A cache-busting query string is the natural way to write a probe; matching on
+	// the raw url would forward it upstream (burning quota on a liveness check).
+	it("GET /_ping and /_status tolerate a query string, still not forwarded", async () => {
+		glm = await startBackend(() => ({ status: 200, headers: {}, body: "{}" }));
+		const providers = buildProviders({ GLM_API_KEY: "glm-test" }, "claude");
+		proxy = await startProxy({ port: 0, providers, version: "9.9.9" });
+		const ping = await get(proxy.port, "/_ping?t=123");
+		assert.equal(ping.status, 200);
+		assert.equal(ping.body, "");
+		const status = await get(proxy.port, "/_status?t=123");
+		assert.equal(status.status, 200);
+		assert.equal(JSON.parse(status.body).version, "9.9.9");
+		assert.equal(glm.calls.length, 0, "probes must not be forwarded upstream");
+	});
+
+	// The probes answer before any body is buffered, so a client that sends a body
+	// and never ends the request still gets an immediate response. Gating the reply
+	// on 'end' would hang the hot-path liveness check and let a slow uploader pin
+	// memory in the shared proxy process.
+	it("GET /_ping answers without waiting for the request body", async () => {
+		glm = await startBackend(() => ({ status: 200, headers: {}, body: "{}" }));
+		const providers = buildProviders({ GLM_API_KEY: "glm-test" }, "claude");
+		proxy = await startProxy({ port: 0, providers, version: "9.9.9" });
+		const status = await new Promise((resolve, reject) => {
+			const req = http.request(
+				{ hostname: "127.0.0.1", port: proxy.port, path: "/_ping", method: "GET" },
+				(res) => {
+					res.resume();
+					resolve(res.statusCode);
+				},
+			);
+			req.on("error", reject);
+			// A body, deliberately never ended: the response must arrive anyway.
+			req.write("x".repeat(1024));
+		});
+		assert.equal(status, 200);
+		assert.equal(glm.calls.length, 0);
 	});
 
 	it("POST /_shutdown responds 200 and the server stops accepting connections", async () => {

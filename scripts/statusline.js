@@ -16,6 +16,12 @@ loadEnv();
 
 const QUOTA_URL = "https://api.z.ai/api/monitor/usage/quota/limit";
 const OPENROUTER_CREDITS_URL = "https://openrouter.ai/api/v1/credits";
+// Overridable so tests can point the balance fetch at a local stub and exercise
+// the real per-currency selection. Deliberately NOT in .env.example / the README
+// env table — it is a test seam, not a user knob (same posture as config-only
+// `modelsTimeoutMs`), and the env-doc coupling test only reads .env.example.
+const DEEPSEEK_BALANCE_URL =
+	process.env.DEEPSEEK_BALANCE_URL || "https://api.deepseek.com/user/balance";
 const CACHE_TTL_MS = 60_000;
 const PROXY_PORT = Number(process.env.PROXY_PORT || 4000);
 const PROXY_PROBE_TIMEOUT_MS = 300;
@@ -220,6 +226,67 @@ async function loadOpenRouterCredits(cacheDir) {
 	}
 }
 
+// DeepSeek balance (opt-in via DEEPSEEK_API_KEY). Same 60s cache + stale fallback as
+// the GLM/OpenRouter fetchers. The /user/balance response is per-currency; only a USD
+// row can drive the dollar gauge (see below). Unlike OpenRouter (which
+// reports credits used/remaining), DeepSeek reports a single total_balance, so the
+// gauge reflects remaining balance (= total) and carries no used-percentage.
+async function loadDeepSeekBalance(cacheDir) {
+	const key = process.env.DEEPSEEK_API_KEY;
+	if (!key) return null;
+
+	const cachePath = cacheDir ? path.join(cacheDir, "deepseek_balance_cache.json") : null;
+	if (cachePath) {
+		try {
+			const cached = JSON.parse(fs.readFileSync(cachePath, "utf8"));
+			if (Date.now() - cached._ts < CACHE_TTL_MS) return cached;
+		} catch {
+			// miss → fetch
+		}
+	}
+
+	try {
+		const res = await fetch(DEEPSEEK_BALANCE_URL, {
+			headers: { Authorization: `Bearer ${key}` },
+			signal: AbortSignal.timeout(QUOTA_FETCH_TIMEOUT_MS),
+		});
+		if (!res.ok) throw new Error(`HTTP ${res.status}`);
+		const json = await res.json();
+		// The gauge is denominated in dollars (`dollarTier`), so ONLY a USD row
+		// may drive it. This used to fall back to balance_infos[0], which
+		// rendered a CNY-only account's ¥50 as `$$` — a confidently wrong
+		// number, worse than none. Non-USD now leaves `remaining` unset, which
+		// renders `--`. `currency` is diagnostic only (nothing reads it at
+		// render time): it survives in the cache file so a user staring at a
+		// bare `--` can see which currency the account actually reports.
+		const infos = Array.isArray(json?.balance_infos) ? json.balance_infos : [];
+		const usd = infos.find((b) => b?.currency === "USD") || null;
+		const remaining = usd ? Number(usd.total_balance) : null;
+		const currency = (usd || infos[0])?.currency || null;
+		const result = { remaining, currency, _ts: Date.now() };
+		if (cachePath) {
+			try {
+				fs.mkdirSync(path.dirname(cachePath), { recursive: true });
+				fs.writeFileSync(cachePath, JSON.stringify(result));
+			} catch {
+				// non-fatal
+			}
+		}
+		return result;
+	} catch {
+		if (cachePath) {
+			try {
+				const stale = JSON.parse(fs.readFileSync(cachePath, "utf8"));
+				stale._stale = true;
+				return stale;
+			} catch {
+				return null;
+			}
+		}
+		return null;
+	}
+}
+
 const chunks = [];
 process.stdin.on("data", (chunk) => chunks.push(chunk));
 process.stdin.on("end", async () => {
@@ -265,23 +332,52 @@ process.stdin.on("end", async () => {
 		}
 	}
 
-	// OpenRouter section (`api:`, only when OPENROUTER_API_KEY is set)
+	// One $ per digit of whole-dollar balance remaining: $1–9=$, $10–99=$$,
+	// $100–999=$$$, $1000+=$$$$ (unbounded by design). An empty balance renders a
+	// distinct `$0`; any non-empty balance — including a sub-$1 amount that floors
+	// to 0 — shows at least one `$`. A non-finite balance (stale/corrupt cache,
+	// schema drift) renders `--` rather than deriving a misleading tier from NaN
+	// (String(NaN).length === 3 would yield "$$$"). Shared by the OpenRouter and
+	// DeepSeek balance gauges.
+	function dollarTier(remaining) {
+		// null/undefined mean "no number", not zero — Number(null) === 0 would
+		// otherwise render a false `$0`. This is the unknown-balance carrier
+		// (DeepSeek's non-USD case) precisely because null survives the JSON
+		// cache round-trip, which NaN does not (JSON.stringify(NaN) === "null").
+		if (remaining === null || remaining === undefined) return "--";
+		const r = Number(remaining);
+		if (!Number.isFinite(r)) return "--";
+		if (r <= 0) return "$0";
+		return "$".repeat(Math.max(1, String(Math.floor(r)).length));
+	}
+
+	// OpenRouter section (`or:`, only when OPENROUTER_API_KEY is set)
 	const or = await loadOpenRouterCredits(cacheDir);
 	if (or) {
 		const stale = or._stale ? "!" : "";
 		const c = colorize(or.usedPct);
-		// One $ per digit of whole-dollar credits remaining: $1–9=$, $10–99=$$,
-		// $100–999=$$$, $1000+=$$$$ (unbounded by design). An empty balance
-		// renders a distinct `$0`; any non-empty balance — including a sub-$1
-		// amount that floors to 0 — shows at least one `$`. A non-finite balance
-		// (stale/corrupt cache, schema drift) renders `--` rather than deriving a
-		// misleading tier from NaN (String(NaN).length === 3 would yield "$$$").
-		const remaining = Number(or.remaining);
-		let tier;
-		if (!Number.isFinite(remaining)) tier = "--";
-		else if (remaining <= 0) tier = "$0";
-		else tier = "$".repeat(Math.max(1, String(Math.floor(remaining)).length));
-		parts.push(`api:${c}${tier}${stale}${RESET}`);
+		parts.push(`or:${c}${dollarTier(or.remaining)}${stale}${RESET}`);
+	}
+
+	// DeepSeek section (`ds:`, only when DEEPSEEK_API_KEY is set)
+	const ds = await loadDeepSeekBalance(cacheDir);
+	if (ds) {
+		const stale = ds._stale ? "!" : "";
+		parts.push(`ds:${dollarTier(ds.remaining)}${stale}`);
+	}
+
+	// Qwen section (`qw:on`, only when DASHSCOPE_API_KEY is set). Deliberately a
+	// presence marker, not a gauge: QwenCloud exposes no quota/balance API. The
+	// Token Plan percentage + reset time you see in the console come from
+	// cs-data.qwencloud.com, which authenticates on a browser login cookie plus a
+	// rotating sec_token and answers `BailianGateway.Login.NotLogined` to an API
+	// key (verified 2026-08-04, with the console's own verbatim request body).
+	// The Anthropic skin returns no x-ratelimit-*/x-quota-* response headers
+	// either — only Envoy timing. The sole programmatic signal is per-response
+	// `usage`, and accumulating that would mean cross-request state (invariant 2).
+	// So there is no number to render; anything tier-shaped here would be fiction.
+	if (process.env.DASHSCOPE_API_KEY) {
+		parts.push("qw:on");
 	}
 
 	if (!proxyAlive) {

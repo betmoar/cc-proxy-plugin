@@ -25,6 +25,18 @@ function seedOpenRouterCache(remaining) {
 	return dir;
 }
 
+// Same idea for the DeepSeek balance cache: a fresh `_ts` keeps the loader on the
+// cache branch so it never touches the network. `remaining` is the single
+// total_balance DeepSeek reports (no used-percentage, unlike OpenRouter).
+function seedDeepSeekCache(remaining) {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "statusline-test-"));
+	fs.writeFileSync(
+		path.join(dir, "deepseek_balance_cache.json"),
+		JSON.stringify({ remaining, currency: "USD", _ts: Date.now() }),
+	);
+	return dir;
+}
+
 // Strip ANSI color codes for label/shape assertions.
 function plain(s) {
 	return s.replace(new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g"), "");
@@ -109,7 +121,7 @@ describe("statusline.js", () => {
 		assert.ok(!stdout.includes("⏱"), `Expected no countdown below 100%, got: ${stdout}`);
 	});
 
-	it("renders api: $-tiers by digit count, unbounded above $999", async () => {
+	it("renders or: $-tiers by digit count, unbounded above $999", async () => {
 		const cases = [
 			[0, "$0"],
 			[0.5, "$"], // non-empty sub-$1 floors to 0 but must still show one $
@@ -127,12 +139,117 @@ describe("statusline.js", () => {
 					{ GLM_API_KEY: "", OPENROUTER_API_KEY: "dummy", CLAUDE_PLUGIN_DATA: dir },
 				);
 				assert.ok(
-					plain(stdout).includes(`api:${expected} `) || plain(stdout).endsWith(`api:${expected}`),
-					`remaining=${remaining}: expected api:${expected}, got: ${plain(stdout)}`,
+					plain(stdout).includes(`or:${expected} `) || plain(stdout).endsWith(`or:${expected}`),
+					`remaining=${remaining}: expected or:${expected}, got: ${plain(stdout)}`,
 				);
 			} finally {
 				fs.rmSync(dir, { recursive: true, force: true });
 			}
+		}
+	});
+
+	it("renders ds: $-tiers from the DeepSeek balance cache", async () => {
+		const cases = [
+			[0, "$0"],
+			[0.5, "$"], // non-empty sub-$1 floors to 0 but must still show one $
+			[42, "$$"],
+			[1200, "$$$$"], // unbounded by design, same as or:
+			[undefined, "--"], // non-finite balance (corrupt/schema drift) → placeholder
+		];
+		for (const [remaining, expected] of cases) {
+			const dir = seedDeepSeekCache(remaining);
+			try {
+				const { stdout } = await run(
+					{},
+					{
+						GLM_API_KEY: "",
+						OPENROUTER_API_KEY: "",
+						DEEPSEEK_API_KEY: "dummy",
+						CLAUDE_PLUGIN_DATA: dir,
+					},
+				);
+				assert.ok(
+					plain(stdout).includes(`ds:${expected} `) || plain(stdout).endsWith(`ds:${expected}`),
+					`remaining=${remaining}: expected ds:${expected}, got: ${plain(stdout)}`,
+				);
+			} finally {
+				fs.rmSync(dir, { recursive: true, force: true });
+			}
+		}
+	});
+
+	// GUARDRAIL: the ds: gauge is denominated in dollars (`dollarTier`), but
+	// /user/balance is per-currency. The loader used to fall back to
+	// balance_infos[0] when no USD row existed, so a CNY-only account rendered
+	// ¥50 as `$$` — a confidently wrong dollar reading. Only a USD row may drive
+	// the gauge; anything else is unknown (`--`). Uses a local stub backend
+	// (no cache seeded) so the real selection logic runs, not a fixture.
+	it("renders ds:-- for a CNY-only balance instead of a wrong-currency $ tier", async () => {
+		const http = await import("node:http");
+		const bodies = {
+			// CNY-only: no USD row at all → unknown.
+			cny: { balance_infos: [{ currency: "CNY", total_balance: "50.00" }] },
+			// Both present, CNY listed first → the USD row must still win, and
+			// the tier must come from 42 (`$$`), not 50.
+			both: {
+				balance_infos: [
+					{ currency: "CNY", total_balance: "50.00" },
+					{ currency: "USD", total_balance: "42.00" },
+				],
+			},
+		};
+		for (const [name, expected] of [
+			["cny", "--"],
+			["both", "$$"],
+		]) {
+			const server = http.createServer((_req, res) => {
+				res.writeHead(200, { "content-type": "application/json" });
+				res.end(JSON.stringify(bodies[name]));
+			});
+			await new Promise((r) => server.listen(0, "127.0.0.1", r));
+			const url = `http://127.0.0.1:${server.address().port}/user/balance`;
+			// A fresh empty dir: no seeded cache, so the fetch path runs. The
+			// loader writes its result here rather than into a shared location.
+			const dir = fs.mkdtempSync(path.join(os.tmpdir(), "statusline-test-"));
+			try {
+				const { stdout } = await run(
+					{},
+					{
+						GLM_API_KEY: "",
+						OPENROUTER_API_KEY: "",
+						DEEPSEEK_API_KEY: "dummy",
+						DEEPSEEK_BALANCE_URL: url,
+						CLAUDE_PLUGIN_DATA: dir,
+					},
+				);
+				assert.ok(
+					plain(stdout).includes(`ds:${expected} `) || plain(stdout).endsWith(`ds:${expected}`),
+					`${name}: expected ds:${expected}, got: ${plain(stdout)}`,
+				);
+			} finally {
+				await new Promise((r) => server.close(r));
+				fs.rmSync(dir, { recursive: true, force: true });
+			}
+		}
+	});
+
+	it("omits the ds: segment entirely when DEEPSEEK_API_KEY is unset", async () => {
+		// A seeded cache must not be enough — the no-key guard short-circuits first,
+		// so an unconfigured user never sees a DeepSeek gauge.
+		const dir = seedDeepSeekCache(42);
+		try {
+			const { stdout } = await run(
+				{},
+				{
+					GLM_API_KEY: "",
+					OPENROUTER_API_KEY: "",
+					DEEPSEEK_API_KEY: "",
+					CLAUDE_PLUGIN_DATA: dir,
+				},
+			);
+			assert.ok(!plain(stdout).includes("ds:"), `Expected no ds: segment, got: ${plain(stdout)}`);
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
 		}
 	});
 
@@ -219,18 +336,32 @@ describe("statusline.js", () => {
 		assert.match(stdout, /glm 5h:\S*\d+%/, `Expected glm percentage, got: ${stdout}`);
 	});
 
+	it("renders qw:on as a presence marker, gated on DASHSCOPE_API_KEY", async () => {
+		// Deliberately not a gauge: QwenCloud has no quota API reachable with an API
+		// key (the console figure is cookie-authenticated), so the marker carries no
+		// number. If this ever grows a percentage, a real endpoint must back it.
+		const on = await run(
+			{},
+			{ GLM_API_KEY: "", OPENROUTER_API_KEY: "", DASHSCOPE_API_KEY: "qwen-test" },
+		);
+		assert.ok(plain(on.stdout).includes("qw:on"), `Expected qw:on, got: ${on.stdout}`);
+
+		const off = await run({}, { GLM_API_KEY: "", OPENROUTER_API_KEY: "", DASHSCOPE_API_KEY: "" });
+		assert.ok(!plain(off.stdout).includes("qw:"), `Expected no qw section, got: ${off.stdout}`);
+	});
+
 	// Integration test — only runs when OPENROUTER_API_KEY is set
 	it(
 		"shows OpenRouter credits when key is set",
 		{ skip: !process.env.OPENROUTER_API_KEY },
 		async () => {
 			const { stdout } = await run({}, { GLM_API_KEY: "" });
-			// Strip ANSI color codes: the script emits `api:<color>$$<reset>`,
-			// so a color code sits between `api:` and the $ tier on a live run.
+			// Strip ANSI color codes: the script emits `or:<color>$$<reset>`,
+			// so a color code sits between `or:` and the $ tier on a live run.
 			// ESC built via fromCharCode to avoid a literal control char in the regex.
 			const ansi = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
 			const plain = stdout.replace(ansi, "");
-			assert.match(plain, /api:\$+/, `Expected api section, got: ${stdout}`);
+			assert.match(plain, /or:\$+/, `Expected or section, got: ${stdout}`);
 		},
 	);
 });

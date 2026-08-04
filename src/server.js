@@ -40,6 +40,17 @@ function handleStatus(res, config) {
 	});
 }
 
+// Minimal liveness probe: a bare 200 with an empty body, the fastest possible
+// "is the proxy process up" check (no JSON serialization, no config read). For
+// anything richer (version, providers) use /_status. Like /_status it carries no
+// auth — safe because the proxy is loopback-bound by default (invariant 7).
+// Deliberately no content-type: the body is empty, and advertising
+// application/json would make a client's res.json() throw a parse error.
+function handlePing(res) {
+	res.writeHead(200);
+	res.end();
+}
+
 // Graceful self-shutdown, used by the SessionStart hook to replace a stale
 // (version-mismatched) proxy. Loopback-only by construction in the default
 // config (invariant 7); like /_status it carries no auth because anyone who
@@ -61,7 +72,11 @@ async function handleModels(res, config) {
 	let result;
 	try {
 		result = await collectModels(config);
-	} catch {
+	} catch (err) {
+		// Log the real bug rather than returning a generic 200 with an empty list
+		// and no trace — collectModels only throws via the test seam, so a hit here
+		// is a genuine regression worth surfacing in the proxy log.
+		console.error(`[models] collectModels threw: ${err?.message || err}`);
 		result = { data: [], _errors: [{ provider: "proxy", message: "internal error" }] };
 	}
 	const { data, _errors } = result;
@@ -191,13 +206,29 @@ export function createServer(config) {
 		// request stream; without a listener that is an uncaught exception that
 		// kills the shared long-running proxy process for every session.
 		req.on("error", () => res.destroy());
+
+		// Split on "?" rather than new URL(): matches the existing string-equality
+		// interception style and avoids URL() throwing on a malformed request target
+		// inside the shared long-running process. The read-only probes match on this
+		// pathname so a cache-busting `?t=…` can't make them get forwarded upstream.
+		const pathname = req.url.split("?")[0];
+
+		// The GET probes answer before any body is buffered — they take no input, and
+		// /_ping is the designated hot-path check, so it must not be gated on reading
+		// a body first. req.resume() discards whatever a client sent anyway, so a
+		// keep-alive socket isn't left with an unread body stalling the next request.
+		if (req.method === "GET" && (pathname === "/_ping" || pathname === "/_status")) {
+			req.resume();
+			if (pathname === "/_ping") handlePing(res);
+			else handleStatus(res, config);
+			return;
+		}
+
 		req.on("data", (c) => chunks.push(c));
 		req.on("end", () => {
 			const bodyBuffer = Buffer.concat(chunks);
-			if (req.url === "/_status" && req.method === "GET") {
-				handleStatus(res, config);
-				return;
-			}
+			// Exact match, deliberately unlike the probes above: shutdown is
+			// destructive, so it stays as narrow as possible.
 			if (req.url === "/_shutdown") {
 				// POST only: a stray GET (browser, curl without -X, link prefetch)
 				// must never take the proxy down.
@@ -207,10 +238,6 @@ export function createServer(config) {
 			}
 			// GET /v1/models — synthesized, query-string tolerant, exact path only.
 			// (/v1/models/<id> retrieve falls through to forwarding.)
-			// Split on "?" rather than new URL(): matches the existing string-equality
-			// interception style and avoids URL() throwing on a malformed request target
-			// inside the shared long-running process.
-			const pathname = req.url.split("?")[0];
 			if (pathname === "/v1/models") {
 				if (req.method === "GET") handleModels(res, config);
 				else sendJson(res, 405, { error: { message: "GET required" } });

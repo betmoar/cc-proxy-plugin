@@ -1,16 +1,18 @@
 # cc-proxy
 
-A Claude Code plugin + local proxy that lets you use **GLM (Z.ai)**, **OpenRouter**, and **Claude** side-by-side in one session. Switch backends with `/model` — no restart. Zero runtime dependencies.
+A Claude Code plugin + local proxy that lets you use **GLM (Z.ai)**, **OpenRouter**, **DeepSeek**, **Qwen**, and **Claude** side-by-side in one session. Switch backends with `/model` — no restart. Zero runtime dependencies.
 
 The proxy sits at `http://localhost:4000`, routes each request by its model name, applies the right auth per backend, and forwards to the upstream API. It stays a transparent pipe — every Claude Code tool, subagent, and prompt-cache works unchanged.
 
 ## How routing works
 
 ```
-Claude Code → cc-proxy (:4000) → GLM | OpenRouter | Claude
+Claude Code → cc-proxy (:4000) → GLM | OpenRouter | DeepSeek | Qwen | Claude
 
   glm-*              → GLM         (x-api-key)
   vendor/model       → OpenRouter  (Bearer, opt-in)
+  deepseek-*         → DeepSeek    (x-api-key, opt-in)
+  qwen*             → Qwen        (Bearer, opt-in)
   claude-*           → Claude      (OAuth passthrough)
   claude-haiku-*     → Claude      (internal ops, always)
   unknown            → default backend (claude)
@@ -61,16 +63,18 @@ Switch backends with `/model`:
 - `/model glm-5.2[1m]` — GLM, 1M context (also `glm-5-turbo`, `glm-4.7`)
 - `/model opus` / `/model sonnet` — Claude
 - An OpenRouter id like `anthropic/claude-opus-4` or `z-ai/glm-4.7` — OpenRouter (set `OPENROUTER_API_KEY` first)
+- A DeepSeek id like `deepseek-v4-pro` or `deepseek-v4-flash` — DeepSeek (set `DEEPSEEK_API_KEY` first)
+- A Qwen id like `qwen3.7-max` or `qwen3.6-flash` — Qwen (set `DASHSCOPE_API_KEY` first)
 
 Routing decisions land in `/tmp/cc-proxy.log` (`PROXY_DEBUG=1` for per-request detail).
 
 ## Model discovery
 
 `GET http://127.0.0.1:4000/v1/models` returns a best-effort, Anthropic-format
-list of reachable models: GLM is fetched live, Claude and OpenRouter come from
-curated lists. If a live leg fails, the response is still `200` and names the
-failed provider in a non-standard `_errors` array. Set `OPENROUTER_MODELS` to
-override which OpenRouter ids appear.
+list of reachable models: GLM and DeepSeek are fetched live, Claude, OpenRouter, and
+Qwen come from curated lists (Qwen exposes no `/models` endpoint). If a live leg fails,
+the response is still `200` and names the failed provider in a non-standard `_errors`
+array. Set `OPENROUTER_MODELS` to override which OpenRouter ids appear.
 
 ## Commands
 
@@ -78,8 +82,8 @@ The plugin ships slash commands that reach proxy backends **without changing you
 
 **Commands:**
 
-- `/cc-proxy:status` — proxy liveness, configured providers + default backend, GLM/OpenRouter quota, and recent routing decisions. Reads the proxy's `/_status` endpoint and tails `/tmp/cc-proxy.log`; works whether the proxy is up or down.
-- `/cc-proxy:ask <prompt>` — a one-shot question answered by **GLM-5.2 (1M context)** for that turn only; your session model resumes on the next prompt. The clean way to ask the cheap, large-context model mid-session without `/model` switching.
+- `/cc-proxy:status` — proxy liveness, configured providers + default backend, provider quotas (GLM, OpenRouter, DeepSeek), and recent routing decisions. Reads the proxy's `/_status` endpoint and tails `/tmp/cc-proxy.log`; works whether the proxy is up or down.
+- `/cc-proxy:models` — every model reachable through the proxy, with the provider each one routes to. Reads the proxy's `GET /v1/models` and attributes ids against the registered providers' predicates; a failed live-fetch leg is flagged. Raw JSON is one `curl http://127.0.0.1:4000/v1/models` away.
 
 > The GLM offload subagents (`glm-bulk-reader`, `glm-review-*`, `glm-brainstorm`) have moved to a dedicated plugin: [`betmoar/cc-agents-plugin`](https://github.com/betmoar/cc-agents-plugin).
 
@@ -124,16 +128,18 @@ claude --plugin-dir .
 Compact composed-bar format, designed to sit alongside other plugins' segments:
 
 ```
-cc 5h:2% | glm 5h:14% | api:$$$
+cc 5h:2% | glm 5h:14% | or:$$$ | ds:$$ | qw:on
 ```
 
 - **`cc` / `glm` 5h** — usage percentage, green→yellow→red by load. When a quota hits 100% (exhausted), the percentage is replaced by a red reset countdown `⏱3h11m`, since at that point the only useful signal is when access returns.
-- **`api:`** — OpenRouter credits remaining (when `OPENROUTER_API_KEY` is set), as `$`-tiers by digit count: `$1–9`=`$`, `$10–99`=`$$`, `$100–999`=`$$$`, `$1000+`=`$$$$`. Empty balance shows `$0`; an unavailable balance shows `--`.
+- **`or:`** — OpenRouter credits remaining (when `OPENROUTER_API_KEY` is set), as `$`-tiers by digit count: `$1–9`=`$`, `$10–99`=`$$`, `$100–999`=`$$$`, `$1000+`=`$$$$`. Empty balance shows `$0`; an unavailable balance shows `--`.
+- **`ds:`** — DeepSeek balance remaining (when `DEEPSEEK_API_KEY` is set), same `$`-tier gauge as `or:`. Reports total balance (DeepSeek exposes no used figure).
+- **`qw:`** — Qwen presence marker (when `DASHSCOPE_API_KEY` is set). Deliberately not a gauge: QwenCloud exposes no quota API reachable with an API key — the console's own remaining-percentage figure is authenticated by a browser login session. So the marker carries no number rather than fabricating one.
 - **`proxy down`** in bold red when the local proxy is unreachable.
 
 When the [cc-status](https://github.com/betmoar/cc-status-plugin) composer is the active statusLine, this segment is discovered and composed automatically via `.claude-plugin/statusline.json` — no manual wiring needed.
 
-The statusline runs as its own subprocess and only inherits `settings.json`'s `env` block, not the proxy's dotenv. So the `glm`/`api:` gauges still render when `GLM_API_KEY`/`OPENROUTER_API_KEY` live in `~/.env`, it loads `~/.env` (+ repo `.env` in dev) at startup; keys already in the environment still win, and it's a no-op if neither file is present.
+The statusline runs as its own subprocess and only inherits `settings.json`'s `env` block, not the proxy's dotenv. So the `glm`/`or:`/`ds:` gauges still render when `GLM_API_KEY`/`OPENROUTER_API_KEY`/`DEEPSEEK_API_KEY` live in `~/.env`, it loads `~/.env` (+ repo `.env` in dev) at startup; keys already in the environment still win, and it's a no-op if neither file is present.
 
 ## Environment variables
 
@@ -142,6 +148,8 @@ The statusline runs as its own subprocess and only inherits `settings.json`'s `e
 | `ANTHROPIC_BASE_URL` | — | Set by setup to `http://127.0.0.1:4000` |
 | `GLM_API_KEY` | — | Z.ai API key (lives in `~/.env`) |
 | `OPENROUTER_API_KEY` | — | Enable OpenRouter (slash-namespaced models; lives in `~/.env`) |
+| `DEEPSEEK_API_KEY` | — | Enable DeepSeek (bare `deepseek-*` models; lives in `~/.env`) |
+| `DASHSCOPE_API_KEY` | — | Enable Qwen (bare `qwen`-prefixed models, Token Plan skin; lives in `~/.env`) |
 | `OPENROUTER_MODELS` | curated | Override the OpenRouter allowlist in `GET /v1/models` (comma-separated ids); discovery only |
 | `PROXY_PATH` | auto | Legacy override for the proxy entry point; the plugin tree's own `bin/cc-proxy.js` wins when present |
 | `PROXY_PORT` | `4000` | Proxy listen port |
