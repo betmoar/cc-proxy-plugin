@@ -305,6 +305,24 @@ tests in `providers.test.js` + `router.test.js`. Never a router/server change.
    Not a fallback mechanism: "use the plan when the Z.ai quota is spent" needs
    cross-request state (invariant 2). An explicit alias the user selects is
    stateless; automatic failover is not.
+
+   **Cost rank (belongs here, NOT in item 9).** When one model is reachable
+   several ways, prefer: prepaid plan capacity (GLM Pro, Qwen Token Plan) →
+   native metered (DeepSeek) → aggregator (OpenRouter, lowest). Plan capacity is
+   sunk cost; credits are marginal spend. OpenRouter ranks last because it is
+   metered *and* a resold deployment whose window and weights we have not
+   measured.
+   This is a **cost** ranking, not a knowledge ranking, and the two are
+   deliberately not correlated — measuring capability-per-currency is out of
+   scope. `deepseek/deepseek-v4-pro` via OpenRouter is the same weights as
+   native, so it cannot carry a lower *capability* grade; publishing it as one
+   would be a false claim on item 9's tier field. The rank attaches to the
+   **(id, backend) pair**, which is why it lives in this item: item 9 grades a
+   *model*, this grades a *route*.
+   Corollary: a cost rank is inert without a way to express the choice. Ranking
+   tells a consumer that `deepseek/deepseek-v4-pro` is the expensive path but
+   offers no way to ask for the cheap one — so the rank and the prefix scheme
+   ship together, or neither is actionable.
 9. **Publish a capability tier per model in `GET /v1/models`**, so cc-operator
    stops guessing when a model it has never seen appears in the catalog.
    Direction matters and only one direction is allowed: cc-proxy **publishes**,
@@ -353,3 +371,31 @@ tests in `providers.test.js` + `router.test.js`. Never a router/server change.
    Qwen are plan capacity (effectively free to re-run), DeepSeek and OpenRouter
    are metered — so a full-matrix sweep has a real cost that a
    rank-within-provider approach mostly avoids.
+10. **Reset-time display is inconsistent between the two tools** (cosmetic).
+    `scripts/status.js` renders the GLM quota reset as an absolute UTC stamp
+    (`resets 2026-08-04T20:43:41Z`) while `scripts/statusline.js` renders a
+    relative countdown (`⏱2h15m`, via `formatResetTime`). Same fact, two
+    formats — and the absolute one makes a reader in a non-UTC zone do the
+    arithmetic. Neither is *wrong*: `status.js` uses `toISOString()` (epoch →
+    UTC, unambiguous by construction) and the statusline subtracts two epoch
+    values (a pure duration, timezone-independent). So this is a formatting
+    change only — render `(resets in 2h15m)` in the CLI too, from the same
+    `resetMs` it already has. Do not "fix" it as a timezone bug; there isn't one.
+11. **No clock-drift check on the quota gauges.** Every countdown assumes the
+    local clock agrees with the vendor's. If the machine clock is off, the
+    gauge is wrong by exactly that offset and nothing says so — the reset looks
+    plausible and is silently late or early.
+    Previously dismissed as unfixable without cross-request state. It is not:
+    **cc-proxy plus the backend calls it already makes is the source of truth**,
+    and both quota endpoints return a `Date` header (verified 2026-08-04 —
+    `api.z.ai` and `openrouter.ai` both send one; local clock matched to the
+    second). So the reference clock is free: read `res.headers.get("date")` in
+    the fetchers that are ALREADY running, compare to `Date.now()`, and mark the
+    gauge when the skew exceeds ~60s.
+    Two constraints that keep it honest: (a) this belongs in `scripts/quota.js`,
+    which makes its own diagnostic calls — doing it in `src/` would mean the
+    *proxy* inspecting responses on the forwarding path, which is invariant 2;
+    (b) the threshold must stay loose, because request latency inflates apparent
+    skew by up to the round-trip time — 60s is safe, 5s would false-positive on
+    a slow network. Pure insurance while the clock is correct, which is exactly
+    when it is cheap to write.
