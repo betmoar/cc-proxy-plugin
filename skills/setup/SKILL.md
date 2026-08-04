@@ -71,7 +71,7 @@ Write the file back with 2-space indentation, matching the existing formatting.
 
 ### 4. Optional: enable the statusline
 
-Ask the user whether they want the quota/credits statusline. It shows Claude 5-hour usage, GLM coding quota, OpenRouter credits (when `OPENROUTER_API_KEY` is set), and a bold-red `proxy down` when the local proxy is unreachable.
+Ask the user whether they want the quota/credits statusline. It shows Claude 5-hour usage, GLM coding quota, OpenRouter credits (when `OPENROUTER_API_KEY` is set), DeepSeek balance (when `DEEPSEEK_API_KEY` is set), Qwen presence (when `DASHSCOPE_API_KEY` is set), and a bold-red `proxy down` when the local proxy is unreachable.
 
 If yes, merge this **top-level** key into `~/.claude/settings.json` (it is *not* under `env`):
 

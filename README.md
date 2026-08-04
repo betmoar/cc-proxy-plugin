@@ -128,12 +128,13 @@ claude --plugin-dir .
 Compact composed-bar format, designed to sit alongside other plugins' segments:
 
 ```
-cc 5h:2% | glm 5h:14% | or:$$$ | ds:$$
+cc 5h:2% | glm 5h:14% | or:$$$ | ds:$$ | qw:on
 ```
 
 - **`cc` / `glm` 5h** — usage percentage, green→yellow→red by load. When a quota hits 100% (exhausted), the percentage is replaced by a red reset countdown `⏱3h11m`, since at that point the only useful signal is when access returns.
 - **`or:`** — OpenRouter credits remaining (when `OPENROUTER_API_KEY` is set), as `$`-tiers by digit count: `$1–9`=`$`, `$10–99`=`$$`, `$100–999`=`$$$`, `$1000+`=`$$$$`. Empty balance shows `$0`; an unavailable balance shows `--`.
 - **`ds:`** — DeepSeek balance remaining (when `DEEPSEEK_API_KEY` is set), same `$`-tier gauge as `or:`. Reports total balance (DeepSeek exposes no used figure).
+- **`qw:`** — Qwen presence marker (when `DASHSCOPE_API_KEY` is set). Deliberately not a gauge: QwenCloud exposes no quota API reachable with an API key — the console's own remaining-percentage figure is authenticated by a browser login session. So the marker carries no number rather than fabricating one.
 - **`proxy down`** in bold red when the local proxy is unreachable.
 
 When the [cc-status](https://github.com/betmoar/cc-status-plugin) composer is the active statusLine, this segment is discovered and composed automatically via `.claude-plugin/statusline.json` — no manual wiring needed.

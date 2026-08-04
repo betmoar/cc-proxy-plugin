@@ -4,9 +4,9 @@ Design and rationale for cc-proxy. For runtime facts and debugging, see [`OPERAT
 
 ## Goal
 
-Use GLM (Z.ai), OpenRouter, and Claude in one Claude Code session, switching with `/model` and no restart. Code-heavy turns can run on GLM (cheaper per token); conversational turns stay on Claude. Both quotas visible at a glance.
+Use GLM (Z.ai), DeepSeek, OpenRouter, Qwen, and Claude in one Claude Code session, switching with `/model` and no restart. Code-heavy turns can run on GLM (cheaper per token); conversational turns stay on Claude. Quotas visible at a glance.
 
-A local HTTP proxy sits between Claude Code and the upstream APIs. Claude Code points `ANTHROPIC_BASE_URL` at it; the proxy routes each request by model name and forwards. **GLM and OpenRouter become native Claude Code models** — every CC tool, subagent, and prompt-cache works unchanged.
+A local HTTP proxy sits between Claude Code and the upstream APIs. Claude Code points `ANTHROPIC_BASE_URL` at it; the proxy routes each request by model name and forwards. **Every provider becomes a native Claude Code model** — every CC tool, subagent, and prompt-cache works unchanged.
 
 ## Invariants
 
@@ -40,14 +40,14 @@ Provider = {
 | Rank | Rule | Target |
 | --- | --- | --- |
 | 1 | `claude-haiku-*` | Claude (pinned, internal ops) |
-| 2 | first `match()` (e.g. `glm-*`, `vendor/model`) | that provider |
+| 2 | first `match()` (e.g. `glm-*`, `deepseek-*`, bare `qwen*`, `vendor/model`) | that provider |
 | 3 | no match | default backend (`claude`) |
 
 ### Auth strategies
 
 - **oauth** — pass the inbound `Authorization` through (Claude Pro/Max).
-- **apiKey** — drop `Authorization`, set `x-api-key` (Z.ai's Anthropic endpoint).
-- **bearer** — drop `Authorization`, set `Authorization: Bearer` (OpenRouter's Anthropic "skin").
+- **apiKey** — drop `Authorization`, set `x-api-key` (GLM's Z.ai endpoint; DeepSeek's Anthropic skin).
+- **bearer** — drop `Authorization`, set `Authorization: Bearer` (OpenRouter's and Qwen's Anthropic skins).
 
 `applyAuth` / `buildUpstreamHeaders` centralize header construction.
 
@@ -67,7 +67,7 @@ Your own credentials, on your own machine. A hosted relay that shares credential
 
 ### Loopback binding
 
-The proxy listens on `127.0.0.1` by default. It injects GLM/OpenRouter API keys
+The proxy listens on `127.0.0.1` by default. It injects GLM/DeepSeek/OpenRouter/Qwen API keys
 and forwards Claude OAuth, so a request that reaches it is authenticated as you;
 an all-interfaces bind would let any host on the LAN spend your quota. `PROXY_HOST`
 is an explicit opt-out for the rare deliberate off-host setup. The setup template
@@ -87,9 +87,9 @@ The second active normalization, same spirit as overflow: GLM's `1302` request-r
 ### Model discovery (`/v1/models`)
 
 `GET /v1/models` synthesizes a merged model list rather than forwarding. It lives
-outside the router because it aggregates across backends: GLM is fetched live
-(the only provider whose catalog the proxy doesn't already know), while Claude
-and OpenRouter come from curated static lists — the discovery list advertises
+outside the router because it aggregates across backends: GLM and DeepSeek are
+fetched live, while Claude, OpenRouter, and Qwen come from curated static lists
+(Qwen's host exposes no `/models` route — it 404s). The discovery list advertises
 only generally-reachable models (Glasswing-gated and region-blocked ids are
 omitted). Best-effort by design: a failed live leg yields an `_errors` entry, not
 a failed response, keeping the endpoint stateless (invariant 2) and the fan-out
@@ -117,7 +117,7 @@ cc-proxy-plugin/                    ← the plugin IS the repo root; the marketp
 │   ├── proxy.js                    upstream forwarding (transparent pipe)
 │   ├── server.js                   HTTP server, overflow conversion, /_status
 │   ├── sanitize.js                 strips thinking blocks from history
-│   └── models.js                   /v1/models discovery: fans out to GLM (live) + Claude/OpenRouter (static), merges best-effort
+│   └── models.js                   /v1/models discovery: fans out to GLM + DeepSeek (live) + Claude/OpenRouter/Qwen (static), merges best-effort
 ├── hooks/                          SessionStart proxy auto-start (proxy-lifecycle.js)
 ├── scripts/statusline.js           quota / credits / proxy-down indicator
 ├── scripts/status.js               /cc-proxy:status report builder
