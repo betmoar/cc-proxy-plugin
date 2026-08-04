@@ -350,7 +350,7 @@ process.stdin.on("end", async () => {
 	const ds = await loadDeepSeekBalance(cacheDir);
 	if (ds) {
 		const stale = ds._stale ? "!" : "";
-		parts.push(`ds:${dollarTier(ds.remaining)}${stale}${RESET}`);
+		parts.push(`ds:${dollarTier(ds.remaining)}${stale}`);
 	}
 
 	if (!proxyAlive) {
