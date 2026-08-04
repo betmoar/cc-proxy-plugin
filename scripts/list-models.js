@@ -63,7 +63,9 @@ export const CONTEXT_WINDOW = {
 	"qwen3.6-flash": "1M",
 };
 
-const DISPLAY = {
+/** Provider id → human name. Shared by the table (list-models) and the HTML
+ * renderer (render-models) so a renamed provider can't drift between the two. */
+export const DISPLAY = {
 	glm: "GLM",
 	deepseek: "DeepSeek",
 	openrouter: "OpenRouter",
