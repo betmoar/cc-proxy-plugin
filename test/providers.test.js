@@ -142,10 +142,11 @@ describe("buildProviders", () => {
 		// Plan-resold third-party ids (0.5.1, "plan before credits"): prepaid
 		// capacity is spent before metered credits, so the plan leg claims these.
 		// The glm/deepseek predicates yield them in turn — see router.test.js.
-		assert.equal(qwen.match("glm-5.2"), true, "plan resells glm-5.2");
 		assert.equal(qwen.match("deepseek-v4-pro"), true, "plan resells deepseek-v4-pro");
-		// …but only the resold ones. The plan 403s deepseek-v4-flash, and every
-		// other glm-* is Z.ai's.
+		// glm-5.2 is served by the plan but NOT claimed: Z.ai is a plan too, and a
+		// native plan outranks a resold one.
+		assert.equal(qwen.match("glm-5.2"), false, "a native plan outranks a resold plan");
+		// The plan 403s deepseek-v4-flash, so it stays native too.
 		assert.equal(qwen.match("deepseek-v4-flash"), false);
 		assert.equal(qwen.match("glm-5.1"), false);
 		assert.equal(qwen.match("claude-opus-4-6"), false);

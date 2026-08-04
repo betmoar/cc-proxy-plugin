@@ -224,17 +224,28 @@ describe("render-models route/billing axes", () => {
 		);
 	});
 
-	it("renders plan-resold models on the Qwen card, not their vendor's", () => {
-		// 0.5.1 "plan before credits": glm-5.2 and deepseek-v4-pro route to the
-		// plan, so they must appear under Qwen. A card shows what it ROUTES, so if
-		// these regressed to the GLM/DeepSeek cards the page would advertise a
-		// backend the proxy no longer sends them to.
-		const i = html.indexOf("<h2>Qwen</h2>");
-		assert.ok(i > 0, "Qwen card missing");
-		const card = html.slice(html.lastIndexOf("<section", i), html.indexOf("</section>", i));
-		for (const id of ["glm-5.2", "deepseek-v4-pro"]) {
-			assert.ok(card.includes(`>${id}<`), `${id} must render on the Qwen card (it routes there)`);
-		}
+	it("places each model on the card it ROUTES to, per plan-before-credits", () => {
+		// A card shows what it routes, so misplacement here means the page
+		// advertises a backend the proxy does not use. This pair encodes the whole
+		// rule: deepseek-v4-pro moves to the plan (its native route is
+		// credit-billed), glm-5.2 does NOT (Z.ai is itself a plan, and a native
+		// plan outranks a resold one) — it stays on GLM with an "also on plan" tag.
+		const cardFor = (h2) => {
+			const i = html.indexOf(`<h2>${h2}</h2>`);
+			assert.ok(i > 0, `${h2} card missing`);
+			return html.slice(html.lastIndexOf("<section", i), html.indexOf("</section>", i));
+		};
+		assert.ok(
+			cardFor("Qwen").includes(">deepseek-v4-pro<"),
+			"deepseek-v4-pro must render on the Qwen card — its native route meters",
+		);
+		const glm = cardFor("GLM");
+		assert.ok(glm.includes(">glm-5.2<"), "glm-5.2 must stay on the GLM card");
+		assert.match(glm, /also on plan/, "glm-5.2 is plan-served too — say so");
+		assert.ok(
+			!cardFor("Qwen").includes(">glm-5.2<"),
+			"glm-5.2 must NOT move to Qwen: a native plan outranks a resold plan",
+		);
 	});
 
 	it("orders cards by route quality, not registry order", () => {

@@ -39,9 +39,18 @@ const DATED_ID = /^deepseek-.*-\d{4}(\d{4})?$/;
 
 /**
  * Bare third-party ids the Qwen Token Plan serves that are ALSO reachable on
- * their own vendor's backend. Plan capacity is prepaid, so spending it is free
- * at the margin while the native route bills metered credits — "plan before
- * credits". These therefore route to qwen when `DASHSCOPE_API_KEY` is set.
+ * their own vendor's backend, AND whose native route bills metered credits.
+ * Plan capacity is prepaid, so spending it is free at the margin — "plan before
+ * credits". These route to qwen when `DASHSCOPE_API_KEY` is set.
+ *
+ * A NATIVE PLAN OUTRANKS A RESOLD PLAN, which is why `glm-5.2` is not here.
+ * Z.ai is a GLM Pro plan (`/quota/limit` reports `level=pro`), so routing it to
+ * the Qwen plan would swap one prepaid pool for another — no saving — while
+ * still paying the resold route's costs: +6 injected tokens, and a deployment
+ * one step further from the weights. The rule is plan-before-CREDITS, not
+ * plan-before-everything; it only fires where the native route actually meters.
+ * DeepSeek native is credits (`/user/balance` shows a topped-up USD figure), so
+ * `deepseek-v4-pro` qualifies and `glm-5.2` does not.
  *
  * This is a DELIBERATE break from "a bare id means its own vendor". Two things
  * make it safe: the plan leg only registers when the key is present (a user
@@ -60,7 +69,7 @@ const DATED_ID = /^deepseek-.*-\d{4}(\d{4})?$/;
  * set or it becomes a hard failure on a model the user could otherwise reach.
  * `deepseek-v4-flash` is absent for exactly that reason (403 AccessDenied).
  */
-const QWEN_PLAN_RESELLS = new Set(["deepseek-v4-pro", "glm-5.2"]);
+const QWEN_PLAN_RESELLS = new Set(["deepseek-v4-pro"]);
 
 /**
  * Build the provider registry from the environment. Order matters: `resolve()`
@@ -87,8 +96,10 @@ export function buildProviders(env = process.env, defaultId = env.DEFAULT_BACKEN
 			baseUrl: "https://api.z.ai/api/anthropic",
 			apiKey: env.GLM_API_KEY || "",
 			auth: "apiKey",
-			// Yields glm-5.2 to the plan leg when it is registered — see
-			// QWEN_PLAN_RESELLS. Every other glm- id stays on Z.ai.
+			// All glm- ids stay here: Z.ai is itself a plan (GLM Pro), and a native
+			// plan outranks a resold one — see QWEN_PLAN_RESELLS. planResells() is
+			// still consulted so the rule holds if a future GLM id ever becomes
+			// credit-billed.
 			match: (m) => typeof m === "string" && m.startsWith("glm-") && !planResells(m),
 		},
 	];

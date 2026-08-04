@@ -137,9 +137,10 @@ describe("router", () => {
 			assert.equal(resolve("kimi-k2-0711", all).id, "claude"); // unknown → default
 		});
 
-		// "Plan before credits" (0.5.1). The plan resells deepseek-v4-pro and
-		// glm-5.2, and plan capacity is prepaid while the native routes bill
-		// metered credits — so with the plan configured, the bare ids go there.
+		// "Plan before credits" (0.5.1). DeepSeek native bills metered credits and
+		// the plan is prepaid, so the bare id goes to the plan. glm-5.2 does NOT:
+		// Z.ai is itself a plan (GLM Pro), and a native plan outranks a resold one
+		// — swapping prepaid pools saves nothing and costs +6 injected tokens.
 		it("routes plan-resold bare ids to qwen when the plan is configured", () => {
 			const withPlan = {
 				port: 4000,
@@ -149,11 +150,11 @@ describe("router", () => {
 				),
 			};
 			assert.equal(resolve("deepseek-v4-pro", withPlan).id, "qwen");
-			assert.equal(resolve("glm-5.2", withPlan).id, "qwen");
+			assert.equal(resolve("glm-5.2", withPlan).id, "glm", "a native plan outranks a resold plan");
 			// deepseek-v4-flash is NOT resold — the plan 403s it — so it must stay
 			// native or the user loses a model they can otherwise reach.
 			assert.equal(resolve("deepseek-v4-flash", withPlan).id, "deepseek");
-			// Everything else is untouched: only the two named ids move.
+			// Everything else is untouched: only the one resold id moves.
 			assert.equal(resolve("glm-5.1", withPlan).id, "glm");
 			assert.equal(resolve("glm-4.5", withPlan).id, "glm");
 		});

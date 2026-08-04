@@ -88,12 +88,13 @@ const LIVE_LEGS = new Set(["glm", "deepseek"]);
 /** Third-party ids the Qwen Token Plan also serves, but which keep routing to
  * their NATIVE backend — the bare id can't say which account pays, so moving
  * them silently would change both the bill and the context (the plan's gateway
- * injects a preamble: +79 input tokens on `deepseek-v4-pro`). They are tagged
- * rather than re-homed, so the plan's true scope is visible without implying
- * cc-proxy will route there. All 200-verified against the plan host 2026-08-04;
- * re-probe before a release. `deepseek-v4-flash-0731` is absent here because it
- * is plan-ONLY and already routes to qwen (see providers.js DATED_ID). */
-const QWEN_PLAN_ALSO = new Set(["deepseek-v4-pro", "glm-5.2"]);
+ * injects a preamble: +6 input tokens on `glm-5.2`). Tagged rather than
+ * re-homed, so the plan's true scope is visible without implying cc-proxy will
+ * route there. 200-verified against the plan host 2026-08-04; re-probe before a
+ * release. Only glm-5.2 qualifies: `deepseek-v4-pro` now ROUTES to the plan
+ * (its native route is credit-billed — see providers.js QWEN_PLAN_RESELLS), and
+ * `deepseek-v4-flash-0731` is plan-only. */
+const QWEN_PLAN_ALSO = new Set(["glm-5.2"]);
 
 // The number of dots a tier fills, of 4. Hue-independent ordinal encoding — a
 // tier never relies on color alone (the dot fill carries it).

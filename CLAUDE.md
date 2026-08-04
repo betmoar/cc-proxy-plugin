@@ -309,17 +309,20 @@ tests in `providers.test.js` + `router.test.js`. Never a router/server change.
    So the plan resells exactly one GLM (5.2) and two DeepSeek models.
 
    **Partially DONE in 0.5.1 — "plan before credits" is the DEFAULT now.**
-   `QWEN_PLAN_RESELLS` (`src/providers.js`) routes bare `deepseek-v4-pro` and
-   `glm-5.2` to the plan when `DASHSCOPE_API_KEY` is set, because prepaid
-   capacity is free at the margin and the native routes bill metered credits.
+   `QWEN_PLAN_RESELLS` (`src/providers.js`) routes bare `deepseek-v4-pro` to the
+   plan when `DASHSCOPE_API_KEY` is set, because prepaid capacity is free at the
+   margin and DeepSeek native bills metered credits. **A native plan outranks a
+   resold plan**, so `glm-5.2` stays on Z.ai (itself a GLM Pro plan) — switching
+   would swap prepaid pools for +6 injected tokens and nothing gained. The rule
+   is plan-before-CREDITS, not plan-before-everything.
    `deepseek-v4-flash-0731` routes there too (plan-only id, DATED_ID rule).
    `deepseek-v4-flash` stays native — the plan 403s it.
 
    What that leaves open, and why it still needs the prefix scheme:
    - **No way back to the native route.** The plan's gateway injects a preamble
-     (+79 input tokens on `deepseek-v4-pro`, +6 on `glm-5.2`), so the two routes
-     are not behaviourally identical. A user who tuned a prompt against native
-     DeepSeek now has no spelling that reaches it. This is the strongest single
+     (+79 input tokens on `deepseek-v4-pro`), so the two routes are not
+     behaviourally identical. A user who tuned a prompt against native DeepSeek
+     now has no spelling that reaches it. This is the strongest single
      argument for the scheme and it is now a live gap, not a hypothetical.
    - **The set is hand-curated and rots.** An id that starts 403-ing on the plan
      becomes a hard failure on a model the user could otherwise reach. Re-probe
