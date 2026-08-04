@@ -278,13 +278,32 @@ tests in `providers.test.js` + `router.test.js`. Never a router/server change.
    metered credits. Live-probed 2026-08-04 against the Token Plan host with
    `DASHSCOPE_API_KEY` (re-verify before building — this vendor's catalog moves):
 
-   | id | qwen token-plan | native |
-   |---|---|---|
-   | `deepseek-v4-flash-0731` | 200 | 400 — id unknown to DeepSeek |
-   | `deepseek-v4-flash` | 403 AccessDenied | 200 |
-   | `deepseek-v4-pro` | 200 | 200 — **same id, different bill** |
-   | `glm-5.2` | 200 | 200 — **same id, different bill** |
-   | `glm-5.1`, `glm-5` | 403 | 200 |
+   Full cross-host matrix, every cell probed (`POST /v1/messages`, 1 token):
+
+   | id | qwen plan | deepseek native | z.ai native |
+   |---|---|---|---|
+   | `qwen3.8-max`, `qwen3.7-plus` (+3 more) | 200 | 400 | 400 |
+   | `deepseek-v4-flash-0731` | 200 | **400 — id unknown to DeepSeek** | 400 |
+   | `deepseek-v4-pro` | 200 | 200 — *same id, different bill* | 400 |
+   | `deepseek-v4-flash` | 403 AccessDenied | 200 | 400 |
+   | `glm-5.2` | 200 | 400 | 200 — *same id, different bill* |
+   | `glm-5.1`, `glm-5` | 403 | 400 | 200 |
+
+   **The vendor's own plan page is also incomplete** — it lists five Qwen text
+   models (exactly the five in `DEFAULT_QWEN_MODELS`, so that curation is
+   confirmed correct), plus `deepseek-v4-pro`, and omits both `glm-5.2` and
+   `deepseek-v4-flash-0731`, which serve clean 200s. Two independent tables
+   (QwenCloud's public model list AND the account's own plan page) each miss
+   ids the gateway actually serves. Probe, never read.
+
+   The plan page also lists multimodal ids (`wan2.7-image*`,
+   `happyhorse-1.1-*v`, `qwen-audio-3.0-tts-plus`). These DO resolve on the
+   Messages endpoint — they fail on body shape (`"Input should be a valid list:
+   input.messages.0"`, `"url error"`), not with `Model not exist` — so they are
+   routable but unusable here: they want a different request schema, and
+   invariant 5 keeps translation out. (An earlier note claimed they were absent
+   from the endpoint entirely; that was probing wrong ids — `qwen-image-3.0-pro`
+   and `wan2.6-t2i` don't exist, `wan2.7-image` does.)
 
    So the plan resells exactly one GLM (5.2) and two DeepSeek models. Only
    `deepseek-v4-flash-0731` is unambiguous — the dated suffix exists nowhere else,
@@ -328,11 +347,22 @@ tests in `providers.test.js` + `router.test.js`. Never a router/server change.
    removes the conflict — the two axes now agree everywhere, and only OpenRouter
    is tier 3.
    Measured caveat, worth knowing before trusting "same weights": identical
-   prompts bill DIFFERENT input tokens across routes. `glm-5.2` with the same
-   body reported 22 input tokens via the Token Plan and 16 via Z.ai native,
-   reproducibly (2026-08-04). Something in the plan's gateway augments the
-   request — a system preamble, most likely. Same weights, not the same context.
-   So tier 2 means "provisioned by the vendor", NOT "byte-identical".
+   prompts bill DIFFERENT input tokens across routes, reproducibly (2026-08-04,
+   same 9-word body):
+
+   | id | via plan | native | delta |
+   |---|---|---|---|
+   | `glm-5.2` | 22 | 16 (Z.ai) | +6 |
+   | `deepseek-v4-pro` | 93 | 14 (DeepSeek) | **+79** |
+
+   The plan's gateway augments the request, and by a per-model amount — +79 on
+   DeepSeek is a substantial injected preamble, not header overhead. Same
+   weights, NOT the same context: a prompt tuned on one route can behave
+   differently on the other, and the cheaper route is not free of cost per
+   token either (you pay the preamble out of plan capacity on every call).
+   So tier 2 means "provisioned by the vendor", NOT "byte-identical" — this is
+   the single strongest argument for making the route EXPLICIT rather than
+   letting anything pick one silently.
 
    Tier is a property of the **(id, backend) pair**, never of a provider:
    Qwen is tier 2 for `qwen3.8-max` and tier 2-by-plan for `glm-5.2`, while
