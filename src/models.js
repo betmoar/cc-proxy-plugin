@@ -151,8 +151,9 @@ async function fetchGlmModels(glm, timeoutMs) {
  * DeepSeek exposes no pricing API (the /pricing page is HTML-only), so per-1M-token
  * prices are curated here against the documented table and updated per release.
  * The models themselves stay live-fetched (fetchDeepSeekModels); this is the only
- * static data. Note: DeepSeek charges 2× during peak hours (9–12, 14–18 UTC+8) —
- * documented here for reference, not modeled (the proxy has no clock and shouldn't).
+ * static data. Note: DeepSeek has ANNOUNCED (not yet live as of 2026-08-04) a 2×
+ * peak-hour surcharge (9–12, 14–18 UTC+8) — not modeled here, and re-check before
+ * it activates (the proxy has no clock and shouldn't model time-varying price).
  * @type {Record<string, { in: number, out: number, cached: number }>}
  */
 export const DEEPSEEK_PRICING = {

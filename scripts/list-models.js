@@ -15,13 +15,13 @@
 //
 // Context windows are curated per model — the Anthropic format has no
 // context_window field, and only OpenRouter serves one live, so this is
-// deliberately the display layer's concern (not the proxy's). All values below
-// were read from the vendors' own docs 2026-08-04:
+// deliberately the display layer's concern (not the proxy's). Sources (2026-08-04):
 //   GLM:     docs.z.ai/guides/llm/glm-*.md  (4.5=128K; 4.6/4.7/5/5-Turbo/5.1=200K; 5.2=1M)
 //   DeepSeek: api-docs.deepseek.com/quick_start/pricing (1M)
 //   Qwen:    Alibaba Cloud Model Studio (1M, incl. 3.8-max-preview)
-// No number here is guessed; re-verify against the docs before a release
-// touching these models, exactly like DEEPSEEK_PRICING.
+// GLM/DeepSeek are pinned to the docs verbatim; the Qwen numbers come from a
+// vendor summary (all Qwen 3.x models share a 1M window) — re-verify any of
+// these before a release touching the model, exactly like DEEPSEEK_PRICING.
 //
 // DECISION: one flat column with a provider suffix, no --json. The raw shape is
 // one `curl localhost:4000/v1/models` away; this script is the human view.
