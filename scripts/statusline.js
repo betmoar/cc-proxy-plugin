@@ -353,6 +353,20 @@ process.stdin.on("end", async () => {
 		parts.push(`ds:${dollarTier(ds.remaining)}${stale}`);
 	}
 
+	// Qwen section (`qw:on`, only when DASHSCOPE_API_KEY is set). Deliberately a
+	// presence marker, not a gauge: QwenCloud exposes no quota/balance API. The
+	// Token Plan percentage + reset time you see in the console come from
+	// cs-data.qwencloud.com, which authenticates on a browser login cookie plus a
+	// rotating sec_token and answers `BailianGateway.Login.NotLogined` to an API
+	// key (verified 2026-08-04, with the console's own verbatim request body).
+	// The Anthropic skin returns no x-ratelimit-*/x-quota-* response headers
+	// either — only Envoy timing. The sole programmatic signal is per-response
+	// `usage`, and accumulating that would mean cross-request state (invariant 2).
+	// So there is no number to render; anything tier-shaped here would be fiction.
+	if (process.env.DASHSCOPE_API_KEY) {
+		parts.push("qw:on");
+	}
+
 	if (!proxyAlive) {
 		parts.push(`${RED_BOLD}proxy down${RESET}`);
 	}

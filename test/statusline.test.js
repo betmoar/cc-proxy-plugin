@@ -281,6 +281,20 @@ describe("statusline.js", () => {
 		assert.match(stdout, /glm 5h:\S*\d+%/, `Expected glm percentage, got: ${stdout}`);
 	});
 
+	it("renders qw:on as a presence marker, gated on DASHSCOPE_API_KEY", async () => {
+		// Deliberately not a gauge: QwenCloud has no quota API reachable with an API
+		// key (the console figure is cookie-authenticated), so the marker carries no
+		// number. If this ever grows a percentage, a real endpoint must back it.
+		const on = await run(
+			{},
+			{ GLM_API_KEY: "", OPENROUTER_API_KEY: "", DASHSCOPE_API_KEY: "qwen-test" },
+		);
+		assert.ok(plain(on.stdout).includes("qw:on"), `Expected qw:on, got: ${on.stdout}`);
+
+		const off = await run({}, { GLM_API_KEY: "", OPENROUTER_API_KEY: "", DASHSCOPE_API_KEY: "" });
+		assert.ok(!plain(off.stdout).includes("qw:"), `Expected no qw section, got: ${off.stdout}`);
+	});
+
 	// Integration test — only runs when OPENROUTER_API_KEY is set
 	it(
 		"shows OpenRouter credits when key is set",
