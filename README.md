@@ -82,8 +82,8 @@ The plugin ships slash commands that reach proxy backends **without changing you
 
 **Commands:**
 
-- `/cc-proxy:status` — proxy liveness, configured providers + default backend, GLM/OpenRouter quota, and recent routing decisions. Reads the proxy's `/_status` endpoint and tails `/tmp/cc-proxy.log`; works whether the proxy is up or down.
-- `/cc-proxy:ask <prompt>` — a one-shot question answered by **GLM-5.2 (1M context)** for that turn only; your session model resumes on the next prompt. The clean way to ask the cheap, large-context model mid-session without `/model` switching.
+- `/cc-proxy:status` — proxy liveness, configured providers + default backend, provider quotas (GLM, OpenRouter, DeepSeek), and recent routing decisions. Reads the proxy's `/_status` endpoint and tails `/tmp/cc-proxy.log`; works whether the proxy is up or down.
+- `/cc-proxy:models` — every model reachable through the proxy, with the provider each one routes to. Reads the proxy's `GET /v1/models` and attributes ids against the registered providers' predicates; a failed live-fetch leg is flagged. Raw JSON is one `curl http://127.0.0.1:4000/v1/models` away.
 
 > The GLM offload subagents (`glm-bulk-reader`, `glm-review-*`, `glm-brainstorm`) have moved to a dedicated plugin: [`betmoar/cc-agents-plugin`](https://github.com/betmoar/cc-agents-plugin).
 

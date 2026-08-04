@@ -121,9 +121,10 @@ cc-proxy-plugin/                    ← the plugin IS the repo root; the marketp
 ├── hooks/                          SessionStart proxy auto-start (proxy-lifecycle.js)
 ├── scripts/statusline.js           quota / credits / proxy-down indicator
 ├── scripts/status.js               /cc-proxy:status report builder
+├── scripts/list-models.js          /cc-proxy:models renderer (/v1/models + attribution)
 ├── scripts/start-proxy.js          /cc-proxy:setup proxy starter (idempotent)
 ├── skills/setup/SKILL.md           /cc-proxy:setup
-├── commands/                       /cc-proxy:status, /cc-proxy:ask
+├── commands/                       /cc-proxy:status, /cc-proxy:models
 ├── test/                           node --test suite
 └── docs/                           ARCHITECTURE.md, OPERATIONS.md
 ```
