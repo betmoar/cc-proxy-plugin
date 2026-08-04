@@ -13,6 +13,7 @@ import {
 	withContextWindow,
 } from "../src/models.js";
 import { buildProviders } from "../src/providers.js";
+import { resolve } from "../src/router.js";
 import { createServer } from "../src/server.js";
 
 describe("models.js pure helpers", () => {
@@ -63,18 +64,37 @@ describe("models.js pure helpers", () => {
 		assert.equal(DEEPSEEK_PRICING["deepseek-v4-flash"].out, 0.28);
 	});
 
-	it("DEFAULT_QWEN_MODELS holds the curated bare-qwen ids with display names", () => {
+	it("DEFAULT_QWEN_MODELS holds the curated plan-served ids with display names", () => {
 		// Static (Qwen exposes no /models endpoint). Pins the live-verified ids so a
-		// dropped model or a non-`qwen`-prefixed id (routing would miss it) is caught.
+		// dropped model, or one the qwen predicate would not claim, is caught.
 		assert.deepEqual(
 			DEFAULT_QWEN_MODELS.map((m) => m.id),
-			["qwen3.8-max", "qwen3.8-max-preview", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-flash"],
+			[
+				"qwen3.8-max",
+				"qwen3.8-max-preview",
+				"qwen3.7-max",
+				"qwen3.7-plus",
+				"qwen3.6-flash",
+				// Not qwen-branded: a DeepSeek build the plan serves under its own dated
+				// spelling, unknown to DeepSeek native. Routed by the DATED_ID rule.
+				"deepseek-v4-flash-0731",
+			],
 		);
 		for (const m of DEFAULT_QWEN_MODELS) {
 			assert.equal(m.type, "model");
 			assert.equal(m.created_at, null);
 			assert.ok(m.display_name.length > 0);
-			assert.ok(m.id.startsWith("qwen"), `${m.id} must start with qwen`);
+		}
+		// The real invariant is not the spelling — it is that every advertised id
+		// actually ROUTES to qwen. A `qwen` prefix used to be sufficient; now the
+		// list carries a third-party id too, so assert routing directly.
+		const providers = buildProviders({ DASHSCOPE_API_KEY: "q", DEEPSEEK_API_KEY: "d" }, "claude");
+		for (const m of DEFAULT_QWEN_MODELS) {
+			assert.equal(
+				resolve(m.id, { providers }).id,
+				"qwen",
+				`${m.id} is advertised on the qwen leg but does not route there`,
+			);
 		}
 	});
 

@@ -94,6 +94,51 @@ describe("router", () => {
 			assert.equal(resolve("qwen3.8-max", withQwen).id, "qwen");
 		});
 
+		// The Qwen Token Plan serves DeepSeek builds under its OWN dated spelling.
+		// `deepseek-v4-flash-0731` 200s there and 400s at DeepSeek native ("The
+		// supported API model names are deepseek-v4-pro or deepseek-v4-flash"), so
+		// before 0.5.1 the deepseek- prefix claimed it and the user got a hard
+		// failure on a model their plan entitles them to.
+		it("routes a dated deepseek build to qwen — DeepSeek native does not know it", () => {
+			const both = {
+				port: 4000,
+				providers: buildProviders({ DASHSCOPE_API_KEY: "q", DEEPSEEK_API_KEY: "d" }, "claude"),
+			};
+			assert.equal(resolve("deepseek-v4-flash-0731", both).id, "qwen");
+			// …and the bare forms stay native: the plan 403s deepseek-v4-flash, and
+			// deepseek-v4-pro is served by BOTH (different bill, same id) so it must
+			// not silently move off its own backend. Disjointness: dated → qwen,
+			// bare → deepseek.
+			assert.equal(resolve("deepseek-v4-flash", both).id, "deepseek");
+			assert.equal(resolve("deepseek-v4-pro", both).id, "deepseek");
+		});
+
+		// GUARDRAIL (invariant 3 — credential isolation). A dated-id predicate
+		// written as a bare /-\d{4}$/ also matches Anthropic's own pinned ids, which
+		// are dated: claude-sonnet-4-5-20250929 would route to qwen, sending the
+		// user's OAuth credentials toward a third-party backend. Nearly shipped;
+		// the DATED_ID pattern is anchored to `deepseek-` for exactly this reason.
+		it("dated claude-* ids stay on Claude, never on a third-party backend", () => {
+			const all = {
+				port: 4000,
+				providers: buildProviders(
+					{ DASHSCOPE_API_KEY: "q", DEEPSEEK_API_KEY: "d", GLM_API_KEY: "g" },
+					"claude",
+				),
+			};
+			for (const id of [
+				"claude-sonnet-4-5-20250929",
+				"claude-opus-4-1-20250805",
+				"claude-haiku-4-5-20251001",
+			]) {
+				assert.equal(resolve(id, all).id, "claude", `${id} must stay on Claude`);
+			}
+			// Same trap, other vendors: a dated id that is not DeepSeek's is not the
+			// plan's to claim.
+			assert.equal(resolve("glm-4-plus-0520", all).id, "glm");
+			assert.equal(resolve("kimi-k2-0711", all).id, "claude"); // unknown → default
+		});
+
 		it("does not route slash-namespaced qwen/* to qwen (collision-lock)", () => {
 			// qwen/qwen3.7-max has a slash → matches no prefix provider, falls to the
 			// default (claude here). OpenRouter owns the slash space, not Qwen.

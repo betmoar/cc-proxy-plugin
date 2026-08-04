@@ -16,6 +16,28 @@
  */
 
 /**
+ * A DATED DEEPSEEK build: `deepseek-…-MMDD` / `-YYYYMMDD`. These are the Qwen
+ * Token Plan's own spellings for DeepSeek models it resells
+ * (`deepseek-v4-flash-0731`), and they exist ONLY there — DeepSeek native 400s
+ * them ("The supported API model names are deepseek-v4-pro or
+ * deepseek-v4-flash"). A reseller cannot mint an id the origin has never heard
+ * of, which is what marks the plan as provisioned capacity, not a broker.
+ *
+ * SCOPED TO `deepseek-` ON PURPOSE. A bare `/-\d{4}$/` looks tempting and is a
+ * credential-leak bug: Anthropic's own ids are dated (`claude-sonnet-4-5-
+ * 20250929`), so an unscoped pattern hands the qwen predicate every pinned
+ * Claude id — routing the user's OAuth credentials at a third-party backend and
+ * breaking invariant 3. It also swallowed `kimi-k2-0711`. Caught by
+ * test/router.test.js "dated claude-* ids stay on Claude"; keep the anchor.
+ *
+ * Deliberately narrow in the other direction too: this is the ONE unambiguous
+ * cross-vendor routing signal available today. Bare shared ids
+ * (`deepseek-v4-pro`, `glm-5.2`) are served by two backends and need the
+ * explicit-prefix scheme instead (CLAUDE.md backlog item 8).
+ */
+const DATED_ID = /^deepseek-.*-\d{4}(\d{4})?$/;
+
+/**
  * Build the provider registry from the environment. Order matters: `resolve()`
  * picks the first non-default provider whose `match()` returns true, falling
  * back to the default provider. Adding a backend (e.g. OpenRouter) is one entry
@@ -63,7 +85,13 @@ export function buildProviders(env = process.env, defaultId = env.DEFAULT_BACKEN
 			baseUrl: "https://api.deepseek.com/anthropic",
 			apiKey: env.DEEPSEEK_API_KEY,
 			auth: "apiKey",
-			match: (m) => typeof m === "string" && m.startsWith("deepseek-"),
+			// Bare `deepseek-*` EXCEPT dated ids (`-YYYYMMDD`/`-MMDD` suffix). A dated
+			// build is a Qwen-plan-only spelling — `deepseek-v4-flash-0731` 200s there
+			// and 400s here ("The supported API model names are deepseek-v4-pro or
+			// deepseek-v4-flash"), so claiming it would route a reachable model to a
+			// backend that has never heard of it. The two predicates stay disjoint:
+			// dated → qwen, bare → deepseek. Verified 2026-08-04; see CLAUDE.md item 8.
+			match: (m) => typeof m === "string" && m.startsWith("deepseek-") && !DATED_ID.test(m),
 		});
 	}
 
@@ -97,7 +125,17 @@ export function buildProviders(env = process.env, defaultId = env.DEFAULT_BACKEN
 			baseUrl: "https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic",
 			apiKey: env.DASHSCOPE_API_KEY,
 			auth: "bearer",
-			match: (m) => typeof m === "string" && m.startsWith("qwen") && !m.includes("/"),
+			// `qwen*` plus DATED third-party ids the plan resells under its own
+			// spelling. Bare `deepseek-v4-pro`/`glm-5.2` are deliberately NOT claimed
+			// even though the plan serves them: the id alone can't say which account
+			// pays, and silently moving them off their native backend would change
+			// both the bill and the context (the plan's gateway injects a preamble —
+			// +79 input tokens on deepseek-v4-pro). Only the dated ids are
+			// unambiguous, because they exist nowhere else. Slash ids stay
+			// OpenRouter's. → CLAUDE.md backlog item 8 for the explicit-prefix scheme
+			// that would cover the ambiguous ones.
+			match: (m) =>
+				typeof m === "string" && !m.includes("/") && (m.startsWith("qwen") || DATED_ID.test(m)),
 		});
 	}
 

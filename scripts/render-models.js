@@ -65,6 +65,10 @@ export const MODEL_TIERS = {
 	"qwen3.7-max": "Strong",
 	"qwen3.7-plus": "Specialist",
 	"qwen3.6-flash": "Economy",
+	// Plan-served DeepSeek build — graded as its bare sibling deepseek-v4-flash,
+	// which it is a dated snapshot of. Capability, not cost: reaching it through
+	// the plan is cheaper, but the tier grades the model (CLAUDE.md item 8/9).
+	"deepseek-v4-flash-0731": "Strong",
 	// Claude (curated, OAuth)
 	"claude-fable-5": "Flagship",
 	"claude-opus-5": "Flagship",
