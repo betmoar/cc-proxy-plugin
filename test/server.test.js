@@ -699,6 +699,57 @@ describe("server end-to-end routing", () => {
 		assert.match(call.body, /"model":"glm-5\.2"/, "full body delivered");
 	});
 
+	// INVARIANT (transparent pipe, accept-encoding exception): the buffered path
+	// JSON.parses the response body to convert a GLM 200-overflow into a 400 and to
+	// inject Retry-After on a 1302. A gzipped body would fail to parse and both
+	// normalizations would silently degrade to passthrough — so the buffered path
+	// pins accept-encoding: identity upstream. The streaming path must NOT: SSE is
+	// a pure pipe and keeps whatever the client negotiated.
+	it("buffered path forces accept-encoding: identity upstream (body inspection can't read gzip)", async () => {
+		await wire(() => ({
+			status: 200,
+			headers: { "content-type": "application/json" },
+			body: NORMAL_200,
+		}));
+		const res = await post(proxy.port, { model: "glm-5.2", stream: false, messages: [] });
+		assert.equal(res.status, 200);
+		assert.equal(glm.calls[0].headers["accept-encoding"], "identity");
+	});
+
+	it("buffered path overrides an inbound accept-encoding: gzip (it must not survive upstream)", async () => {
+		await wire(() => ({
+			status: 200,
+			headers: { "content-type": "application/json" },
+			body: NORMAL_200,
+		}));
+		const res = await post(
+			proxy.port,
+			{ model: "glm-5.2", stream: false, messages: [] },
+			{ "accept-encoding": "gzip, deflate, br" },
+		);
+		assert.equal(res.status, 200);
+		assert.equal(
+			glm.calls[0].headers["accept-encoding"],
+			"identity",
+			"client's gzip preference must not reach the upstream on the buffered path",
+		);
+	});
+
+	it("streaming path leaves accept-encoding untouched (pure pipe, no identity forcing)", async () => {
+		await wire(() => ({
+			status: 200,
+			headers: { "content-type": "text/event-stream" },
+			body: 'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+		}));
+		const res = await post(
+			proxy.port,
+			{ model: "glm-5.2", stream: true, messages: [] },
+			{ "accept-encoding": "gzip, deflate, br" },
+		);
+		assert.equal(res.status, 200);
+		assert.equal(glm.calls[0].headers["accept-encoding"], "gzip, deflate, br");
+	});
+
 	it("claude request uses OAuth passthrough (Authorization kept, no x-api-key)", async () => {
 		await wire(
 			() => ({ status: 200, headers: { "content-type": "application/json" }, body: NORMAL_200 }),

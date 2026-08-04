@@ -59,6 +59,32 @@ describe("proxy-lifecycle", () => {
 		it("returns false for a closed port", async () => {
 			assert.equal(await checkPort(closedPort), false);
 		});
+
+		// A DROPping firewall on loopback can't be simulated in CI, so probe
+		// TEST-NET-1 (RFC 5737, guaranteed unrouted) instead: same observable
+		// shape — SYN with no RST — where an untimed socket would sit for the OS
+		// connect timeout (~75s). checkPort is polled inside the SessionStart
+		// hook, which hooks.json kills at 10s, so one probe must be bounded.
+		it("resolves false within the timeout when the connect is black-holed", async () => {
+			const start = Date.now();
+			const alive = await checkPort(80, 150, "192.0.2.1");
+			const elapsed = Date.now() - start;
+			assert.equal(alive, false);
+			assert.ok(elapsed < 1000, `elapsed=${elapsed}ms — the probe was not bounded`);
+		});
+
+		// The guard timer must die with the socket on BOTH terminal paths: a
+		// live Timeout holds the event loop open, so a leaked one hangs the hook
+		// process after its work is done — the same failure the timer prevents.
+		it("clears its timer on the connect and error paths", async () => {
+			const timersBefore = () =>
+				process.getActiveResourcesInfo().filter((r) => r === "Timeout").length;
+			const base = timersBefore();
+			await checkPort(openPort, 5000);
+			assert.equal(timersBefore(), base, "connect path leaked a timer");
+			await checkPort(closedPort, 5000);
+			assert.equal(timersBefore(), base, "error path leaked a timer");
+		});
 	});
 
 	describe("waitReady", () => {

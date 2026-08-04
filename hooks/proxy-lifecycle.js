@@ -147,20 +147,44 @@ export function rotateLogIfLarge(logPath, maxBytes = LOG_MAX_BYTES) {
 	}
 }
 
+// COUPLING: this bounds ONE probe, and checkPort is called in a poll loop
+// (waitReady/waitGone, every POLL_INTERVAL_MS) inside the SessionStart hook,
+// which hooks.json kills at 10s. Without a timer a connect that is DROPped
+// rather than REJECTed (loopback behind a deny-by-drop firewall) never errors:
+// the socket sits until the OS connect timeout (~75s), so the first poll
+// iteration eats the whole hook budget and the hook dies with no proxy and no
+// message. 300ms matches probePort in scripts/statusline.js and stays well
+// under the 3000ms PROXY_READY_TIMEOUT_MS default, so a stuck probe still
+// leaves room for several polls before the readiness deadline.
+export const PROBE_TIMEOUT_MS = 300;
+
 /**
  * Non-blocking TCP probe to 127.0.0.1:port. Resolves true if a connection
- * succeeds within the default socket timeout, false otherwise.
+ * succeeds within `timeoutMs`, false on error or timeout. The timer is cleared
+ * on both terminal paths — a live Timeout keeps the event loop alive, which
+ * would hang the hook process just as surely as the stall it guards against.
  * @param {number} port
+ * @param {number} [timeoutMs]  Overridable for tests.
+ * @param {string} [host]  Overridable for tests (a blackhole address is the
+ *   only way to exercise the timeout path); production always probes loopback.
  * @returns {Promise<boolean>}
  */
-export function checkPort(port) {
+export function checkPort(port, timeoutMs = PROBE_TIMEOUT_MS, host = "127.0.0.1") {
 	return new Promise((resolve) => {
-		const sock = net.createConnection(port, "127.0.0.1");
+		const sock = net.createConnection(port, host);
+		const timer = setTimeout(() => {
+			sock.destroy();
+			resolve(false);
+		}, timeoutMs);
 		sock.on("connect", () => {
+			clearTimeout(timer);
 			sock.destroy();
 			resolve(true);
 		});
-		sock.on("error", () => resolve(false));
+		sock.on("error", () => {
+			clearTimeout(timer);
+			resolve(false);
+		});
 	});
 }
 

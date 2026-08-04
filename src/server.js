@@ -103,7 +103,16 @@ const NON_STREAM_BUFFER_LIMIT = 1024 * 1024;
 // empty content + stop_reason) can be converted into a real error instead of a
 // silent empty turn. Larger-than-cap and everything else pass through unchanged.
 function forwardBuffered(clientReq, clientRes, provider, outboundBuffer, inboundModel) {
-	const { proto, options } = upstreamRequestOptions(clientReq, provider, outboundBuffer.length);
+	// `true` = force accept-encoding: identity upstream. The inspections below
+	// JSON.parse the raw response bytes; a gzipped body would fail to parse and
+	// both the overflow→400 conversion and the 1302 Retry-After injection would
+	// silently stop working. Buffered path only — the streaming path stays a pipe.
+	const { proto, options } = upstreamRequestOptions(
+		clientReq,
+		provider,
+		outboundBuffer.length,
+		true,
+	);
 	const upstream = proto.request(options, (upstreamRes) => {
 		const status = upstreamRes.statusCode || 502;
 		const chunks = [];

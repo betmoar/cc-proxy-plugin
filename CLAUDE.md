@@ -156,10 +156,17 @@ Each is locked by tests; the test names tell you what you broke.
 - **`Retry-After` injection is gated on GLM code `1302` exactly.** Its sibling
   `1113` (insufficient balance) is also a 429 but is *not retryable*; giving it
   a retry hint recreates the infinite-cooldown loop other clients hit.
-- **Response inspection assumes identity encoding.** If a backend ever gzips
-  the non-streaming 200-overflow or 429 bodies, `JSON.parse` fails and detection
-  silently degrades to passthrough (safe, but the normalization stops working).
-  See backlog.
+- **Response inspection requires identity encoding, and now enforces it.**
+  `forwardBuffered()` passes `forceIdentityEncoding` to
+  `upstreamRequestOptions()` → `buildUpstreamHeaders()`, which *overwrites* the
+  client's `accept-encoding` with `identity` — a deliberate invariant-1 header
+  exception, like the hop-by-hop drop. Without it a gzipped body fails
+  `JSON.parse` and both the 200-overflow→400 conversion and the 1302
+  `Retry-After` injection silently degrade to passthrough. Never pass the flag
+  on the streaming path: SSE is a pure pipe and must keep the client's
+  negotiated encoding. → `test/server.test.js` "buffered path forces
+  accept-encoding: identity…", "…streaming path leaves accept-encoding
+  untouched".
 - **CC internals may drift**: the `[1m]` model suffix, internal `claude-haiku-*`
   ids, and `ANTHROPIC_CUSTOM_MODEL_OPTION` (exactly one slot) are not public
   API. When routing looks wrong after a Claude Code update, check these first.
@@ -236,21 +243,12 @@ tests in `providers.test.js` + `router.test.js`. Never a router/server change.
    start with a thinking block"**: gate the strip to non-`claude` providers and
    accept that a GLM→Claude mid-session switch then fails (the signatures are
    indistinguishable without state, and state is out — invariant 2).
-2. **Content-encoding blind spot** — force `accept-encoding: identity` on
-   *non-streaming* upstream requests (one line in `buildUpstreamHeaders`,
-   gated on the buffered path) so overflow/429 inspection can't be blinded by
-   gzip. Cheap; do it if Z.ai ever starts compressing.
+2. ~~**Content-encoding blind spot**~~ — DONE (0.5.1). The buffered path forces
+   `accept-encoding: identity` upstream; see the Traps bullet. Numbering kept so
+   older notes referencing "backlog item N" still resolve.
 3. **Dedup quota fetchers** — `scripts/status.js` and `scripts/statusline.js`
    each carry a GLM-quota and OpenRouter-credits fetcher. They already drifted
    once (missing timeout, fixed 0.3.1). Extract a shared module both import.
-4. **`checkPort` socket timeout** (`hooks/proxy-lifecycle.js`) — the lifecycle
-   TCP probe has no timer, unlike `probePort` in `scripts/statusline.js` (300 ms).
-   A firewall that DROPs (not rejects) loopback traffic would hang the
-   SessionStart hook until its 10 s kill. Fix: mirror probePort's
-   `setTimeout(→destroy→resolve false)` pattern, ~4 lines. Deferred because no
-   CI test can simulate a black-holed loopback connect — apply it alongside the
-   next lifecycle change and lean on the existing open/closed-port tests.
-   Done-when: checkPort carries a bounded timer and lifecycle tests stay green.
 5. **Predictable `/tmp` defaults** — `PROXY_LOG=/tmp/cc-proxy.log` (append
    follows symlinks) and the statusline's `/tmp/*.json` cache fallback are
    pre-createable by other local users on a multi-user machine (garbage gauges;

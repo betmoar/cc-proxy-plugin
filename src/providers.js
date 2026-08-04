@@ -173,16 +173,37 @@ const HOP_BY_HOP_HEADERS = [
  * Build the outbound header set for an upstream request: auth applied,
  * hop-by-hop headers dropped, host rewritten, anthropic-version defaulted,
  * content-length set.
+ *
+ * INVARIANT 1 EXCEPTION (deliberate, like the hop-by-hop drop above):
+ * `forceIdentityEncoding` overwrites the client's `accept-encoding` with
+ * `identity`. It is set ONLY by the buffered/non-streaming path, which parses
+ * the response body to convert a GLM 200-overflow into a 400 and to inject
+ * Retry-After on a 1302 429. Those inspections do `JSON.parse` on raw bytes:
+ * if a backend ever gzipped them, the parse would fail and both normalizations
+ * would silently degrade to passthrough (safe, but broken). The streaming path
+ * never passes this — SSE is a pure pipe and must keep negotiating whatever the
+ * client asked for.
+ *
  * @param {Provider} provider
  * @param {Record<string, any>} sourceHeaders
  * @param {number} bodyLength
  * @param {string} hostname
+ * @param {boolean} [forceIdentityEncoding]
  * @returns {Record<string, any>}
  */
-export function buildUpstreamHeaders(provider, sourceHeaders, bodyLength, hostname) {
+export function buildUpstreamHeaders(
+	provider,
+	sourceHeaders,
+	bodyLength,
+	hostname,
+	forceIdentityEncoding = false,
+) {
 	const headers = applyAuth(sourceHeaders, provider);
 	for (const h of HOP_BY_HOP_HEADERS) delete headers[h];
 	headers.host = hostname;
+	// Overwrite rather than delete: an absent accept-encoding lets some servers
+	// compress by default, and Node's http client would not add one either.
+	if (forceIdentityEncoding) headers["accept-encoding"] = "identity";
 	headers["anthropic-version"] = headers["anthropic-version"] || "2023-06-01";
 	headers["content-length"] = String(bodyLength);
 	return headers;
