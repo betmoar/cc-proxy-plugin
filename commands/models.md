@@ -38,4 +38,4 @@ EOF
 node "$root/scripts/list-models.js"
 ```
 
-Present the script's stdout **verbatim** — it is already formatted. Do not summarize or reword it. If it reports the proxy down, point the user at `/tmp/cc-proxy.log` and a fresh session (`/exit` + `/resume`) to re-trigger the SessionStart hook.
+Present the script's stdout **verbatim** — it is already formatted. Do not summarize or reword it. If it reports the proxy down, point the user at `~/.claude/cc-proxy/cc-proxy.log` and a fresh session (`/exit` + `/resume`) to re-trigger the SessionStart hook.

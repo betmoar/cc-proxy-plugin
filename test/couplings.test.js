@@ -38,6 +38,28 @@ describe("cross-file couplings", () => {
 		);
 	});
 
+	// COUPLING: the default proxy log path is spelled out twice — the hook picks
+	// where the proxy writes it, scripts/status.js tails it back. Not shared via
+	// import, deliberately: scripts/ doesn't reach into hooks/. Drift is silent —
+	// the status report just reports "no routing decisions yet" forever against a
+	// file nobody writes. Both must be the same $HOME-relative segments (item 5:
+	// neither may sit in /tmp, where another local user can plant a symlink).
+	it("the default log path is identical in the hook and scripts/status.js", () => {
+		const segs = (src) => {
+			const m = /path\.join\(os\.homedir\(\), ([^)]+)\)/.exec(src);
+			return m ? m[1].replace(/\s+/g, " ").trim() : null;
+		};
+		const hook = segs(read("hooks/proxy-lifecycle.js"));
+		const status = segs(read("scripts/status.js"));
+		assert.ok(hook, "could not locate the hook's homedir log default — update this coupling test");
+		assert.ok(status, "could not locate status.js's homedir log default — update this test");
+		assert.equal(
+			status,
+			hook,
+			`default log path diverged: hooks/proxy-lifecycle.js=[${hook}] scripts/status.js=[${status}]`,
+		);
+	});
+
 	// COUPLING: hooks.json kills the SessionStart hook at `timeout` seconds; the
 	// readiness poll inside it defaults to PROXY_READY_TIMEOUT_MS. A ready
 	// timeout at or past the hook kill silently never completes — raise both
@@ -99,6 +121,48 @@ describe("cross-file couplings", () => {
 				src,
 			),
 			"list-models.js's CONTEXT_WINDOW must stay a derivation over the imported table, not a hand-written literal",
+		);
+	});
+
+	// COUPLING: the provider quota/credit/balance endpoints live ONLY in
+	// scripts/quota.js. status.js (one-shot CLI) and statusline.js (300ms render
+	// loop) both consume it. They each carried their own copy until 0.5.1 and
+	// drifted once — the statusline's fetches grew an AbortSignal timeout while
+	// status.js's could hang forever (fixed 0.3.1). A re-declared URL literal in
+	// either consumer is that drift starting over, so fail on the literal itself.
+	it("quota/credit endpoint URLs are declared only in scripts/quota.js", () => {
+		const hosts = ["api.z.ai", "openrouter.ai/api/v1/credits", "api.deepseek.com"];
+		for (const consumer of ["scripts/status.js", "scripts/statusline.js"]) {
+			const src = read(consumer);
+			for (const host of hosts) {
+				assert.ok(
+					!src.includes(host),
+					`${consumer} declares its own ${host} endpoint — import it from scripts/quota.js instead`,
+				);
+			}
+			assert.ok(
+				/from\s*"\.\/quota\.js"/.test(src),
+				`${consumer} must import its provider fetchers from ./quota.js`,
+			);
+		}
+	});
+
+	// COUPLING: scripts/quota.js is imported by scripts that call loadEnv() in
+	// their body — and an import is hoisted ABOVE that call. Any module-level
+	// process.env read here therefore captures the environment BEFORE ~/.env is
+	// merged, silently ignoring a key or URL configured only there. That is
+	// verbatim the bug that made the statusline probe the wrong PROXY_PORT
+	// (fixed, locked by test/statusline.test.js). Reads must stay inside
+	// functions (see deepseekBalanceUrl).
+	it("scripts/quota.js reads process.env only inside functions, never at module level", () => {
+		const src = read("scripts/quota.js");
+		const offenders = [...src.matchAll(/^(?:export\s+)?const\s+\w+\s*=[^;]*process\.env/gm)].map(
+			(m) => m[0].split("\n")[0],
+		);
+		assert.deepEqual(
+			offenders,
+			[],
+			`scripts/quota.js reads process.env at module level (${offenders.join(", ")}) — imports are hoisted above the consumers' loadEnv(), so ~/.env would be ignored`,
 		);
 	});
 

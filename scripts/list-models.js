@@ -127,7 +127,7 @@ async function main() {
 			err instanceof TypeError || /ECONNREFUSED|ENOTFOUND|fetch failed/i.test(err?.message || "");
 		if (down) {
 			process.stderr.write(
-				`cc-proxy: proxy down on port ${PORT} — run /exit + /resume to re-trigger the SessionStart hook, or check /tmp/cc-proxy.log\n`,
+				`cc-proxy: proxy down on port ${PORT} — run /exit + /resume to re-trigger the SessionStart hook, or check ~/.claude/cc-proxy/cc-proxy.log\n`,
 			);
 		} else {
 			process.stderr.write(

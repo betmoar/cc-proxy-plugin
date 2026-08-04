@@ -64,7 +64,7 @@ There is no automatic replay. Recovery: switch model with `/model`, `/clear`, or
 | `PROXY_UPSTREAM_TIMEOUT_MS` | Upstream socket-inactivity timeout (default 120000); raise for 1M-context cold calls |
 | `DEFAULT_BACKEND` | Backend when no model prefix matches (default `claude`) |
 | `PROXY_DEBUG=1` | Log `metadata` + `system` summary per request |
-| `PROXY_LOG` | Proxy stdout/stderr file (default `/tmp/cc-proxy.log`) |
+| `PROXY_LOG` | Proxy stdout/stderr file (default `~/.claude/cc-proxy/cc-proxy.log`; the SessionStart hook creates the directory) |
 | `PROXY_LOG_MAX_BYTES` | Rotate the log to `<log>.1` past this size on next spawn (default 5242880) |
 | `PROXY_READY_TIMEOUT_MS` | SessionStart readiness-poll ceiling (default 3000) |
 | `OPENROUTER_MODELS` | Comma-separated OpenRouter ids advertised by `GET /v1/models` (default: a curated verified set). Discovery only; does not affect routing |
@@ -74,11 +74,11 @@ There is no automatic replay. Recovery: switch model with `/model`, `/clear`, or
 1. **Which version is active?** `cat ~/.claude/plugins/installed_plugins.json` — confirm `installPath` and `version`.
 2. **Is the proxy up?** `lsof -ti:4000` and `curl -s http://localhost:4000/_status`.
 3. **Orphan log inode?** `stat $PROXY_LOG` vs `lsof -p <pid>` — compare inodes.
-4. **What did the router decide?** `<model> -> <provider> <path>` lines in `/tmp/cc-proxy.log`.
+4. **What did the router decide?** `<model> -> <provider> <path>` lines in `~/.claude/cc-proxy/cc-proxy.log`.
    The trailing path disambiguates `unknown -> …` entries (a request that arrived
    with no `model` field — usually a non-Messages call like `/v1/messages/count_tokens`).
 
-When clearing logs: `truncate -s 0 /tmp/cc-proxy.log`. Never `rm && touch`.
+When clearing logs: `truncate -s 0 ~/.claude/cc-proxy/cc-proxy.log`. Never `rm && touch`.
 
 ## Dev loop
 

@@ -246,18 +246,27 @@ tests in `providers.test.js` + `router.test.js`. Never a router/server change.
 2. ~~**Content-encoding blind spot**~~ — DONE (0.5.1). The buffered path forces
    `accept-encoding: identity` upstream; see the Traps bullet. Numbering kept so
    older notes referencing "backlog item N" still resolve.
-3. **Dedup quota fetchers** — `scripts/status.js` and `scripts/statusline.js`
-   each carry a GLM-quota and OpenRouter-credits fetcher. They already drifted
-   once (missing timeout, fixed 0.3.1). Extract a shared module both import.
-5. **Predictable `/tmp` defaults** — `PROXY_LOG=/tmp/cc-proxy.log` (append
-   follows symlinks) and the statusline's `/tmp/*.json` cache fallback are
-   pre-createable by other local users on a multi-user machine (garbage gauges;
-   log lines appended through a planted symlink — no key material either way).
-   Fix at the next minor: default both under `~/.claude/cc-proxy/`, updating
-   the documented default in README/.env.example/OPERATIONS plus the hardcoded
-   fallbacks in `hooks/proxy-lifecycle.js` and `scripts/status.js` together
-   (env-doc coupling test will catch the doc half). Done-when: defaults live
-   under $HOME and a config test asserts it.
+3. ~~**Dedup quota fetchers**~~ — DONE (0.5.1). Endpoints, the fetch timeout, and
+   response shaping (GLM quota, OpenRouter credits, DeepSeek balance) live in
+   `scripts/quota.js`; both consumers import it. What stayed at the call sites is
+   what genuinely differs: the statusline's 60s disk cache + stale fallback (one
+   `cachedFetch()` wrapper for all three gauges) and the CLI's fail-now error
+   handling. `quota.js` must never read `process.env` at module level — imports
+   hoist above the consumers' `loadEnv()`. Both locked by `test/couplings.test.js`.
+4. ~~**`checkPort` socket timeout**~~ — DONE (0.5.1). The lifecycle TCP probe is
+   bounded at 300ms, mirroring `probePort`. Numbering kept so older notes
+   referencing "backlog item N" still resolve.
+5. ~~**Predictable `/tmp` defaults**~~ — DONE (0.5.1). `PROXY_LOG` and the
+   statusline cache dir now default under `~/.claude/cc-proxy/` instead of
+   `/tmp`, where another local user could plant a symlink our O_APPEND follows,
+   or a `*_cache.json` the statusline renders as this user's quota. The default
+   is spelled twice (`DEFAULT_LOG_PATH` in `hooks/proxy-lifecycle.js`, read back
+   by `scripts/status.js` — scripts/ doesn't import hooks/), locked by
+   `test/couplings.test.js`. `spawnProxy()` now mkdir -p's the log directory and
+   falls back to discarded stdio if the open still fails: it runs inside the
+   SessionStart hook, so a throw there is ECONNREFUSED for the whole session.
+   Existing users: the log silently moves; the old `/tmp/cc-proxy.log` is left
+   in place and never read again.
 6. **Agent-queue wall-clock deadline** — documented out of scope in
    `docs/ARCHITECTURE.md` (last section); only matters past ~128 concurrently
    stalled upstream calls to one origin.
