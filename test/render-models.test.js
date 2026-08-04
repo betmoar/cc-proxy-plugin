@@ -177,3 +177,65 @@ describe("docs/models.html artifact", () => {
 		);
 	});
 });
+
+// The two axes the card header publishes. They are ORTHOGONAL — cost is not a
+// capability grade and provenance is not billing — and the whole reason to draw
+// both is that they disagree: DeepSeek is native-but-credits, so its own
+// endpoint is the expensive way to reach deepseek-v4-pro. A future edit that
+// collapses them into one field would quietly publish a wrong claim.
+describe("render-models route/billing axes", () => {
+	const html = fs.readFileSync(
+		path.join(path.dirname(fileURLToPath(import.meta.url)), "../docs/models.html"),
+		"utf8",
+	);
+
+	it("every provider card carries both a source and a billing chip", () => {
+		const cards = [...html.matchAll(/<section class="card"[\s\S]*?<\/section>/g)].map((m) => m[0]);
+		assert.ok(cards.length >= 5, `expected 5 provider cards, got ${cards.length}`);
+		for (const card of cards) {
+			const name = /<h2>([^<]*)<\/h2>/.exec(card)?.[1] ?? "?";
+			assert.match(card, /class="axis src-(native|plan|reseller)"/, `${name}: no source chip`);
+			assert.match(card, /class="axis bill-(plan|credits)"/, `${name}: no billing chip`);
+		}
+	});
+
+	it("the two axes are not collapsed — at least one provider disagrees on them", () => {
+		// DeepSeek: source=native, billing=credits. If every card paired
+		// native↔plan and reseller↔credits, one field would be derivable from the
+		// other and drawing both would be noise. This asserts the tension is real.
+		const i = html.indexOf("<h2>DeepSeek</h2>");
+		assert.ok(i > 0, "DeepSeek card missing");
+		const card = html.slice(html.lastIndexOf("<section", i), html.indexOf("</section>", i));
+		assert.match(card, /class="axis src-native"/, "DeepSeek must be sourced native");
+		assert.match(card, /class="axis bill-credits"/, "DeepSeek must be billed on credits");
+	});
+
+	it("marks exactly one CARD as the default backend", () => {
+		// Scoped to <section class="card">: the footer notation key renders the same
+		// chip to define it, so a whole-document count is 2 by design. resolve()
+		// has exactly one fallback, and two marked cards would misstate where an
+		// unrouted id goes.
+		const cards = [...html.matchAll(/<section class="card"[\s\S]*?<\/section>/g)].map((m) => m[0]);
+		const marked = cards.filter((c) => c.includes('class="tag dflt"'));
+		assert.equal(
+			marked.length,
+			1,
+			`expected exactly one default-backend card, got ${marked.length}`,
+		);
+	});
+
+	it("tags plan-served models that still route natively", () => {
+		// glm-5.2 and deepseek-v4-pro are served by the Qwen plan but route to
+		// their own backends. Without the tag the plan's scope reads as 6 models
+		// when the entitlement is 8.
+		for (const id of ["glm-5.2", "deepseek-v4-pro"]) {
+			const i = html.indexOf(`>${id}<`);
+			assert.ok(i > 0, `${id} missing from the artifact`);
+			const row = html.slice(
+				html.lastIndexOf('<div class="mrow">', i),
+				html.indexOf("</div>", i) + 200,
+			);
+			assert.match(row, /also on plan/, `${id} is plan-served but carries no "also on plan" tag`);
+		}
+	});
+});

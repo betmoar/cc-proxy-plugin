@@ -85,17 +85,42 @@ const tierFor = (id) => MODEL_TIERS[id] ?? DEFAULT_TIER;
 /** Which provider legs pull their list live vs. ship a curated static list. */
 const LIVE_LEGS = new Set(["glm", "deepseek"]);
 
+/** Third-party ids the Qwen Token Plan also serves, but which keep routing to
+ * their NATIVE backend — the bare id can't say which account pays, so moving
+ * them silently would change both the bill and the context (the plan's gateway
+ * injects a preamble: +79 input tokens on `deepseek-v4-pro`). They are tagged
+ * rather than re-homed, so the plan's true scope is visible without implying
+ * cc-proxy will route there. All 200-verified against the plan host 2026-08-04;
+ * re-probe before a release. `deepseek-v4-flash-0731` is absent here because it
+ * is plan-ONLY and already routes to qwen (see providers.js DATED_ID). */
+const QWEN_PLAN_ALSO = new Set(["deepseek-v4-pro", "glm-5.2"]);
+
 // The number of dots a tier fills, of 4. Hue-independent ordinal encoding — a
 // tier never relies on color alone (the dot fill carries it).
 const DOTS = { Flagship: 4, Strong: 3, Specialist: 2, Economy: 1 };
 
-/** Monospace display name + dot glyph per provider (identity color slot). */
+/** Monospace glyph, identity colour, and the two ORTHOGONAL facts about how a
+ * backend is reached. Neither is derivable from the other, and neither is a
+ * capability claim (see CLAUDE.md backlog items 8 and 9):
+ *
+ *   `source` — distance from the weights. `native` = the model's own provider;
+ *     `plan` = a contracted capacity deal reselling it (the vendor provisions
+ *     the route, evidenced by ids that exist nowhere else); `reseller` = an
+ *     aggregator buying at market.
+ *   `billing` — `plan` (prepaid capacity, already sunk) vs `credits` (metered,
+ *     real money per call).
+ *
+ * The pairing is deliberately NOT one-to-one, and that is the whole point:
+ * DeepSeek is native-but-credits while Qwen is plan-but-plan, so DeepSeek's own
+ * endpoint is the EXPENSIVE way to reach deepseek-v4-pro. Verified against each
+ * provider's quota/balance endpoint 2026-08-04 (Z.ai reports level=pro;
+ * DeepSeek reports a topped-up USD balance). */
 const PROVIDER_META = {
-	glm: { glyph: "G", color: "#eb6834" },
-	deepseek: { glyph: "DS", color: "#1baf7a" },
-	openrouter: { glyph: "OR", color: "#eda100" },
-	qwen: { glyph: "Q", color: "#e87ba4" },
-	claude: { glyph: "C", color: "#2a78d6" },
+	glm: { glyph: "G", color: "#eb6834", source: "native", billing: "plan" },
+	deepseek: { glyph: "DS", color: "#1baf7a", source: "native", billing: "credits" },
+	openrouter: { glyph: "OR", color: "#eda100", source: "reseller", billing: "credits" },
+	qwen: { glyph: "Q", color: "#e87ba4", source: "plan", billing: "plan" },
+	claude: { glyph: "C", color: "#2a78d6", source: "native", billing: "plan" },
 };
 
 const tierDots = (tier) =>
@@ -124,7 +149,7 @@ async function fetchJson(url) {
  * @param {Map<string, { models: any[], live: boolean }>} acc
  */
 export function groupByProvider(rows) {
-	/** @type {Map<string, { live: boolean, models: Array<{ id: string, dup?: boolean, tier: string }> }>} */
+	/** @type {Map<string, { live: boolean, models: Array<{ id: string, dup?: boolean, plan?: boolean, tier: string }> }>} */
 	const acc = new Map();
 	// Native ids (non-openrouter) — an OpenRouter row whose bare form is reachable
 	// natively gets an "also native" tag (it's the same model, two ways).
@@ -134,7 +159,12 @@ export function groupByProvider(rows) {
 			acc.set(r.provider, { live: LIVE_LEGS.has(r.provider), models: [] });
 		}
 		const dup = r.provider === "openrouter" && nativeIds.has(r.id.split("/").pop());
-		acc.get(r.provider).models.push({ id: r.id, dup, tier: tierFor(r.id) });
+		// A model this row routes NATIVELY but the Qwen plan also serves. Without
+		// the tag the plan's real scope is invisible: `deepseek-v4-pro` and
+		// `glm-5.2` render only under DeepSeek/GLM, so the Qwen card looks like 6
+		// models when the entitlement is 8.
+		const plan = r.provider !== "qwen" && QWEN_PLAN_ALSO.has(r.id);
+		acc.get(r.provider).models.push({ id: r.id, dup, plan, tier: tierFor(r.id) });
 	}
 	// Tier first, then id DESCENDING within a tier — newer/higher version numbers
 	// on top, which is the order a reader scanning for "the good one" expects.
@@ -159,14 +189,26 @@ function providerCard([pid, group]) {
 			// A zero-width break opportunity after the namespace slash, so a long
 			// OpenRouter id wraps on the boundary a reader recognizes.
 			const id = esc(m.id).replace("/", "/<wbr>");
-			return `<div class="mrow"><span class="mname">${id}</span>${
-				m.dup ? `<span class="dup">also native</span>` : ""
-			}<span class="tier">${win ? `<span class="win">${esc(win)}</span>` : ""}${tierDots(m.tier)}</span></div>`;
+			// One provenance note per row, never two: "also native" (an aggregator
+			// row whose bare id is reachable direct) or "also on plan" (a native row
+			// the Qwen plan resells). They cannot both apply — dup is openrouter-only
+			// and plan excludes qwen.
+			const note = m.dup
+				? `<span class="dup">also native</span>`
+				: m.plan
+					? `<span class="dup">also on plan</span>`
+					: "";
+			return `<div class="mrow"><span class="mname">${id}</span>${note}<span class="tier">${win ? `<span class="win">${esc(win)}</span>` : ""}${tierDots(m.tier)}</span></div>`;
 		})
 		.join("");
+	// `default` marks the backend an unrouted id falls back to — the single most
+	// consequential routing fact on the page, and previously only in the footer.
+	const dflt = group.isDefault ? `<span class="tag dflt">default</span>` : "";
+	const src = meta.source || "native";
+	const bill = meta.billing || "credits";
 	return `<section class="card" style="--c:${meta.color}">
-  <div class="prow"><span class="mono">${esc(meta.glyph)}</span><h2>${esc(name)}</h2>${tag}</div>
-  <p class="leg">${group.live ? "native · live model list" : "curated list"} · ${group.models.length} model${group.models.length === 1 ? "" : "s"}</p>
+  <div class="prow"><span class="mono">${esc(meta.glyph)}</span><h2>${esc(name)}</h2>${dflt}${tag}</div>
+  <p class="leg"><span class="axis src-${src}" data-axis="src">${src}</span><span class="axis bill-${bill}" data-axis="bill">${bill}</span>${group.live ? "live list" : "curated list"} · ${group.models.length} model${group.models.length === 1 ? "" : "s"}</p>
   <div class="models">${rows}</div>
 </section>`;
 }
@@ -232,6 +274,10 @@ export function conduitSvg(ids) {
 // provider identity uses the validated categorical palette. Dark by default. ---
 function renderHtml({ rows, defaultBackend, errors, providerIds }) {
 	const groups = groupByProvider(rows);
+	// Mark the fallback backend on its own card. resolve() sends any id no
+	// predicate claims here, so it is the one card whose scope is "everything
+	// else" — worth showing beside the model list, not only in the footer.
+	for (const [pid, g] of groups) g.isDefault = pid === defaultBackend;
 	const cards = [...groups].map(providerCard).join("\n");
 	// Every number below is derived — a provider added or a leg switched from
 	// curated to live updates the hero without a hand edit here.
@@ -320,6 +366,25 @@ function renderHtml({ rows, defaultBackend, errors, providerIds }) {
   .card .leg { font-size:12px; color:var(--muted); margin:2px 0 0; }
   .tag { margin-left:auto; font-size:10.5px; font-weight:600; color:var(--good); border:1px solid var(--hairline); padding:2px 9px; border-radius:999px; white-space:nowrap; }
   .tag.live { color:var(--ink-2); }
+  /* The default chip sits before the live/key tag and takes the accent, because
+     "where do unrouted ids go" outranks "how was this list fetched".
+     margin-left:auto moves to it so the pair stays right-aligned as one group. */
+  .tag.dflt { margin-left:auto; color:var(--ink); border-color:var(--c); }
+  .tag.dflt + .tag { margin-left:6px; }
+  /* Source and billing: two independent axes, so two visually distinct marks —
+     source is a filled chip (provenance), billing an outlined one (cost). A
+     reader must not read one off the other; they genuinely disagree (DeepSeek
+     is native+credits, Qwen is plan+plan). */
+  .axis { font-family:var(--mono); font-size:9.5px; letter-spacing:.04em; text-transform:uppercase;
+    padding:1.5px 6px; border-radius:4px; margin-right:6px; white-space:nowrap; }
+  /* Qwen is plan on BOTH axes, so the two chips would read as one repeated
+     word. Each carries its axis name as a prefix — "src·plan" / "bill·plan" —
+     which also removes the need to remember chip order. */
+  .axis::before { content:attr(data-axis) "·"; opacity:.5; }
+  .src-native, .src-plan { background:color-mix(in srgb, var(--c) 22%, transparent); color:var(--ink); }
+  .src-reseller { background:transparent; color:var(--muted); border:1px dashed var(--rail); }
+  .bill-plan { border:1px solid var(--good); color:var(--good); }
+  .bill-credits { border:1px solid var(--rail); color:var(--muted); }
   .models { margin-top:12px; border-top:1px solid var(--grid); }
   .mrow { display:flex; align-items:flex-start; gap:12px; padding:10px 0; border-bottom:1px solid var(--grid); }
   .mrow:last-child { border-bottom:none; }
@@ -335,6 +400,9 @@ function renderHtml({ rows, defaultBackend, errors, providerIds }) {
   .tname { font-size:10.5px; color:var(--muted); width:4.6em; }
   .legend { display:flex; flex-wrap:wrap; gap:18px; align-items:center; margin:26px 0 20px; padding:14px 18px; background:var(--surface-1); border:1px solid var(--hairline); border-radius:12px; }
   .legend .lk { font-family:var(--mono); font-size:10.5px; color:var(--muted); text-transform:uppercase; letter-spacing:.1em; }
+  /* Two independent keys share one legend row; without a rule between them
+     "reseller … BILLING plan" reads as one continuous list. */
+  .lsep { width:1px; align-self:stretch; background:var(--grid); margin:0 4px; }
   .legend .tk { display:flex; align-items:center; gap:8px; color:var(--ink-2); font-size:12.5px; }
   .legend .tk .tdots i.on { background:var(--ink); border-color:var(--ink); }
   .warn { color:var(--muted); font-size:12px; padding:10px 14px; border:1px solid var(--hairline); border-radius:8px; margin:0 0 14px; }
@@ -393,6 +461,16 @@ function renderHtml({ rows, defaultBackend, errors, providerIds }) {
       <span class="lk">Intelligence tier</span>
       ${["Flagship", "Strong", "Specialist", "Economy"].map((t) => `<span class="tk">${tierDots(t)}</span>`).join("")}
     </div>
+    <div class="legend">
+      <span class="lk">Route</span>
+      <span class="tk"><span class="axis src-native" data-axis="src">native</span> the model's own provider</span>
+      <span class="tk"><span class="axis src-plan" data-axis="src">plan</span> contracted capacity reselling it</span>
+      <span class="tk"><span class="axis src-reseller" data-axis="src">reseller</span> aggregator buying at market</span>
+      <span class="lsep"></span>
+      <span class="lk">Billing</span>
+      <span class="tk"><span class="axis bill-plan" data-axis="bill">plan</span> prepaid, already sunk</span>
+      <span class="tk"><span class="axis bill-credits" data-axis="bill">credits</span> metered per call</span>
+    </div>
     ${errorLines}
     <div class="grid">
 ${cards}
@@ -406,6 +484,8 @@ ${cards}
         <div><dt>${tierDots("Strong")}</dt><dd>Qualitative capability tier. Ordinal, hue-independent — the fill carries it, never the color.</dd></div>
         <div><dt><span class="win">200K</span></dt><dd>Context window, where the vendor documents one.</dd></div>
         <div><dt><span class="dup">also native</span></dt><dd>Reachable two ways — direct, and via the OpenRouter aggregate.</dd></div>
+        <div><dt><span class="dup">also on plan</span></dt><dd>The Qwen plan serves this model too. It still routes to the provider shown — the bare id can't say which account pays, and the plan's gateway injects a preamble, so the two routes are not interchangeable.</dd></div>
+        <div><dt><span class="tag dflt">default</span></dt><dd>Where an id no predicate claims is sent.</dd></div>
       </dl>
       <p class="fnote"><code>claude-haiku-*</code> is omitted by design: Claude Code's internal ops pin to Claude so they never burn third-party quota. Generated from the live <code>/v1/models</code> · default backend <code>${esc(defaultBackend)}</code>.</p>
     </footer>
