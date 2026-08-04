@@ -38,6 +38,31 @@
 const DATED_ID = /^deepseek-.*-\d{4}(\d{4})?$/;
 
 /**
+ * Bare third-party ids the Qwen Token Plan serves that are ALSO reachable on
+ * their own vendor's backend. Plan capacity is prepaid, so spending it is free
+ * at the margin while the native route bills metered credits — "plan before
+ * credits". These therefore route to qwen when `DASHSCOPE_API_KEY` is set.
+ *
+ * This is a DELIBERATE break from "a bare id means its own vendor". Two things
+ * make it safe: the plan leg only registers when the key is present (a user
+ * without the plan is unaffected), and every id here is 200-verified on the
+ * plan host. Two things make it visible rather than silent: `/cc-proxy:status`
+ * logs the resolved provider per request, and docs/models.html renders the
+ * model under Qwen.
+ *
+ * NOT free of consequence: the plan's gateway injects a preamble, measured at
+ * +79 input tokens on `deepseek-v4-pro` and +6 on `glm-5.2` for an identical
+ * body (2026-08-04). Same weights, different context — a prompt tuned on the
+ * native route can behave differently here. Reaching the native route
+ * explicitly needs the prefix scheme (CLAUDE.md backlog item 8).
+ *
+ * Re-probe before a release: an id that 403s on the plan must come OUT of this
+ * set or it becomes a hard failure on a model the user could otherwise reach.
+ * `deepseek-v4-flash` is absent for exactly that reason (403 AccessDenied).
+ */
+const QWEN_PLAN_RESELLS = new Set(["deepseek-v4-pro", "glm-5.2"]);
+
+/**
  * Build the provider registry from the environment. Order matters: `resolve()`
  * picks the first non-default provider whose `match()` returns true, falling
  * back to the default provider. Adding a backend (e.g. OpenRouter) is one entry
@@ -48,6 +73,13 @@ const DATED_ID = /^deepseek-.*-\d{4}(\d{4})?$/;
  * @returns {Provider[]}
  */
 export function buildProviders(env = process.env, defaultId = env.DEFAULT_BACKEND || "claude") {
+	// "Plan before credits": when the Qwen Token Plan is configured it claims the
+	// bare ids it resells (QWEN_PLAN_RESELLS), so prepaid capacity is spent before
+	// metered credits. Computed once here and consulted by the glm/deepseek
+	// predicates below — WITHOUT the key those predicates are unchanged, so a user
+	// who holds no plan sees the original native routing.
+	const planResells = env.DASHSCOPE_API_KEY ? (m) => QWEN_PLAN_RESELLS.has(m) : () => false;
+
 	/** @type {Provider[]} */
 	const providers = [
 		{
@@ -55,7 +87,9 @@ export function buildProviders(env = process.env, defaultId = env.DEFAULT_BACKEN
 			baseUrl: "https://api.z.ai/api/anthropic",
 			apiKey: env.GLM_API_KEY || "",
 			auth: "apiKey",
-			match: (m) => typeof m === "string" && m.startsWith("glm-"),
+			// Yields glm-5.2 to the plan leg when it is registered — see
+			// QWEN_PLAN_RESELLS. Every other glm- id stays on Z.ai.
+			match: (m) => typeof m === "string" && m.startsWith("glm-") && !planResells(m),
 		},
 	];
 
@@ -91,7 +125,11 @@ export function buildProviders(env = process.env, defaultId = env.DEFAULT_BACKEN
 			// deepseek-v4-flash"), so claiming it would route a reachable model to a
 			// backend that has never heard of it. The two predicates stay disjoint:
 			// dated → qwen, bare → deepseek. Verified 2026-08-04; see CLAUDE.md item 8.
-			match: (m) => typeof m === "string" && m.startsWith("deepseek-") && !DATED_ID.test(m),
+			// …and yields the bare ids the plan resells (deepseek-v4-pro) when the
+			// plan leg is registered. deepseek-v4-flash is NOT in that set — the
+			// plan 403s it — so it keeps routing here.
+			match: (m) =>
+				typeof m === "string" && m.startsWith("deepseek-") && !DATED_ID.test(m) && !planResells(m),
 		});
 	}
 
@@ -135,7 +173,9 @@ export function buildProviders(env = process.env, defaultId = env.DEFAULT_BACKEN
 			// OpenRouter's. → CLAUDE.md backlog item 8 for the explicit-prefix scheme
 			// that would cover the ambiguous ones.
 			match: (m) =>
-				typeof m === "string" && !m.includes("/") && (m.startsWith("qwen") || DATED_ID.test(m)),
+				typeof m === "string" &&
+				!m.includes("/") &&
+				(m.startsWith("qwen") || DATED_ID.test(m) || QWEN_PLAN_RESELLS.has(m)),
 		});
 	}
 

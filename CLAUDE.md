@@ -306,12 +306,27 @@ tests in `providers.test.js` + `router.test.js`. Never a router/server change.
    from the endpoint entirely; that was probing wrong ids — `qwen-image-3.0-pro`
    and `wan2.6-t2i` don't exist, `wan2.7-image` does.)
 
-   So the plan resells exactly one GLM (5.2) and two DeepSeek models. Only
-   `deepseek-v4-flash-0731` is unambiguous — the dated suffix exists nowhere else,
-   so it could be routed to Qwen today by making the `deepseek` predicate exclude
-   dated ids and the `qwen` one claim them; disjointness is preserved, and it is
-   the cheap 80% of this item. The other two ids are the actual problem: nothing
-   in the string says which account pays.
+   So the plan resells exactly one GLM (5.2) and two DeepSeek models.
+
+   **Partially DONE in 0.5.1 — "plan before credits" is the DEFAULT now.**
+   `QWEN_PLAN_RESELLS` (`src/providers.js`) routes bare `deepseek-v4-pro` and
+   `glm-5.2` to the plan when `DASHSCOPE_API_KEY` is set, because prepaid
+   capacity is free at the margin and the native routes bill metered credits.
+   `deepseek-v4-flash-0731` routes there too (plan-only id, DATED_ID rule).
+   `deepseek-v4-flash` stays native — the plan 403s it.
+
+   What that leaves open, and why it still needs the prefix scheme:
+   - **No way back to the native route.** The plan's gateway injects a preamble
+     (+79 input tokens on `deepseek-v4-pro`, +6 on `glm-5.2`), so the two routes
+     are not behaviourally identical. A user who tuned a prompt against native
+     DeepSeek now has no spelling that reaches it. This is the strongest single
+     argument for the scheme and it is now a live gap, not a hypothetical.
+   - **The set is hand-curated and rots.** An id that starts 403-ing on the plan
+     becomes a hard failure on a model the user could otherwise reach. Re-probe
+     before each release; there is no test that can catch this offline.
+   - **It only helps holders of this one plan.** A second plan (another vendor,
+     another account) would need its own set, and two plans reselling the same
+     id would be ambiguous again — with no way to say which.
 
    **The trap for any prefix scheme**: OpenRouter matches on `includes("/")` and
    sits *before* qwen in the registry, so `qwen/deepseek-v4-pro` routes to

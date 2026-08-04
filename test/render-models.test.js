@@ -224,18 +224,28 @@ describe("render-models route/billing axes", () => {
 		);
 	});
 
-	it("tags plan-served models that still route natively", () => {
-		// glm-5.2 and deepseek-v4-pro are served by the Qwen plan but route to
-		// their own backends. Without the tag the plan's scope reads as 6 models
-		// when the entitlement is 8.
+	it("renders plan-resold models on the Qwen card, not their vendor's", () => {
+		// 0.5.1 "plan before credits": glm-5.2 and deepseek-v4-pro route to the
+		// plan, so they must appear under Qwen. A card shows what it ROUTES, so if
+		// these regressed to the GLM/DeepSeek cards the page would advertise a
+		// backend the proxy no longer sends them to.
+		const i = html.indexOf("<h2>Qwen</h2>");
+		assert.ok(i > 0, "Qwen card missing");
+		const card = html.slice(html.lastIndexOf("<section", i), html.indexOf("</section>", i));
 		for (const id of ["glm-5.2", "deepseek-v4-pro"]) {
-			const i = html.indexOf(`>${id}<`);
-			assert.ok(i > 0, `${id} missing from the artifact`);
-			const row = html.slice(
-				html.lastIndexOf('<div class="mrow">', i),
-				html.indexOf("</div>", i) + 200,
-			);
-			assert.match(row, /also on plan/, `${id} is plan-served but carries no "also on plan" tag`);
+			assert.ok(card.includes(`>${id}<`), `${id} must render on the Qwen card (it routes there)`);
 		}
+	});
+
+	it("orders cards by route quality, not registry order", () => {
+		// native+plan -> plan -> native+credits -> reseller. Registry order exists
+		// for predicate precedence (OpenRouter before the bare-prefix legs), an
+		// implementation detail; a reader wants cheapest-and-closest first.
+		const order = [...html.matchAll(/<h2>([^<]+)<\/h2>/g)].map((m) => m[1]);
+		assert.equal(order.at(-1), "OpenRouter", "the reseller must sort last");
+		assert.ok(
+			order.indexOf("Qwen") < order.indexOf("DeepSeek"),
+			`plan-sourced Qwen must precede credit-billed DeepSeek, got: ${order.join(" -> ")}`,
+		);
 	});
 });

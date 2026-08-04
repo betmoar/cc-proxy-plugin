@@ -134,13 +134,20 @@ describe("buildProviders", () => {
 	// disjoint from glm-, deepseek-, claude-, and OpenRouter's vendor/model slash
 	// ids. A QwenCloud subscription advertises glm-5.2 and deepseek-v4-* too, but
 	// those bare ids stay routed to their native backends by this disjoint match.
-	it("Qwen matches ids starting with `qwen` (no dash), never other prefixes or slash ids", () => {
+	it("Qwen matches `qwen` ids plus the builds the plan resells, never slash ids", () => {
 		const qwen = buildProviders({ DASHSCOPE_API_KEY: "k" }).find((p) => p.id === "qwen");
 		assert.equal(qwen.match("qwen3.7-max"), true);
 		assert.equal(qwen.match("qwen3.6-flash"), true);
 		assert.equal(qwen.match("qwen3.8-max"), true);
-		assert.equal(qwen.match("glm-5.2"), false);
-		assert.equal(qwen.match("deepseek-v4-pro"), false);
+		// Plan-resold third-party ids (0.5.1, "plan before credits"): prepaid
+		// capacity is spent before metered credits, so the plan leg claims these.
+		// The glm/deepseek predicates yield them in turn — see router.test.js.
+		assert.equal(qwen.match("glm-5.2"), true, "plan resells glm-5.2");
+		assert.equal(qwen.match("deepseek-v4-pro"), true, "plan resells deepseek-v4-pro");
+		// …but only the resold ones. The plan 403s deepseek-v4-flash, and every
+		// other glm-* is Z.ai's.
+		assert.equal(qwen.match("deepseek-v4-flash"), false);
+		assert.equal(qwen.match("glm-5.1"), false);
 		assert.equal(qwen.match("claude-opus-4-6"), false);
 		assert.equal(qwen.match("qwen/qwen3.7-max"), false, "slash id belongs to OpenRouter");
 		assert.equal(qwen.match(undefined), false);

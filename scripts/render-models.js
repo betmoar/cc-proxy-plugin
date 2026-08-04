@@ -123,6 +123,21 @@ const PROVIDER_META = {
 	claude: { glyph: "C", color: "#2a78d6", source: "native", billing: "plan" },
 };
 
+/** Rank a provider by route quality for display order: native → plan → credits
+ * → reseller. This collapses the two axes into ONE ordering, which is legitimate
+ * for sorting (a reader scans top-down) but would be wrong as a published field
+ * — source and billing genuinely disagree, and flattening them is what the
+ * card chips exist to prevent. Native-and-plan (GLM, Claude) outranks
+ * native-and-credits (DeepSeek) because it costs nothing at the margin;
+ * plan-sourced (Qwen) sits between them — prepaid, but one step from the
+ * weights. Reseller is last: metered AND furthest. */
+function routeRank(pid) {
+	const { source = "native", billing = "credits" } = PROVIDER_META[pid] || {};
+	if (source === "reseller") return 3;
+	if (source === "native") return billing === "plan" ? 0 : 2;
+	return 1; // plan-sourced
+}
+
 const tierDots = (tier) =>
 	`<span class="tdots">${[1, 2, 3, 4]
 		.map((n) => `<i${n <= DOTS[tier] ? ' class="on"' : ""}></i>`)
@@ -278,7 +293,15 @@ function renderHtml({ rows, defaultBackend, errors, providerIds }) {
 	// predicate claims here, so it is the one card whose scope is "everything
 	// else" — worth showing beside the model list, not only in the footer.
 	for (const [pid, g] of groups) g.isDefault = pid === defaultBackend;
-	const cards = [...groups].map(providerCard).join("\n");
+	// Cards read in ROUTE-QUALITY order — native, plan, credits, reseller — not
+	// registry order. The registry is ordered for predicate precedence (OpenRouter
+	// must be tried before the bare-prefix legs), which is an implementation
+	// detail a reader should not have to know. This ranks what they actually care
+	// about: closest to the weights and cheapest first. See routeRank.
+	const cards = [...groups]
+		.sort(([a], [b]) => routeRank(a) - routeRank(b))
+		.map(providerCard)
+		.join("\n");
 	// Every number below is derived — a provider added or a leg switched from
 	// curated to live updates the hero without a hand edit here.
 	const providers = providerIds.length;
