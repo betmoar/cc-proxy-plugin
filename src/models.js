@@ -11,8 +11,36 @@ import { providerById } from "./providers.js";
  * pin); claude-mythos-5 omitted (Project Glasswing-gated — unreachable by default). */
 export const DEFAULT_CLAUDE_MODELS = [
 	{ type: "model", id: "claude-fable-5", display_name: "Claude Fable 5", created_at: null },
-	{ type: "model", id: "claude-opus-4-8", display_name: "Claude Opus 4.8", created_at: null },
+	{ type: "model", id: "claude-opus-5", display_name: "Claude Opus 5", created_at: null },
 	{ type: "model", id: "claude-sonnet-5", display_name: "Claude Sonnet 5", created_at: null },
+];
+
+/** Qwen (QwenCloud Token Plan) ids as Anthropic-skin compatible. Static — Qwen
+ * exposes no /v1/models route (the docs say to ignore it; it 404s), so these are
+ * curated like the Claude list. ids are bare (`qwen3.7-max`), matching the `qwen`
+ * prefix the provider's match() keys on.
+ *
+ * `qwen3.8-max-preview` is Token-Plan-exclusive and the cheapest way to reach the
+ * 3.8 tier: `qwen3.8-max` is 50% off 22:00–08:00 UTC+8, and the preview stacks a
+ * promotional rate on top of that night discount.
+ *
+ * Curated EMPIRICALLY, not from the docs: all five returned HTTP 200 against the
+ * Token Plan host on 2026-08-04. QwenCloud's published model table is aspirational
+ * for a Token Plan key — `qwen3.7-flash` and `qwen3-coder-next` are listed there but
+ * 400 (InvalidParameter), and `qwen3.6-plus` 403s (AccessDenied, "not eligible").
+ * Conversely `qwen3.7-plus` is live but absent from that table. Re-verify by calling
+ * the endpoint, not by reading the docs, before each release touching Qwen compat. */
+export const DEFAULT_QWEN_MODELS = [
+	{ type: "model", id: "qwen3.8-max", display_name: "Qwen3.8 Max", created_at: null },
+	{
+		type: "model",
+		id: "qwen3.8-max-preview",
+		display_name: "Qwen3.8 Max Preview",
+		created_at: null,
+	},
+	{ type: "model", id: "qwen3.7-max", display_name: "Qwen3.7 Max", created_at: null },
+	{ type: "model", id: "qwen3.7-plus", display_name: "Qwen3.7 Plus", created_at: null },
+	{ type: "model", id: "qwen3.6-flash", display_name: "Qwen3.6 Flash", created_at: null },
 ];
 
 /** OpenRouter ids as Anthropic-skin compatible (HTTP 200 + message shape at POST
@@ -178,8 +206,9 @@ export async function collectModels(config) {
 	const glm = providerById(config, "glm");
 	const deepseek = providerById(config, "deepseek");
 	const openrouter = providerById(config, "openrouter");
+	const qwen = providerById(config, "qwen");
 
-	// Assemble leg thunks in registry order: glm, deepseek, openrouter, claude.
+	// Assemble leg thunks in registry order: glm, deepseek, openrouter, qwen, claude.
 	/** @type {Array<() => Promise<{ provider: string, entries?: ModelEntry[], error?: string }>>} */
 	const legs = [];
 	if (glm?.apiKey) {
@@ -196,6 +225,11 @@ export async function collectModels(config) {
 	}
 	if (openrouter) {
 		legs.push(async () => ({ provider: "openrouter", entries: config.openRouterModels }));
+	}
+	// Qwen has no live /models endpoint — static curated list, emitted only when the
+	// provider is registered (key set), like the Claude leg below.
+	if (qwen) {
+		legs.push(async () => ({ provider: "qwen", entries: config.qwenModels }));
 	}
 	legs.push(async () => ({ provider: "claude", entries: config.claudeModels }));
 

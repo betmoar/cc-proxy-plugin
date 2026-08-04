@@ -82,6 +82,45 @@ describe("router", () => {
 		});
 	});
 
+	describe("Qwen (when configured)", () => {
+		const withQwen = {
+			port: 4000,
+			providers: buildProviders({ DASHSCOPE_API_KEY: "q" }, "claude"),
+		};
+
+		it("routes bare qwen ids (no dash after qwen) to qwen", () => {
+			assert.equal(resolve("qwen3.7-max", withQwen).id, "qwen");
+			assert.equal(resolve("qwen3.6-flash", withQwen).id, "qwen");
+			assert.equal(resolve("qwen3.8-max", withQwen).id, "qwen");
+		});
+
+		it("does not route slash-namespaced qwen/* to qwen (collision-lock)", () => {
+			// qwen/qwen3.7-max has a slash → matches no prefix provider, falls to the
+			// default (claude here). OpenRouter owns the slash space, not Qwen.
+			assert.equal(resolve("qwen/qwen3.7-max", withQwen).id, "claude");
+		});
+
+		it("bare glm-/deepseek-/claude-* still route to their own providers with Qwen configured", () => {
+			// QwenCloud advertises glm-5.2 and deepseek-v4-* too, but those bare ids
+			// must keep routing to their native backends (no QWEN default hijack).
+			const all = {
+				port: 4000,
+				providers: buildProviders(
+					{ GLM_API_KEY: "g", DEEPSEEK_API_KEY: "d", DASHSCOPE_API_KEY: "q" },
+					"claude",
+				),
+			};
+			assert.equal(resolve("glm-5.2", all).id, "glm");
+			assert.equal(resolve("deepseek-v4-pro", all).id, "deepseek");
+			assert.equal(resolve("claude-opus-4-6", all).id, "claude");
+			assert.equal(resolve("qwen3.7-max", all).id, "qwen");
+		});
+
+		it("qwen not configured → bare qwen ids fall to the default", () => {
+			assert.equal(resolve("qwen3.7-max", config).id, "claude");
+		});
+	});
+
 	describe("default backend = glm", () => {
 		const glmDefault = { port: 4000, providers: buildProviders({ GLM_API_KEY: "x" }, "glm") };
 

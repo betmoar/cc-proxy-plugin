@@ -67,6 +67,40 @@ export function buildProviders(env = process.env, defaultId = env.DEFAULT_BACKEN
 		});
 	}
 
+	// Qwen (QwenCloud / Aliyun Model Studio) speaks an Anthropic-compatible "skin"
+	// at /apps/anthropic with Bearer auth (the docs' ANTHROPIC_AUTH_TOKEN →
+	// Authorization: Bearer). Opt-in: only registered when a key is present. Its model
+	// ids are bare and start with `qwen` (e.g. `qwen3.7-max`, `qwen3.6-flash`) — note
+	// there is no dash after `qwen`. The `!includes("/")` keeps the predicate disjoint
+	// from OpenRouter's slash-namespaced space: `qwen/qwen3.7-max` (if OpenRouter
+	// advertised it) belongs to OpenRouter, not Qwen, mirroring how DeepSeek's
+	// `deepseek-` trailing dash naturally excludes `deepseek/...`.
+	//
+	// The base URL is PLAN-SPECIFIC and deliberately not the one in QwenCloud's
+	// public docs. Those document `https://dashscope-intl.aliyuncs.com/apps/anthropic`;
+	// a Token Plan key is bound to the per-plan MaaS host shown in the account
+	// dashboard, and the documented host rejects it outright ("invalid api-key",
+	// 403 — verified live 2026-08-04 against all of qwen3.7-max/3.6-plus/3.7-plus).
+	// Every QwenCloud plan is host-bound and there is no universal endpoint:
+	// Coding Plan lives on `coding-intl.dashscope.aliyuncs.com/apps/anthropic`
+	// (`sk-sp-` keys), general/pay-as-you-go on `dashscope-intl.aliyuncs.com`.
+	// Do NOT "correct" this to the documented URL — worse than a 403, QwenCloud's
+	// own FAQ warns that a general key on a general host silently bills
+	// pay-as-you-go *on top of* the plan rather than erroring. Note also: the path must end at
+	// `/apps/anthropic` with no trailing `/v1` — clients auto-append, and the extra
+	// segment yields `/v1/v1/messages` → 404.
+	//
+	// No quirks: Qwen has no Z.ai-style 1313 flag or 200-stop_reason overflow signal.
+	if (env.DASHSCOPE_API_KEY) {
+		providers.push({
+			id: "qwen",
+			baseUrl: "https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic",
+			apiKey: env.DASHSCOPE_API_KEY,
+			auth: "bearer",
+			match: (m) => typeof m === "string" && m.startsWith("qwen") && !m.includes("/"),
+		});
+	}
+
 	providers.push({
 		id: "claude",
 		baseUrl: "https://api.anthropic.com",

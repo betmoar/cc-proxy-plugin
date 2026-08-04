@@ -107,6 +107,54 @@ describe("buildProviders", () => {
 		assert.deepEqual(ids, ["glm", "openrouter", "deepseek", "claude"]);
 	});
 
+	it("omits Qwen unless DASHSCOPE_API_KEY is set", () => {
+		assert.equal(
+			buildProviders({}).some((p) => p.id === "qwen"),
+			false,
+		);
+	});
+
+	it("registers Qwen (bearer, no quirks) when its key is set", () => {
+		const providers = buildProviders({ DASHSCOPE_API_KEY: "qwen-key" });
+		const qwen = providers.find((p) => p.id === "qwen");
+		assert.ok(qwen, "qwen provider present");
+		assert.equal(qwen.auth, "bearer");
+		assert.equal(qwen.apiKey, "qwen-key");
+		assert.equal(
+			qwen.baseUrl,
+			"https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic",
+		);
+		assert.equal(qwen.quirks, undefined);
+		// claude stays last / default.
+		assert.equal(providers[providers.length - 1].id, "claude");
+	});
+
+	// COLLISION-LOCK: Qwen's bare ids start with `qwen` (no dash after — ids are
+	// `qwen3.7-max`, not `qwen-3.7-max`), so the prefix match is `qwen`. That is
+	// disjoint from glm-, deepseek-, claude-, and OpenRouter's vendor/model slash
+	// ids. A QwenCloud subscription advertises glm-5.2 and deepseek-v4-* too, but
+	// those bare ids stay routed to their native backends by this disjoint match.
+	it("Qwen matches ids starting with `qwen` (no dash), never other prefixes or slash ids", () => {
+		const qwen = buildProviders({ DASHSCOPE_API_KEY: "k" }).find((p) => p.id === "qwen");
+		assert.equal(qwen.match("qwen3.7-max"), true);
+		assert.equal(qwen.match("qwen3.6-flash"), true);
+		assert.equal(qwen.match("qwen3.8-max"), true);
+		assert.equal(qwen.match("glm-5.2"), false);
+		assert.equal(qwen.match("deepseek-v4-pro"), false);
+		assert.equal(qwen.match("claude-opus-4-6"), false);
+		assert.equal(qwen.match("qwen/qwen3.7-max"), false, "slash id belongs to OpenRouter");
+		assert.equal(qwen.match(undefined), false);
+	});
+
+	it("Qwen sits before claude and after deepseek in registry order", () => {
+		const ids = buildProviders({
+			OPENROUTER_API_KEY: "or",
+			DEEPSEEK_API_KEY: "ds",
+			DASHSCOPE_API_KEY: "qwen",
+		}).map((p) => p.id);
+		assert.deepEqual(ids, ["glm", "openrouter", "deepseek", "qwen", "claude"]);
+	});
+
 	it("match predicates key off the model prefix", () => {
 		const providers = buildProviders({});
 		const glm = providers.find((p) => p.id === "glm");

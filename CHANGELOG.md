@@ -2,6 +2,12 @@
 
 All notable changes to cc-proxy are recorded here. Versions follow [semver](https://semver.org/); `package.json` is the single source of truth and propagates to `.claude-plugin/plugin.json` via `scripts/sync-version.mjs`.
 
+## [Unreleased]
+
+### Added
+- **Qwen provider (Anthropic skin, Token Plan).** QwenCloud's Anthropic-compatible endpoint (`token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic`, Singapore region) is now a routed backend: bare `qwen`-prefixed model ids (e.g. `qwen3.7-max`, `qwen3.6-flash`, `qwen3.8-max`) route to Qwen with `Authorization: Bearer` auth. Opt-in via `DASHSCOPE_API_KEY` in `~/.env` (QwenCloud/DashScope's canonical key name). The `qwen` prefix match excludes slash ids (`!includes("/")`), keeping it disjoint from `glm-`, `deepseek-`, `claude-`, and OpenRouter's slash-namespaced space — a QwenCloud subscription also advertises `glm-5.2` and `deepseek-v4-*`, but those bare ids keep routing to their native backends by this disjoint match (locked by `test/router.test.js` + `test/providers.test.js`). No format translation; invariants hold. Per CONTRIBUTING, it's one gated entry in `buildProviders` — no router/server change.
+- **Static model discovery for Qwen.** `GET /v1/models` now includes a curated Qwen list (Qwen exposes no `/models` endpoint — it 404s, so the list is static like Claude/OpenRouter) merging in registry order with the existing best-effort fan-out. A failed leg still surfaces in `_errors` and never blocks the `200`.
+
 ## [0.5.0] — 2026-08-03
 
 ### Added
