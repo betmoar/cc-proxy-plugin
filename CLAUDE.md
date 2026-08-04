@@ -306,12 +306,47 @@ tests in `providers.test.js` + `router.test.js`. Never a router/server change.
    cross-request state (invariant 2). An explicit alias the user selects is
    stateless; automatic failover is not.
 
+   **Provider tiers = distance from the weights** (the vocabulary the cost rank
+   below is built on). Tier 1 = Anthropic (OAuth passthrough, the default
+   backend, pinned by invariants 3 and 4 — a *structural* position, NOT a
+   capability claim; capability is item 9 and needs evals). Tier 2 = the model's
+   own provider or a **contracted plan** reselling it. Tier 3 = an aggregator
+   buying at market (OpenRouter). The risks that matter for a distant route —
+   truncated window, substituted weights, an unmeasured deployment — scale with
+   that distance, not with who sends the bill.
+
+   **A plan IS tier 2, not tier 3.** A prepaid plan is a contract with the
+   vendor for capacity, so the route is provisioned rather than brokered.
+   Established by `deepseek-v4-flash-0731`: that dated id exists ONLY on the
+   Qwen Token Plan host and is unknown to DeepSeek natively (400) — a reseller
+   cannot mint an id the origin has never heard of, so the plan is a first-party
+   arrangement with the model provider, not a middleman. Which means Qwen's
+   `glm-5.2` and `deepseek-v4-*` are tier 2 as well.
+   This is what makes the tiering usable: without it, cost and provenance
+   conflict (the plan routes are the cheap ones AND the resold ones, so "prefer
+   plan" and "distrust resold" point opposite ways). Filing plans as tier 2
+   removes the conflict — the two axes now agree everywhere, and only OpenRouter
+   is tier 3.
+   Measured caveat, worth knowing before trusting "same weights": identical
+   prompts bill DIFFERENT input tokens across routes. `glm-5.2` with the same
+   body reported 22 input tokens via the Token Plan and 16 via Z.ai native,
+   reproducibly (2026-08-04). Something in the plan's gateway augments the
+   request — a system preamble, most likely. Same weights, not the same context.
+   So tier 2 means "provisioned by the vendor", NOT "byte-identical".
+
+   Tier is a property of the **(id, backend) pair**, never of a provider:
+   Qwen is tier 2 for `qwen3.8-max` and tier 2-by-plan for `glm-5.2`, while
+   OpenRouter is tier 3 for everything. It therefore cannot live as one field on
+   a `providers.js` entry. It also cannot be the SELECTOR — `deepseek-v4-pro` is
+   reachable at tier 2 through two different backends, so a tier does not
+   uniquely name one. Compression is the point of a tier; uniqueness is the
+   point of a selector. Keep the explicit prefix as the selector.
+
    **Cost rank (belongs here, NOT in item 9).** When one model is reachable
    several ways, prefer: prepaid plan capacity (GLM Pro, Qwen Token Plan) →
    native metered (DeepSeek) → aggregator (OpenRouter, lowest). Plan capacity is
    sunk cost; credits are marginal spend. OpenRouter ranks last because it is
-   metered *and* a resold deployment whose window and weights we have not
-   measured.
+   metered *and* tier 3.
    This is a **cost** ranking, not a knowledge ranking, and the two are
    deliberately not correlated — measuring capability-per-currency is out of
    scope. `deepseek/deepseek-v4-pro` via OpenRouter is the same weights as
