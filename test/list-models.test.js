@@ -1,6 +1,7 @@
 import { strict as assert } from "node:assert";
 import { describe, it } from "node:test";
 import { CONTEXT_WINDOW, attribute } from "../scripts/list-models.js";
+import { DEEPSEEK_PRICING, DEFAULT_QWEN_MODELS } from "../src/models.js";
 import { buildProviders } from "../src/providers.js";
 
 // The command's attribution IS the router: attribute() routes through
@@ -71,8 +72,15 @@ describe("list-models attribute()", () => {
 	// 2026-08-04 (see list-models.js header). This pins the KEYS only — a dropped
 	// or mistyped model id (one the curated list forgets to cover) is caught even
 	// though the value itself is informational.
+	//
+	// The deepseek + qwen expected ids are DERIVED from their discovery source of
+	// truth (DEEPSEEK_PRICING keys, DEFAULT_QWEN_MODELS ids), so adding a model
+	// there auto-fails if CONTEXT_WINDOW misses it. GLM is live-fetched (no static
+	// catalog), so its ids are pinned explicitly — the one non-derivable set.
 	it("CONTEXT_WINDOW covers every bare glm/deepseek/qwen discovery id", () => {
-		const bare = [
+		const derived = [...Object.keys(DEEPSEEK_PRICING), ...DEFAULT_QWEN_MODELS.map((m) => m.id)];
+		// GLM discovery ids, pinned (no static GLM catalog — fetched live at runtime).
+		const glmIds = [
 			"glm-4.5",
 			"glm-4.5-air",
 			"glm-4.6",
@@ -81,15 +89,8 @@ describe("list-models attribute()", () => {
 			"glm-5-turbo",
 			"glm-5.1",
 			"glm-5.2",
-			"deepseek-v4-pro",
-			"deepseek-v4-flash",
-			"qwen3.8-max",
-			"qwen3.8-max-preview",
-			"qwen3.7-max",
-			"qwen3.7-plus",
-			"qwen3.6-flash",
 		];
-		for (const id of bare) {
+		for (const id of [...derived, ...glmIds]) {
 			assert.ok(CONTEXT_WINDOW[id], `CONTEXT_WINDOW missing ${id}`);
 		}
 		// And every context value is a known token string, never a guess.
