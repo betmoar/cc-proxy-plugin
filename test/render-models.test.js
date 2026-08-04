@@ -1,5 +1,8 @@
 import { strict as assert } from "node:assert";
+import fs from "node:fs";
+import path from "node:path";
 import { describe, it } from "node:test";
+import { fileURLToPath } from "node:url";
 import { CONTEXT_WINDOW } from "../scripts/list-models.js";
 import { MODEL_TIERS, conduitSvg, groupByProvider } from "../scripts/render-models.js";
 import {
@@ -129,5 +132,48 @@ describe("render-models derivations", () => {
 		const svg = conduitSvg(["<script>"]);
 		assert.ok(!svg.includes("<script>"), "provider name must be escaped into the SVG");
 		assert.ok(svg.includes("&lt;script&gt;"), `expected escaped name, got: ${svg}`);
+	});
+});
+
+// The committed artifact (docs/models.html) is generated against a LIVE proxy,
+// so CI cannot regenerate it — which is exactly how it went stale: the running
+// proxy predated qwen3.8-max-preview, so the artifact shipped 23 models when
+// the catalog held 24. The version handshake can't catch that (same version,
+// changed code). This pins the artifact to the static catalog instead: every
+// curated id must appear in the committed HTML, so adding a model to src/
+// without running `pnpm models:html` fails the gate.
+describe("docs/models.html artifact", () => {
+	const html = fs.readFileSync(
+		path.join(path.dirname(fileURLToPath(import.meta.url)), "../docs/models.html"),
+		"utf8",
+	);
+
+	it("contains every curated (non-live) discovery id", () => {
+		// Only the static lists — GLM and DeepSeek are fetched live, so their
+		// rows legitimately depend on what the vendor returned at render time.
+		const curated = [
+			...DEFAULT_QWEN_MODELS.map((m) => m.id),
+			...DEFAULT_CLAUDE_MODELS.map((m) => m.id),
+			...DEFAULT_OPENROUTER_MODELS.map((m) => m.id),
+		];
+		for (const id of curated) {
+			// The renderer inserts <wbr> after the namespace slash; match the
+			// rendered form rather than the raw id.
+			const rendered = id.replace("/", "/<wbr>");
+			assert.ok(
+				html.includes(`>${rendered}<`),
+				`docs/models.html is missing ${id} — regenerate with \`pnpm models:html\``,
+			);
+		}
+	});
+
+	it("its model count matches the rows it actually renders", () => {
+		const claimed = Number(/<span class="n">(\d+)<\/span><span class="k">models/.exec(html)[1]);
+		const rendered = [...html.matchAll(/<div class="mrow">/g)].length;
+		assert.equal(
+			claimed,
+			rendered,
+			`the hero claims ${claimed} models but ${rendered} rows are drawn — regenerate with \`pnpm models:html\``,
+		);
 	});
 });

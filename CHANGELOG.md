@@ -20,6 +20,8 @@ All notable changes to cc-proxy are recorded here. Versions follow [semver](http
 - **Claude discovery list: `claude-opus-4-8` → `claude-opus-5`.** `GET /v1/models` now advertises Opus 5 instead of the retired Opus 4.8, matching the other Claude ids already on current-gen.
 
 ### Fixed
+- **`package.json` description advertised only "Z.ai and OpenRouter"** — two providers out of date. It now matches `plugin.json` and the marketplace entry; all three are locked together by `test/couplings.test.js`, since nothing at runtime reads all three and drift is invisible until a user reads the stale one.
+- **`docs/models.html` shipped 23 of 24 models.** The artifact is rendered against a live proxy, and the proxy in use predated `qwen3.8-max-preview` — the version handshake only replaces a *version*-mismatched proxy, so same-version code changes go unnoticed. Regenerated (`pnpm models:html`, a new script) and pinned: `test/render-models.test.js` asserts every curated id appears in the committed HTML and that the hero's model count equals the rows drawn.
 - **Unpaired ANSI `RESET` in the `ds:` statusline segment.** The DeepSeek gauge emitted a `RESET` escape with no preceding color escape (unlike `or:`, whose gauge is colorized). Harmless on most terminals but wrong by construction; the bare `RESET` is removed.
 
 ### Removed

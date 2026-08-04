@@ -58,6 +58,20 @@ describe("cross-file couplings", () => {
 		);
 	});
 
+	// COUPLING: the plugin description is carried by three manifests — package.json
+	// (npm/tooling), plugin.json (the Claude Code plugin pane), and
+	// marketplace.json's entry (the install listing). Nothing at runtime reads all
+	// three, so a drifted copy is invisible until a user reads the stale one:
+	// package.json still advertised "Z.ai and OpenRouter" two providers after
+	// DeepSeek and Qwen shipped.
+	it("plugin description is identical in package.json, plugin.json, and marketplace.json", () => {
+		const pkg = JSON.parse(read("package.json")).description;
+		const plugin = JSON.parse(read(".claude-plugin/plugin.json")).description;
+		const market = JSON.parse(read(".claude-plugin/marketplace.json")).plugins[0].description;
+		assert.equal(plugin, pkg, "plugin.json description drifted from package.json");
+		assert.equal(market, pkg, "marketplace.json entry description drifted from package.json");
+	});
+
 	// COUPLING: every env var offered in .env.example must be documented in the
 	// README env table and in docs/OPERATIONS.md (new knobs go in all three).
 	it("every .env.example key is documented in README.md and docs/OPERATIONS.md", () => {
