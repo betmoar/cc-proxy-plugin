@@ -66,7 +66,7 @@ Switch backends with `/model`:
 - A DeepSeek id like `deepseek-v4-pro` or `deepseek-v4-flash` — DeepSeek (set `DEEPSEEK_API_KEY` first)
 - A Qwen id like `qwen3.7-max` or `qwen3.6-flash` — Qwen (set `DASHSCOPE_API_KEY` first)
 
-Routing decisions land in `/tmp/cc-proxy.log` (`PROXY_DEBUG=1` for per-request detail).
+Routing decisions land in `~/.claude/cc-proxy/cc-proxy.log` (`PROXY_DEBUG=1` for per-request detail).
 
 ## Model discovery
 
@@ -76,13 +76,19 @@ Qwen come from curated lists (Qwen exposes no `/models` endpoint). If a live leg
 the response is still `200` and names the failed provider in a non-standard `_errors`
 array. Set `OPENROUTER_MODELS` to override which OpenRouter ids appear.
 
+Entries whose id has a curated context window also carry a non-standard
+`context_window` — an **integer token count** (`1000000`, not `"1M"`). ids
+without a curated window (the OpenRouter-prefixed `vendor/model` ids, and
+`claude-*`) **omit the field entirely** rather than sending `null`, so a
+consumer tells "unknown" from "known" with `"context_window" in entry`.
+
 ## Commands
 
 The plugin ships slash commands that reach proxy backends **without changing your session model**.
 
 **Commands:**
 
-- `/cc-proxy:status` — proxy liveness, configured providers + default backend, provider quotas (GLM, OpenRouter, DeepSeek), and recent routing decisions. Reads the proxy's `/_status` endpoint and tails `/tmp/cc-proxy.log`; works whether the proxy is up or down.
+- `/cc-proxy:status` — proxy liveness, configured providers + default backend, provider quotas (GLM, OpenRouter, DeepSeek), and recent routing decisions. Reads the proxy's `/_status` endpoint and tails `~/.claude/cc-proxy/cc-proxy.log`; works whether the proxy is up or down.
 - `/cc-proxy:models` — every model reachable through the proxy, with the provider each one routes to. Reads the proxy's `GET /v1/models` and attributes ids against the registered providers' predicates; a failed live-fetch leg is flagged. Raw JSON is one `curl http://127.0.0.1:4000/v1/models` away.
 
 > The GLM offload subagents (`glm-bulk-reader`, `glm-review-*`, `glm-brainstorm`) have moved to a dedicated plugin: [`betmoar/cc-agents-plugin`](https://github.com/betmoar/cc-agents-plugin).
@@ -157,17 +163,17 @@ The statusline runs as its own subprocess and only inherits `settings.json`'s `e
 | `PROXY_UPSTREAM_TIMEOUT_MS` | `120000` | Upstream socket-inactivity timeout; raise for 1M-context cold calls |
 | `DEFAULT_BACKEND` | `claude` | Backend when no model prefix matches |
 | `PROXY_READY_TIMEOUT_MS` | `3000` | Hook readiness-poll ceiling after spawn |
-| `PROXY_LOG` | `/tmp/cc-proxy.log` | Proxy stdout/stderr file |
+| `PROXY_LOG` | `~/.claude/cc-proxy/cc-proxy.log` | Proxy stdout/stderr file |
 | `PROXY_LOG_MAX_BYTES` | `5242880` | Rotate the log to `<log>.1` past this size (single generation) |
 | `PROXY_DEBUG` | — | `1` logs per-request metadata |
 
 ## Troubleshooting
 
 - **`localhost` vs the loopback bind** — the proxy binds `127.0.0.1` by default. On an IPv6-first host `localhost` resolves to `::1` before `127.0.0.1`; Node ≥20's happy-eyeballs normally falls back to `127.0.0.1` so `ANTHROPIC_BASE_URL=http://localhost:4000` still works, but new setups write `http://127.0.0.1:4000` directly to avoid depending on that fallback. If you do hit `ECONNREFUSED` to `:4000` on an older `localhost` config, switch it to `http://127.0.0.1:4000`, or set `PROXY_HOST=0.0.0.0` to bind all interfaces.
-- **API errors after setup** — setup starts the proxy itself, so this is usually an *already-open* session that retargeted before the proxy came up. `/exit` + `/resume` it (the SessionStart hook ensures the proxy is running). If a new session also errors, check `/tmp/cc-proxy.log`.
+- **API errors after setup** — setup starts the proxy itself, so this is usually an *already-open* session that retargeted before the proxy came up. `/exit` + `/resume` it (the SessionStart hook ensures the proxy is running). If a new session also errors, check `~/.claude/cc-proxy/cc-proxy.log`.
 - **`400 model: String should have at most 256 characters`** — a `"model": "glm-..."` default in settings.json with the proxy not running. Pick the model with `/model` instead, or start the proxy.
 - **Port 4000 in use** — set `PROXY_PORT` in `env`.
-- **`proxy down` in statusline** — check `lsof -ti:4000` and `/tmp/cc-proxy.log`.
+- **`proxy down` in statusline** — check `lsof -ti:4000` and `~/.claude/cc-proxy/cc-proxy.log`.
 - **See routing** — `PROXY_DEBUG=1`.
 
 ## Docs

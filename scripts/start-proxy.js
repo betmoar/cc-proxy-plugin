@@ -82,7 +82,7 @@ async function main() {
 	// unreachable — spawn fired but the port never answered within the deadline.
 	// Fall back to the /exit + /resume path: the next SessionStart will retry.
 	process.stderr.write(
-		"cc-proxy spawned but did not become reachable in time. /exit and /resume this session so the SessionStart hook retries; check /tmp/cc-proxy.log.\n",
+		"cc-proxy spawned but did not become reachable in time. /exit and /resume this session so the SessionStart hook retries; check ~/.claude/cc-proxy/cc-proxy.log.\n",
 	);
 	process.exitCode = 1;
 }

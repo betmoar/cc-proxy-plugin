@@ -13,6 +13,7 @@ import {
 	pluginVersion,
 	resolveProxyPath,
 	rotateLogIfLarge,
+	spawnProxy,
 	waitReady,
 } from "../hooks/proxy-lifecycle.js";
 
@@ -33,6 +34,20 @@ function freePort() {
 			srv.close(() => resolve(port));
 		});
 	});
+}
+
+// Poll for a detached child's output; the spawn is fire-and-forget by design.
+async function waitForFile(file, needle, timeoutMs = 5000) {
+	const deadline = Date.now() + timeoutMs;
+	while (Date.now() < deadline) {
+		try {
+			if (fs.readFileSync(file, "utf8").includes(needle)) return;
+		} catch {
+			// not there yet
+		}
+		await new Promise((r) => setTimeout(r, 25));
+	}
+	throw new Error(`timed out waiting for ${needle} in ${file}`);
 }
 
 describe("proxy-lifecycle", () => {
@@ -58,6 +73,32 @@ describe("proxy-lifecycle", () => {
 
 		it("returns false for a closed port", async () => {
 			assert.equal(await checkPort(closedPort), false);
+		});
+
+		// A DROPping firewall on loopback can't be simulated in CI, so probe
+		// TEST-NET-1 (RFC 5737, guaranteed unrouted) instead: same observable
+		// shape — SYN with no RST — where an untimed socket would sit for the OS
+		// connect timeout (~75s). checkPort is polled inside the SessionStart
+		// hook, which hooks.json kills at 10s, so one probe must be bounded.
+		it("resolves false within the timeout when the connect is black-holed", async () => {
+			const start = Date.now();
+			const alive = await checkPort(80, 150, "192.0.2.1");
+			const elapsed = Date.now() - start;
+			assert.equal(alive, false);
+			assert.ok(elapsed < 1000, `elapsed=${elapsed}ms — the probe was not bounded`);
+		});
+
+		// The guard timer must die with the socket on BOTH terminal paths: a
+		// live Timeout holds the event loop open, so a leaked one hangs the hook
+		// process after its work is done — the same failure the timer prevents.
+		it("clears its timer on the connect and error paths", async () => {
+			const timersBefore = () =>
+				process.getActiveResourcesInfo().filter((r) => r === "Timeout").length;
+			const base = timersBefore();
+			await checkPort(openPort, 5000);
+			assert.equal(timersBefore(), base, "connect path leaked a timer");
+			await checkPort(closedPort, 5000);
+			assert.equal(timersBefore(), base, "error path leaked a timer");
 		});
 	});
 
@@ -361,6 +402,52 @@ s.listen(${port}, "127.0.0.1", () => {
 				{ env: { ...process.env, PROXY_LOG_MAX_BYTES: "-1" }, encoding: "utf8" },
 			);
 			assert.equal(Number(out.trim()), 5 * 1024 * 1024);
+		});
+	});
+	// The default log moved from /tmp (always present) to ~/.claude/cc-proxy/,
+	// which need not exist. spawnProxy runs inside the SessionStart hook, so a
+	// throw here means no proxy and ECONNREFUSED for every request in the
+	// session — it must create the dir, and must still spawn if the log can't be
+	// opened at all.
+	describe("spawnProxy log directory", () => {
+		let dir;
+		let script;
+		before(() => {
+			dir = fs.mkdtempSync(path.join(os.tmpdir(), "cc-proxy-spawn-"));
+			// Stand-in for bin/cc-proxy.js: writes a marker and exits, so the test
+			// observes both the spawn and the stdio wiring without a real listener.
+			script = path.join(dir, "fake-proxy.js");
+			fs.writeFileSync(script, 'process.stdout.write("SPAWNED\\n");');
+		});
+		after(() => {
+			fs.rmSync(dir, { recursive: true, force: true });
+		});
+
+		it("creates a missing log directory and captures stdout", async () => {
+			const logPath = path.join(dir, "deep", "nested", "cc-proxy.log");
+			spawnProxy(script, logPath, process.env);
+			await waitForFile(logPath, "SPAWNED");
+			assert.match(fs.readFileSync(logPath, "utf8"), /SPAWNED/);
+		});
+
+		it("still spawns when the log cannot be opened", async () => {
+			// A path whose parent is an existing *file* — mkdir and open both fail.
+			const blocker = path.join(dir, "blocker");
+			fs.writeFileSync(blocker, "x");
+			const marker = path.join(dir, "spawned-without-log");
+			fs.writeFileSync(
+				path.join(dir, "marker-proxy.js"),
+				`require("node:fs").writeFileSync(${JSON.stringify(marker)}, "ok");`,
+			);
+			assert.doesNotThrow(() =>
+				spawnProxy(
+					path.join(dir, "marker-proxy.js"),
+					path.join(blocker, "cc-proxy.log"),
+					process.env,
+				),
+			);
+			await waitForFile(marker, "ok");
+			assert.equal(fs.readFileSync(marker, "utf8"), "ok");
 		});
 	});
 });

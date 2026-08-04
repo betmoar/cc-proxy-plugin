@@ -47,7 +47,7 @@ The proxy is spawned **detached** (`spawn + unref`), so it survives the hook exi
 - **`/_ping`** (GET) returns a bare `200` with an empty body — the fastest possible up/down check (no config read, no serialization). Answer before any request body is buffered; query-string tolerant like `/_status`. No `content-type` (empty body).
 - **`/_status`** (GET) returns `{ port, version, defaultBackend, providers }`. `version` is what the stale-proxy handshake compares against the plugin tree.
 - **`/_shutdown`** (POST only; GET gets a 405) gracefully stops the proxy: listener closes, in-flight responses finish, process exits when the event loop drains. Used by the SessionStart hook to replace a stale version. Loopback-bound like everything else; carries no auth because anyone who can reach the port can already spend the injected keys.
-- **`/v1/models`** (GET; other methods 405) returns a merged, best-effort Anthropic-format model list — GLM + DeepSeek live, Claude + OpenRouter + Qwen static. Each live leg is bounded by a ~3 s timeout (`modelsTimeoutMs`, not env-configurable); a failed leg is named in a non-standard `_errors` array and the response is still `200`. Synthesized, not forwarded; `/v1/models/<id>` still forwards.
+- **`/v1/models`** (GET; other methods 405) returns a merged, best-effort Anthropic-format model list — GLM + DeepSeek live, Claude + OpenRouter + Qwen static. Each live leg is bounded by a ~3 s timeout (`modelsTimeoutMs`, not env-configurable); a failed leg is named in a non-standard `_errors` array and the response is still `200`. Synthesized, not forwarded; `/v1/models/<id>` still forwards. Entries also carry a non-standard `context_window` (integer tokens, e.g. `1000000`) when the id has a curated window; ids without one **omit** the field rather than sending `null` — check with `"context_window" in entry`.
 - **Orphan log inode trap:** `rm -f $PROXY_LOG && touch $PROXY_LOG` while the proxy runs leaves it writing to the deleted inode — output "disappears". Truncate in place (`truncate -s 0`) or restart the proxy; never `rm && touch` a file a live process holds open.
 
 ## Context-overflow handling
@@ -64,7 +64,7 @@ There is no automatic replay. Recovery: switch model with `/model`, `/clear`, or
 | `PROXY_UPSTREAM_TIMEOUT_MS` | Upstream socket-inactivity timeout (default 120000); raise for 1M-context cold calls |
 | `DEFAULT_BACKEND` | Backend when no model prefix matches (default `claude`) |
 | `PROXY_DEBUG=1` | Log `metadata` + `system` summary per request |
-| `PROXY_LOG` | Proxy stdout/stderr file (default `/tmp/cc-proxy.log`) |
+| `PROXY_LOG` | Proxy stdout/stderr file (default `~/.claude/cc-proxy/cc-proxy.log`; the SessionStart hook creates the directory) |
 | `PROXY_LOG_MAX_BYTES` | Rotate the log to `<log>.1` past this size on next spawn (default 5242880) |
 | `PROXY_READY_TIMEOUT_MS` | SessionStart readiness-poll ceiling (default 3000) |
 | `OPENROUTER_MODELS` | Comma-separated OpenRouter ids advertised by `GET /v1/models` (default: a curated verified set). Discovery only; does not affect routing |
@@ -74,11 +74,11 @@ There is no automatic replay. Recovery: switch model with `/model`, `/clear`, or
 1. **Which version is active?** `cat ~/.claude/plugins/installed_plugins.json` — confirm `installPath` and `version`.
 2. **Is the proxy up?** `lsof -ti:4000` and `curl -s http://localhost:4000/_status`.
 3. **Orphan log inode?** `stat $PROXY_LOG` vs `lsof -p <pid>` — compare inodes.
-4. **What did the router decide?** `<model> -> <provider> <path>` lines in `/tmp/cc-proxy.log`.
+4. **What did the router decide?** `<model> -> <provider> <path>` lines in `~/.claude/cc-proxy/cc-proxy.log`.
    The trailing path disambiguates `unknown -> …` entries (a request that arrived
    with no `model` field — usually a non-Messages call like `/v1/messages/count_tokens`).
 
-When clearing logs: `truncate -s 0 /tmp/cc-proxy.log`. Never `rm && touch`.
+When clearing logs: `truncate -s 0 ~/.claude/cc-proxy/cc-proxy.log`. Never `rm && touch`.
 
 ## Dev loop
 

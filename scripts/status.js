@@ -5,17 +5,28 @@
 // the bottom; the formatting/parsing helpers above are exported for testing.
 
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { loadEnv } from "../src/env.js";
+import { fetchGlmQuota, fetchOpenRouterCredits } from "./quota.js";
 
 // Load API keys from ~/.env (+ repo .env in dev) so the quota/credit fetches
 // below work once keys move out of settings.json `env`. process.env still wins.
 loadEnv();
 
 const PORT = Number(process.env.PROXY_PORT || 4000);
-const LOG_PATH = process.env.PROXY_LOG || "/tmp/cc-proxy.log";
-const QUOTA_URL = "https://api.z.ai/api/monitor/usage/quota/limit";
-const OPENROUTER_CREDITS_URL = "https://openrouter.ai/api/v1/credits";
-const FETCH_TIMEOUT_MS = 2000;
+// COUPLING: must match DEFAULT_LOG_PATH in hooks/proxy-lifecycle.js — the hook
+// picks where the proxy writes, this reads it back. A split default means the
+// status report tails a file nobody writes ("no routing decisions yet", always).
+// Not imported: scripts/ deliberately doesn't reach into hooks/. Locked by
+// test/couplings.test.js.
+const LOG_PATH =
+	process.env.PROXY_LOG || path.join(os.homedir(), ".claude", "cc-proxy", "cc-proxy.log");
+// Provider endpoints/timeout/shaping live in ./quota.js — shared with
+// scripts/statusline.js so the two copies can't drift again (they did once: the
+// statusline grew a fetch timeout and this file didn't, fixed 0.3.1). The
+// /_status probe below stays local; it's this script's own proxy, not a vendor.
+const STATUS_TIMEOUT_MS = 2000;
 
 /**
  * Pull the most recent routing decisions out of the proxy log. The proxy logs
@@ -87,7 +98,7 @@ export function formatStatusReport(data) {
 }
 
 async function fetchJson(url, headers) {
-	const res = await fetch(url, { headers, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+	const res = await fetch(url, { headers, signal: AbortSignal.timeout(STATUS_TIMEOUT_MS) });
 	if (!res.ok) throw new Error(`HTTP ${res.status}`);
 	return res.json();
 }
@@ -110,8 +121,7 @@ async function probeStatus() {
 async function loadGlm() {
 	if (!process.env.GLM_API_KEY) return null;
 	try {
-		const json = await fetchJson(QUOTA_URL, { Authorization: process.env.GLM_API_KEY });
-		const data = json.data || {};
+		const data = await fetchGlmQuota(process.env.GLM_API_KEY);
 		const tok = (data.limits || []).find((l) => l.type === "TOKENS_LIMIT");
 		return {
 			level: data.level,
@@ -126,12 +136,7 @@ async function loadGlm() {
 async function loadOpenRouter() {
 	if (!process.env.OPENROUTER_API_KEY) return null;
 	try {
-		const json = await fetchJson(OPENROUTER_CREDITS_URL, {
-			Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
-		});
-		const total = Number(json?.data?.total_credits) || 0;
-		const used = Number(json?.data?.total_usage) || 0;
-		return { remaining: total - used, usedPct: total > 0 ? Math.round((used / total) * 100) : 0 };
+		return await fetchOpenRouterCredits(process.env.OPENROUTER_API_KEY);
 	} catch {
 		return { remaining: undefined, stale: true };
 	}

@@ -3,8 +3,94 @@
 import { providerById } from "./providers.js";
 
 /**
- * @typedef {{ type: "model", id: string, display_name: string, created_at: string | null }} ModelEntry
+ * @typedef {{ type: "model", id: string, display_name: string, created_at: string | null, context_window?: number }} ModelEntry
  */
+
+/**
+ * Curated context windows (integer token counts), keyed by the bare discovery
+ * id. This is the SOURCE OF TRUTH for `context_window` on the wire — promoted
+ * here from scripts/list-models.js (2026-08-04) because a second consumer
+ * (the cc-reload plugin, which budgets a session against a model's context
+ * window) needed it programmatically. Duplicating a curated id->window table
+ * in every consumer is the failure mode this promotion exists to kill: before
+ * this, cc-reload hard-coded its own model-id table and cc-proxy's table
+ * (below) could silently drift from it. See CHANGELOG "Changed" for the
+ * reversal record — the original `scripts/list-models.js` header explicitly
+ * called this a display-layer-only decision; that decision is reversed here.
+ *
+ * On the wire this is an INTEGER token count (128000, not "128K"). The human
+ * string ("128K"/"1M") stays a rendering concern — scripts/list-models.js
+ * derives it from this table via formatContextWindow() so the two can never
+ * drift again.
+ *
+ * ids with NO entry here (OpenRouter-prefixed ids: deepseek/*, qwen/*,
+ * moonshotai/*, tencent/*, and the claude-* ids) OMIT `context_window`
+ * entirely on discovery entries — never `null`. A consumer distinguishes
+ * "unknown" from "known" with `"context_window" in entry`, not a null check.
+ * Do not invent a window for an id absent here.
+ *
+ * Keyed on the EXACT id, deliberately — `deepseek/deepseek-v4-pro` does not
+ * inherit the 1M curated for its bare `deepseek-v4-pro`. An aggregator is a
+ * different deployment of the same weights and may serve a truncated window
+ * or a different default; asserting the native number for a route we have not
+ * measured would publish a confident guess, and the whole point of this field
+ * is that a consumer can trust what is present. Omission is the honest
+ * answer until someone verifies the aggregator's window per id. (Absent, of
+ * course, means the consumer needs its own fallback — that cost is accepted.)
+ *
+ * Sources (2026-08-04), re-verify before each release touching the model:
+ *   GLM:      docs.z.ai/guides/llm/glm-*.md  (4.5=128K; 4.6/4.7/5/5-Turbo/5.1=200K; 5.2=1M)
+ *   DeepSeek: api-docs.deepseek.com/quick_start/pricing (1M)
+ *   Qwen:     Alibaba Model Studio (1M, incl. 3.8-max-preview)
+ * GLM/DeepSeek are pinned to the docs verbatim; the Qwen numbers come from a
+ * vendor summary (all Qwen 3.x models share a 1M window) — re-verify any of
+ * these before a release touching the model, exactly like DEEPSEEK_PRICING.
+ */
+export const CONTEXT_WINDOW = {
+	// GLM (docs.z.ai/guides/llm/glm-*)
+	"glm-4.5": 128000,
+	"glm-4.5-air": 128000,
+	"glm-4.6": 200000,
+	"glm-4.7": 200000,
+	"glm-5": 200000,
+	"glm-5-turbo": 200000,
+	"glm-5.1": 200000,
+	"glm-5.2": 1000000,
+	// DeepSeek (api-docs.deepseek.com/quick_start/pricing)
+	"deepseek-v4-pro": 1000000,
+	"deepseek-v4-flash": 1000000,
+	// Qwen (Alibaba Cloud Model Studio)
+	"qwen3.8-max": 1000000,
+	"qwen3.8-max-preview": 1000000,
+	"qwen3.7-max": 1000000,
+	"qwen3.7-plus": 1000000,
+	"qwen3.6-flash": 1000000,
+	// Plan-served DeepSeek build; same 1M window as the bare deepseek-v4-* it is
+	// a dated snapshot of (api-docs.deepseek.com/quick_start/pricing).
+	"deepseek-v4-flash-0731": 1000000,
+};
+
+/**
+ * Attach `context_window` to a discovery entry when the id has a curated
+ * window (CONTEXT_WINDOW); otherwise return the entry unchanged (field
+ * omitted, never emitted as null). Applied uniformly in collectModels() so
+ * live-fetched (GLM/DeepSeek) and static (Claude/Qwen/OpenRouter) entries
+ * alike get the field without hand-editing every curated list literal.
+ * @param {ModelEntry} entry
+ * @returns {ModelEntry}
+ */
+export function withContextWindow(entry) {
+	// Object.hasOwn, NOT `CONTEXT_WINDOW[id] !== undefined`: the table is an
+	// object literal, so a plain lookup walks Object.prototype. A vendor id of
+	// `__proto__`/`constructor`/`toString` would then resolve to an inherited
+	// member and ship `"context_window": {}` (or a function, which
+	// JSON.stringify silently drops — leaving the key absent on the wire but
+	// present in the object collectModels() returns in-process). Ids come from
+	// live GLM/DeepSeek catalogs and coerceEntry only checks `!e.id`, so the
+	// key space is the vendor's, not ours.
+	if (!Object.hasOwn(CONTEXT_WINDOW, entry.id)) return entry;
+	return { ...entry, context_window: CONTEXT_WINDOW[entry.id] };
+}
 
 /** Reachable Claude ids advertised on discovery. Not public-API-stable — re-confirm
  * before each release touching Claude compat. claude-haiku-* omitted (internal ops
@@ -29,7 +115,17 @@ export const DEFAULT_CLAUDE_MODELS = [
  * for a Token Plan key — `qwen3.7-flash` and `qwen3-coder-next` are listed there but
  * 400 (InvalidParameter), and `qwen3.6-plus` 403s (AccessDenied, "not eligible").
  * Conversely `qwen3.7-plus` is live but absent from that table. Re-verify by calling
- * the endpoint, not by reading the docs, before each release touching Qwen compat. */
+ * the endpoint, not by reading the docs, before each release touching Qwen compat.
+ *
+ * The five `qwen*` ids match the account's own plan page exactly (confirmed
+ * 2026-08-04), so that curation is right. `deepseek-v4-flash-0731` is here
+ * because the plan SERVES it while both vendor tables omit it: it is absent
+ * from the plan page AND unknown to DeepSeek native (400). It routes to qwen
+ * via the DATED_ID rule in providers.js — a dated build is a plan-only
+ * spelling. Bare `deepseek-v4-pro` and `glm-5.2` are also plan-served but are
+ * deliberately NOT listed here: they are advertised by their native providers,
+ * and listing them under Qwen would put the same id in the catalog twice with
+ * no way to say which one a caller means (backlog item 8). */
 export const DEFAULT_QWEN_MODELS = [
 	{ type: "model", id: "qwen3.8-max", display_name: "Qwen3.8 Max", created_at: null },
 	{
@@ -41,6 +137,14 @@ export const DEFAULT_QWEN_MODELS = [
 	{ type: "model", id: "qwen3.7-max", display_name: "Qwen3.7 Max", created_at: null },
 	{ type: "model", id: "qwen3.7-plus", display_name: "Qwen3.7 Plus", created_at: null },
 	{ type: "model", id: "qwen3.6-flash", display_name: "Qwen3.6 Flash", created_at: null },
+	// Plan-only DeepSeek build (see the note above). Named for its origin vendor
+	// so the id stays copy-pasteable into /model, which is what a caller types.
+	{
+		type: "model",
+		id: "deepseek-v4-flash-0731",
+		display_name: "DeepSeek V4 Flash (0731, Qwen plan)",
+		created_at: null,
+	},
 ];
 
 /** OpenRouter ids as Anthropic-skin compatible (HTTP 200 + message shape at POST
@@ -257,7 +361,7 @@ export async function collectModels(config) {
 		for (const entry of r.entries || []) {
 			if (seen.has(entry.id)) continue;
 			seen.add(entry.id);
-			data.push(entry);
+			data.push(withContextWindow(entry));
 		}
 	}
 	return { data, _errors };

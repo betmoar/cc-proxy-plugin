@@ -100,7 +100,7 @@ Interpret the script's stdout/stderr:
 
 - `cc-proxy already up`, `cc-proxy started`, or `cc-proxy restarted` → success. Proceed to step 6.
 - `PROXY_PATH is unset` → the plugin tree has no `bin/cc-proxy.js` (hand-rolled install) and no legacy `PROXY_PATH` exists. Ask the user where `cc-proxy.js` is and put that absolute path in settings.json `env` as `PROXY_PATH` — the one case where it is still legitimate.
-- `did not become reachable in time` → spawn fired but readiness timed out. Treat as a fallback: keep `/exit` + `/resume` as the path to recovery (step 6 covers this). Show the user the `/tmp/cc-proxy.log` tail if they ask.
+- `did not become reachable in time` → spawn fired but readiness timed out. Treat as a fallback: keep `/exit` + `/resume` as the path to recovery (step 6 covers this). Show the user the `~/.claude/cc-proxy/cc-proxy.log` tail if they ask.
 
 ### 6. Inform the user
 
@@ -108,7 +108,7 @@ Tell the user, verbatim:
 
 > Setup complete. The proxy is running (step 5 started it). Claude Code re-applies `ANTHROPIC_BASE_URL` to running sessions immediately, so any open `claude` may still fail until it re-reads env — `/exit` and `/resume` any open session if you hit an error.
 >
-> To confirm, check `/tmp/cc-proxy.log` after your next prompt — you should see routing lines like `claude-sonnet-4-6 -> claude` or `glm-5.2 -> glm`.
+> To confirm, check `~/.claude/cc-proxy/cc-proxy.log` after your next prompt — you should see routing lines like `claude-sonnet-4-6 -> claude` or `glm-5.2 -> glm`.
 
 ## Important constraints
 

@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
 import net from "node:net";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -120,6 +121,15 @@ async function waitGone(port, deadline) {
 // Before each spawn, if it has passed this cap, rotate it to a single `.1`
 // backup so the live log starts fresh. One generation is enough — this is a
 // debug breadcrumb, not an audit trail.
+// The default log used to be /tmp/cc-proxy.log. On a multi-user machine /tmp is
+// world-writable and sticky-bit only protects against *deletion*: another local
+// user can pre-create cc-proxy.log as a symlink, and our O_APPEND open then
+// follows it, splicing routing lines into a file they choose. No key material
+// leaks (the log carries model ids and paths), but it is a free write primitive
+// into any path this user can write. $HOME is not shared, so defaulting there
+// removes the whole class. PROXY_LOG still wins — this is a default, not a policy.
+export const DEFAULT_LOG_PATH = path.join(os.homedir(), ".claude", "cc-proxy", "cc-proxy.log");
+
 const DEFAULT_LOG_MAX_BYTES = 5 * 1024 * 1024;
 const envLogMax = Number(process.env.PROXY_LOG_MAX_BYTES);
 // Only honor a finite, positive override; a negative/0/NaN value would disable
@@ -147,20 +157,44 @@ export function rotateLogIfLarge(logPath, maxBytes = LOG_MAX_BYTES) {
 	}
 }
 
+// COUPLING: this bounds ONE probe, and checkPort is called in a poll loop
+// (waitReady/waitGone, every POLL_INTERVAL_MS) inside the SessionStart hook,
+// which hooks.json kills at 10s. Without a timer a connect that is DROPped
+// rather than REJECTed (loopback behind a deny-by-drop firewall) never errors:
+// the socket sits until the OS connect timeout (~75s), so the first poll
+// iteration eats the whole hook budget and the hook dies with no proxy and no
+// message. 300ms matches probePort in scripts/statusline.js and stays well
+// under the 3000ms PROXY_READY_TIMEOUT_MS default, so a stuck probe still
+// leaves room for several polls before the readiness deadline.
+export const PROBE_TIMEOUT_MS = 300;
+
 /**
  * Non-blocking TCP probe to 127.0.0.1:port. Resolves true if a connection
- * succeeds within the default socket timeout, false otherwise.
+ * succeeds within `timeoutMs`, false on error or timeout. The timer is cleared
+ * on both terminal paths — a live Timeout keeps the event loop alive, which
+ * would hang the hook process just as surely as the stall it guards against.
  * @param {number} port
+ * @param {number} [timeoutMs]  Overridable for tests.
+ * @param {string} [host]  Overridable for tests (a blackhole address is the
+ *   only way to exercise the timeout path); production always probes loopback.
  * @returns {Promise<boolean>}
  */
-export function checkPort(port) {
+export function checkPort(port, timeoutMs = PROBE_TIMEOUT_MS, host = "127.0.0.1") {
 	return new Promise((resolve) => {
-		const sock = net.createConnection(port, "127.0.0.1");
+		const sock = net.createConnection(port, host);
+		const timer = setTimeout(() => {
+			sock.destroy();
+			resolve(false);
+		}, timeoutMs);
 		sock.on("connect", () => {
+			clearTimeout(timer);
 			sock.destroy();
 			resolve(true);
 		});
-		sock.on("error", () => resolve(false));
+		sock.on("error", () => {
+			clearTimeout(timer);
+			resolve(false);
+		});
 	});
 }
 
@@ -190,17 +224,30 @@ export async function waitReady(port, deadline) {
  *   has injected them into process.env.
  */
 export function spawnProxy(proxyPath, logPath, env = process.env) {
-	rotateLogIfLarge(logPath);
-	const logFd = fs.openSync(logPath, "a");
+	// The default log now lives under ~/.claude/cc-proxy/, which need not exist
+	// on a fresh machine — /tmp always did. Two guards, because this runs inside
+	// the SessionStart hook and an uncaught throw here means no proxy at all and
+	// ECONNREFUSED for every request in the session: create the directory, and if
+	// the open still fails (unwritable PROXY_LOG, read-only $HOME, full disk),
+	// spawn with discarded stdio rather than not spawning. Losing the debug log
+	// is survivable; losing the proxy is not.
+	let logFd;
+	try {
+		fs.mkdirSync(path.dirname(logPath), { recursive: true });
+		rotateLogIfLarge(logPath);
+		logFd = fs.openSync(logPath, "a");
+	} catch {
+		logFd = undefined;
+	}
 	try {
 		const child = spawn(process.execPath, [proxyPath], {
 			detached: true,
-			stdio: ["ignore", logFd, logFd],
+			stdio: logFd === undefined ? ["ignore", "ignore", "ignore"] : ["ignore", logFd, logFd],
 			env,
 		});
 		child.unref();
 	} finally {
-		fs.closeSync(logFd);
+		if (logFd !== undefined) fs.closeSync(logFd);
 	}
 }
 
@@ -218,7 +265,7 @@ export function spawnProxy(proxyPath, logPath, env = process.env) {
  * @param {number} [opts.readyTimeoutMs] Defaults to PROXY_READY_TIMEOUT_MS or 3000.
  * @param {string} [opts.proxyPath]    Defaults to resolveProxyPath() (own tree's
  *   bin, then env PROXY_PATH).
- * @param {string} [opts.logPath]      Defaults to PROXY_LOG or /tmp/cc-proxy.log.
+ * @param {string} [opts.logPath]      Defaults to PROXY_LOG or DEFAULT_LOG_PATH.
  * @param {NodeJS.ProcessEnv} [opts.env] Defaults to process.env. Forwarded to
  *   spawnProxy; see spawnProxy for when to override.
  * @returns {Promise<"already-up" | "started" | "restarted" | "missing-path" | "unreachable">}
@@ -232,7 +279,7 @@ export async function ensureProxyRunning(opts = {}) {
 	const readyTimeoutMs =
 		opts.readyTimeoutMs ?? (Number.isFinite(envTimeout) && envTimeout > 0 ? envTimeout : 3000);
 	const proxyPath = opts.proxyPath ?? resolveProxyPath();
-	const logPath = opts.logPath ?? process.env.PROXY_LOG ?? "/tmp/cc-proxy.log";
+	const logPath = opts.logPath ?? process.env.PROXY_LOG ?? DEFAULT_LOG_PATH;
 
 	if (await checkPort(port)) {
 		const running = await probeProxyVersion(port);

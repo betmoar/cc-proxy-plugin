@@ -177,3 +177,86 @@ describe("docs/models.html artifact", () => {
 		);
 	});
 });
+
+// The two axes the card header publishes. They are ORTHOGONAL — cost is not a
+// capability grade and provenance is not billing — and the whole reason to draw
+// both is that they disagree: DeepSeek is native-but-credits, so its own
+// endpoint is the expensive way to reach deepseek-v4-pro. A future edit that
+// collapses them into one field would quietly publish a wrong claim.
+describe("render-models route/billing axes", () => {
+	const html = fs.readFileSync(
+		path.join(path.dirname(fileURLToPath(import.meta.url)), "../docs/models.html"),
+		"utf8",
+	);
+
+	it("every provider card carries both a source and a billing chip", () => {
+		const cards = [...html.matchAll(/<section class="card"[\s\S]*?<\/section>/g)].map((m) => m[0]);
+		assert.ok(cards.length >= 5, `expected 5 provider cards, got ${cards.length}`);
+		for (const card of cards) {
+			const name = /<h2>([^<]*)<\/h2>/.exec(card)?.[1] ?? "?";
+			assert.match(card, /class="axis src-(native|plan|reseller)"/, `${name}: no source chip`);
+			assert.match(card, /class="axis bill-(plan|credits)"/, `${name}: no billing chip`);
+		}
+	});
+
+	it("the two axes are not collapsed — at least one provider disagrees on them", () => {
+		// DeepSeek: source=native, billing=credits. If every card paired
+		// native↔plan and reseller↔credits, one field would be derivable from the
+		// other and drawing both would be noise. This asserts the tension is real.
+		const i = html.indexOf("<h2>DeepSeek</h2>");
+		assert.ok(i > 0, "DeepSeek card missing");
+		const card = html.slice(html.lastIndexOf("<section", i), html.indexOf("</section>", i));
+		assert.match(card, /class="axis src-native"/, "DeepSeek must be sourced native");
+		assert.match(card, /class="axis bill-credits"/, "DeepSeek must be billed on credits");
+	});
+
+	it("marks exactly one CARD as the default backend", () => {
+		// Scoped to <section class="card">: the footer notation key renders the same
+		// chip to define it, so a whole-document count is 2 by design. resolve()
+		// has exactly one fallback, and two marked cards would misstate where an
+		// unrouted id goes.
+		const cards = [...html.matchAll(/<section class="card"[\s\S]*?<\/section>/g)].map((m) => m[0]);
+		const marked = cards.filter((c) => c.includes('class="tag dflt"'));
+		assert.equal(
+			marked.length,
+			1,
+			`expected exactly one default-backend card, got ${marked.length}`,
+		);
+	});
+
+	it("places each model on the card it ROUTES to, per plan-before-credits", () => {
+		// A card shows what it routes, so misplacement here means the page
+		// advertises a backend the proxy does not use. This pair encodes the whole
+		// rule: deepseek-v4-pro moves to the plan (its native route is
+		// credit-billed), glm-5.2 does NOT (Z.ai is itself a plan, and a native
+		// plan outranks a resold one) — it stays on GLM with an "also on plan" tag.
+		const cardFor = (h2) => {
+			const i = html.indexOf(`<h2>${h2}</h2>`);
+			assert.ok(i > 0, `${h2} card missing`);
+			return html.slice(html.lastIndexOf("<section", i), html.indexOf("</section>", i));
+		};
+		assert.ok(
+			cardFor("Qwen").includes(">deepseek-v4-pro<"),
+			"deepseek-v4-pro must render on the Qwen card — its native route meters",
+		);
+		const glm = cardFor("GLM");
+		assert.ok(glm.includes(">glm-5.2<"), "glm-5.2 must stay on the GLM card");
+		assert.match(glm, /also on plan/, "glm-5.2 is plan-served too — say so");
+		assert.ok(
+			!cardFor("Qwen").includes(">glm-5.2<"),
+			"glm-5.2 must NOT move to Qwen: a native plan outranks a resold plan",
+		);
+	});
+
+	it("orders cards by route quality, not registry order", () => {
+		// native+plan -> plan -> native+credits -> reseller. Registry order exists
+		// for predicate precedence (OpenRouter before the bare-prefix legs), an
+		// implementation detail; a reader wants cheapest-and-closest first.
+		const order = [...html.matchAll(/<h2>([^<]+)<\/h2>/g)].map((m) => m[1]);
+		assert.equal(order.at(-1), "OpenRouter", "the reseller must sort last");
+		assert.ok(
+			order.indexOf("Qwen") < order.indexOf("DeepSeek"),
+			`plan-sourced Qwen must precede credit-billed DeepSeek, got: ${order.join(" -> ")}`,
+		);
+	});
+});

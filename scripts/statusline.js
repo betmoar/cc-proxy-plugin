@@ -2,8 +2,10 @@
 
 import fs from "node:fs";
 import net from "node:net";
+import os from "node:os";
 import path from "node:path";
 import { loadEnv } from "../src/env.js";
+import { fetchDeepSeekBalance, fetchGlmQuota, fetchOpenRouterCredits } from "./quota.js";
 
 // Load API keys + config from ~/.env (+ repo .env in dev) so the GLM/OpenRouter
 // quota fetches below work. The statusline is spawned by Claude Code with only
@@ -14,22 +16,15 @@ import { loadEnv } from "../src/env.js";
 // port configured in ~/.env (the liveness probe then watched the wrong port).
 loadEnv();
 
-const QUOTA_URL = "https://api.z.ai/api/monitor/usage/quota/limit";
-const OPENROUTER_CREDITS_URL = "https://openrouter.ai/api/v1/credits";
-// Overridable so tests can point the balance fetch at a local stub and exercise
-// the real per-currency selection. Deliberately NOT in .env.example / the README
-// env table — it is a test seam, not a user knob (same posture as config-only
-// `modelsTimeoutMs`), and the env-doc coupling test only reads .env.example.
-const DEEPSEEK_BALANCE_URL =
-	process.env.DEEPSEEK_BALANCE_URL || "https://api.deepseek.com/user/balance";
+// Endpoint URLs, the fetch timeout, and the response shaping live in
+// ./quota.js — shared with scripts/status.js so the two copies can't drift
+// again (they did once: this file grew a fetch timeout and status.js didn't,
+// fixed 0.3.1). What stays here is what the CLI must NOT inherit: the 60s disk
+// cache with a stale-on-failure fallback, which only makes sense for a bar
+// re-rendered every ~300ms.
 const CACHE_TTL_MS = 60_000;
 const PROXY_PORT = Number(process.env.PROXY_PORT || 4000);
 const PROXY_PROBE_TIMEOUT_MS = 300;
-// Quota/credits fetch timeout, shared by both the GLM and OpenRouter fetchers.
-// 800ms was too tight and dropped both providers into stale cache on slow
-// networks; 2000ms still fails fast enough that a hanging endpoint doesn't
-// stall the ~300ms render loop.
-const QUOTA_FETCH_TIMEOUT_MS = 2000;
 
 const GREEN = "\x1b[32m";
 const YELLOW = "\x1b[33m";
@@ -117,37 +112,27 @@ function renderQuota(label, pct, resetEpochSec, stale = "") {
 	return `${label} 5h:${colorize(usage)}${Math.round(usage)}%${stale}${RESET}`;
 }
 
-async function loadGlmQuota(cacheDir) {
-	const apiKey = process.env.GLM_API_KEY;
+// One cache policy for all three gauges: 60s TTL on disk, and on any fetch
+// failure fall back to the last good value marked `_stale` (rendered as "!").
+// Returning null means "no key / nothing ever cached" — the section is omitted
+// entirely rather than shown as unknown. This wrapper is deliberately NOT in
+// ./quota.js: scripts/status.js is a one-shot CLI that must surface a failure
+// now, not a minute-old number.
+async function cachedFetch(cacheDir, cacheFile, apiKey, fetcher) {
 	if (!apiKey) return null;
+	const cachePath = cacheDir ? path.join(cacheDir, cacheFile) : null;
 
-	const cachePath = cacheDir ? path.join(cacheDir, "glm_quota_cache.json") : null;
-
-	// Try cache first
 	if (cachePath) {
 		try {
-			const raw = fs.readFileSync(cachePath, "utf8");
-			const cached = JSON.parse(raw);
+			const cached = JSON.parse(fs.readFileSync(cachePath, "utf8"));
 			if (Date.now() - cached._ts < CACHE_TTL_MS) return cached;
 		} catch {
 			// No cache or invalid — proceed to API call
 		}
 	}
 
-	// Fetch from API
-	// The quota endpoint accepts Authorization, x-api-key, and Bearer formats.
-	// Timeout is QUOTA_FETCH_TIMEOUT_MS, shared with the OpenRouter fetch below:
-	// the statusline renders every ~300ms, so a hanging quota endpoint must fail
-	// fast into the stale-cache path instead of stalling every render.
 	try {
-		const res = await fetch(QUOTA_URL, {
-			headers: { Authorization: apiKey },
-			signal: AbortSignal.timeout(QUOTA_FETCH_TIMEOUT_MS),
-		});
-		if (!res.ok) throw new Error(`HTTP ${res.status}`);
-		const json = await res.json();
-		const result = { ...json.data, _ts: Date.now() };
-
+		const result = { ...(await fetcher(apiKey)), _ts: Date.now() };
 		if (cachePath) {
 			try {
 				fs.mkdirSync(path.dirname(cachePath), { recursive: true });
@@ -161,60 +146,6 @@ async function loadGlmQuota(cacheDir) {
 		// API failure — try stale cache
 		if (cachePath) {
 			try {
-				const raw = fs.readFileSync(cachePath, "utf8");
-				const stale = JSON.parse(raw);
-				stale._stale = true;
-				return stale;
-			} catch {
-				return null;
-			}
-		}
-		return null;
-	}
-}
-
-// OpenRouter credits (opt-in via OPENROUTER_API_KEY). Same 60s cache + stale
-// fallback as the GLM quota. Remaining = total_credits - total_usage.
-async function loadOpenRouterCredits(cacheDir) {
-	const key = process.env.OPENROUTER_API_KEY;
-	if (!key) return null;
-
-	const cachePath = cacheDir ? path.join(cacheDir, "openrouter_credits_cache.json") : null;
-	if (cachePath) {
-		try {
-			const cached = JSON.parse(fs.readFileSync(cachePath, "utf8"));
-			if (Date.now() - cached._ts < CACHE_TTL_MS) return cached;
-		} catch {
-			// miss → fetch
-		}
-	}
-
-	try {
-		const res = await fetch(OPENROUTER_CREDITS_URL, {
-			headers: { Authorization: `Bearer ${key}` },
-			signal: AbortSignal.timeout(QUOTA_FETCH_TIMEOUT_MS),
-		});
-		if (!res.ok) throw new Error(`HTTP ${res.status}`);
-		const json = await res.json();
-		const total = Number(json?.data?.total_credits) || 0;
-		const used = Number(json?.data?.total_usage) || 0;
-		const result = {
-			remaining: total - used,
-			usedPct: total > 0 ? Math.round((used / total) * 100) : 0,
-			_ts: Date.now(),
-		};
-		if (cachePath) {
-			try {
-				fs.mkdirSync(path.dirname(cachePath), { recursive: true });
-				fs.writeFileSync(cachePath, JSON.stringify(result));
-			} catch {
-				// non-fatal
-			}
-		}
-		return result;
-	} catch {
-		if (cachePath) {
-			try {
 				const stale = JSON.parse(fs.readFileSync(cachePath, "utf8"));
 				stale._stale = true;
 				return stale;
@@ -226,66 +157,31 @@ async function loadOpenRouterCredits(cacheDir) {
 	}
 }
 
-// DeepSeek balance (opt-in via DEEPSEEK_API_KEY). Same 60s cache + stale fallback as
-// the GLM/OpenRouter fetchers. The /user/balance response is per-currency; only a USD
-// row can drive the dollar gauge (see below). Unlike OpenRouter (which
-// reports credits used/remaining), DeepSeek reports a single total_balance, so the
-// gauge reflects remaining balance (= total) and carries no used-percentage.
-async function loadDeepSeekBalance(cacheDir) {
-	const key = process.env.DEEPSEEK_API_KEY;
-	if (!key) return null;
+// GLM 5h coding quota (`glm`). The cached object is the endpoint's raw `data`
+// ({ level, limits: [...] }), so the render below reads `limits` off it.
+const loadGlmQuota = (cacheDir) =>
+	cachedFetch(cacheDir, "glm_quota_cache.json", process.env.GLM_API_KEY, fetchGlmQuota);
 
-	const cachePath = cacheDir ? path.join(cacheDir, "deepseek_balance_cache.json") : null;
-	if (cachePath) {
-		try {
-			const cached = JSON.parse(fs.readFileSync(cachePath, "utf8"));
-			if (Date.now() - cached._ts < CACHE_TTL_MS) return cached;
-		} catch {
-			// miss → fetch
-		}
-	}
+// OpenRouter credits (`or:`, opt-in via OPENROUTER_API_KEY).
+const loadOpenRouterCredits = (cacheDir) =>
+	cachedFetch(
+		cacheDir,
+		"openrouter_credits_cache.json",
+		process.env.OPENROUTER_API_KEY,
+		fetchOpenRouterCredits,
+	);
 
-	try {
-		const res = await fetch(DEEPSEEK_BALANCE_URL, {
-			headers: { Authorization: `Bearer ${key}` },
-			signal: AbortSignal.timeout(QUOTA_FETCH_TIMEOUT_MS),
-		});
-		if (!res.ok) throw new Error(`HTTP ${res.status}`);
-		const json = await res.json();
-		// The gauge is denominated in dollars (`dollarTier`), so ONLY a USD row
-		// may drive it. This used to fall back to balance_infos[0], which
-		// rendered a CNY-only account's ¥50 as `$$` — a confidently wrong
-		// number, worse than none. Non-USD now leaves `remaining` unset, which
-		// renders `--`. `currency` is diagnostic only (nothing reads it at
-		// render time): it survives in the cache file so a user staring at a
-		// bare `--` can see which currency the account actually reports.
-		const infos = Array.isArray(json?.balance_infos) ? json.balance_infos : [];
-		const usd = infos.find((b) => b?.currency === "USD") || null;
-		const remaining = usd ? Number(usd.total_balance) : null;
-		const currency = (usd || infos[0])?.currency || null;
-		const result = { remaining, currency, _ts: Date.now() };
-		if (cachePath) {
-			try {
-				fs.mkdirSync(path.dirname(cachePath), { recursive: true });
-				fs.writeFileSync(cachePath, JSON.stringify(result));
-			} catch {
-				// non-fatal
-			}
-		}
-		return result;
-	} catch {
-		if (cachePath) {
-			try {
-				const stale = JSON.parse(fs.readFileSync(cachePath, "utf8"));
-				stale._stale = true;
-				return stale;
-			} catch {
-				return null;
-			}
-		}
-		return null;
-	}
-}
+// DeepSeek balance (`ds:`, opt-in via DEEPSEEK_API_KEY). Unlike OpenRouter
+// (which reports credits used/remaining), DeepSeek reports a single
+// total_balance, so the gauge carries no used-percentage. A non-USD account
+// yields remaining: null → `--`; see fetchDeepSeekBalance for why.
+const loadDeepSeekBalance = (cacheDir) =>
+	cachedFetch(
+		cacheDir,
+		"deepseek_balance_cache.json",
+		process.env.DEEPSEEK_API_KEY,
+		fetchDeepSeekBalance,
+	);
 
 const chunks = [];
 process.stdin.on("data", (chunk) => chunks.push(chunk));
@@ -298,9 +194,14 @@ process.stdin.on("end", async () => {
 	}
 
 	const parts = [];
-	// CLAUDE_PLUGIN_DATA is only set in plugin hook context, not in statusLine.
-	// Fall back to /tmp for cache when run from settings.json statusLine command.
-	const cacheDir = process.env.CLAUDE_PLUGIN_DATA || "/tmp";
+	// CLAUDE_PLUGIN_DATA is only set in plugin hook context, not in statusLine, so
+	// a fallback is needed when run from settings.json's statusLine command. It
+	// used to be /tmp, where another local user can pre-create
+	// glm_quota_cache.json et al and the reader would render their numbers as
+	// this user's quota (garbage gauges, no key leak — we only ever read). $HOME
+	// isn't shared. cachedFetch/checkProxyAlive mkdir -p before writing, so a
+	// missing dir is a cache miss, not an error.
+	const cacheDir = process.env.CLAUDE_PLUGIN_DATA || path.join(os.homedir(), ".claude", "cc-proxy");
 
 	// Proxy liveness probe (cached 1s). The indicator is appended at the tail
 	// so the primary quota signals read first; bold-red differentiates it

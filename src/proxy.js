@@ -54,12 +54,16 @@ export function onUpstreamError(clientRes) {
  * query would silently change API behavior (this was a real bug — both paths
  * had independently used `url.pathname` alone).
  *
+ * `forceIdentityEncoding` is passed by the buffered path only (see
+ * buildUpstreamHeaders) — response-body inspection cannot read gzip.
+ *
  * @param {http.IncomingMessage} clientReq
  * @param {import("./providers.js").Provider} provider
  * @param {number} bodyLength
+ * @param {boolean} [forceIdentityEncoding]
  * @returns {{ proto: typeof http | typeof https, options: http.RequestOptions }}
  */
-export function upstreamRequestOptions(clientReq, provider, bodyLength) {
+export function upstreamRequestOptions(clientReq, provider, bodyLength, forceIdentityEncoding) {
 	const url = new URL(provider.baseUrl + clientReq.url);
 	const proto = url.protocol === "https:" ? https : http;
 	return {
@@ -69,7 +73,13 @@ export function upstreamRequestOptions(clientReq, provider, bodyLength) {
 			port: url.port || (url.protocol === "https:" ? 443 : 80),
 			path: url.pathname + url.search,
 			method: clientReq.method,
-			headers: buildUpstreamHeaders(provider, clientReq.headers, bodyLength, url.hostname),
+			headers: buildUpstreamHeaders(
+				provider,
+				clientReq.headers,
+				bodyLength,
+				url.hostname,
+				forceIdentityEncoding,
+			),
 			agent: pickAgent(proto),
 			timeout: upstreamTimeoutMs(),
 		},

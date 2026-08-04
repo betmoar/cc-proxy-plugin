@@ -13,21 +13,33 @@
 // static data DeepSeek exposes (no pricing API); it's surfaced here so the
 // export has a real consumer instead of guarding dead data.
 //
-// Context windows are curated per model — the Anthropic format has no
-// context_window field, and only OpenRouter serves one live, so this is
-// deliberately the display layer's concern (not the proxy's). Sources (2026-08-04):
-//   GLM:     docs.z.ai/guides/llm/glm-*.md  (4.5=128K; 4.6/4.7/5/5-Turbo/5.1=200K; 5.2=1M)
+// Context windows are curated per model. As of 0.5.1 the curated integer
+// table (tokens, not display strings) lives in src/models.js as
+// CONTEXT_WINDOW and is published on the wire as `context_window` on
+// GET /v1/models. This REVERSES the decision this comment used to record
+// through 0.5.0 — "the Anthropic format has no context_window field ...
+// deliberately the display layer's concern (not the proxy's)". Reason: a
+// second consumer (the cc-reload plugin, which budgets a session's context
+// against its model's window) needed the number programmatically, and
+// duplicating the curated table in every consumer is the failure mode this
+// promotion exists to kill. See CHANGELOG 0.5.1 for the reversal record.
+//
+// This file now only FORMATS that integer into the human column string
+// ("128K"/"1M") — it is derived, never a second source. `CONTEXT_WINDOW`
+// below stays exported with the SAME shape (id -> display string) it always
+// had, so this file's rendered output can't drift from src/models.js's
+// numbers. Provenance/sources for the underlying numbers (2026-08-04,
+// re-verify before each release touching the model) live on the doc comment
+// of CONTEXT_WINDOW in src/models.js:
+//   GLM:      docs.z.ai/guides/llm/glm-*.md  (4.5=128K; 4.6/4.7/5/5-Turbo/5.1=200K; 5.2=1M)
 //   DeepSeek: api-docs.deepseek.com/quick_start/pricing (1M)
-//   Qwen:    Alibaba Cloud Model Studio (1M, incl. 3.8-max-preview)
-// GLM/DeepSeek are pinned to the docs verbatim; the Qwen numbers come from a
-// vendor summary (all Qwen 3.x models share a 1M window) — re-verify any of
-// these before a release touching the model, exactly like DEEPSEEK_PRICING.
+//   Qwen:     Alibaba Cloud Model Studio (1M, incl. 3.8-max-preview)
 //
 // DECISION: one flat column with a provider suffix, no --json. The raw shape is
 // one `curl localhost:4000/v1/models` away; this script is the human view.
 
 import { loadEnv } from "../src/env.js";
-import { DEEPSEEK_PRICING } from "../src/models.js";
+import { CONTEXT_WINDOW as CONTEXT_WINDOW_TOKENS, DEEPSEEK_PRICING } from "../src/models.js";
 import { buildProviders } from "../src/providers.js";
 import { resolve } from "../src/router.js";
 
@@ -39,29 +51,27 @@ loadEnv();
 const PORT = Number(process.env.PROXY_PORT || 4000);
 const FETCH_TIMEOUT_MS = 3000;
 
-// Curated context windows (tokens) per reachable id. All verified against the
-// vendors' docs 2026-08-04 — see the header comment for sources. ids without an
-// entry render no window column.
-export const CONTEXT_WINDOW = {
-	// GLM (docs.z.ai/guides/llm/glm-*)
-	"glm-4.5": "128K",
-	"glm-4.5-air": "128K",
-	"glm-4.6": "200K",
-	"glm-4.7": "200K",
-	"glm-5": "200K",
-	"glm-5-turbo": "200K",
-	"glm-5.1": "200K",
-	"glm-5.2": "1M",
-	// DeepSeek (api-docs.deepseek.com/quick_start/pricing)
-	"deepseek-v4-pro": "1M",
-	"deepseek-v4-flash": "1M",
-	// Qwen (Alibaba Cloud Model Studio)
-	"qwen3.8-max": "1M",
-	"qwen3.8-max-preview": "1M",
-	"qwen3.7-max": "1M",
-	"qwen3.7-plus": "1M",
-	"qwen3.6-flash": "1M",
-};
+/** Format a curated integer token count into the human column string this
+ * table has always rendered: "128K" below 1M, "1M" at/above it. Rendered
+ * output for currently-covered models must stay byte-identical to pre-0.5.1
+ * — that string is a documented contract of `/cc-proxy:models`.
+ * @param {number} tokens
+ * @returns {string}
+ */
+export function formatContextWindow(tokens) {
+	// Rounded, not exact division: vendor windows are often powers of two, and
+	// the vendor's own "128K" means 131072. Correcting the table to the true
+	// integer would otherwise render "131.072K". Rounding keeps the column
+	// reading the way the vendor writes it, which is what this string is for.
+	return tokens >= 1000000 ? `${Math.round(tokens / 1000000)}M` : `${Math.round(tokens / 1000)}K`;
+}
+
+// Display-string context windows per reachable id, DERIVED from
+// src/models.js's CONTEXT_WINDOW (the single source of truth for the wire
+// integer) — never restated. ids without an entry render no window column.
+export const CONTEXT_WINDOW = Object.fromEntries(
+	Object.entries(CONTEXT_WINDOW_TOKENS).map(([id, tokens]) => [id, formatContextWindow(tokens)]),
+);
 
 /** Provider id → human name. Shared by the table (list-models) and the HTML
  * renderer (render-models) so a renamed provider can't drift between the two. */
@@ -117,7 +127,7 @@ async function main() {
 			err instanceof TypeError || /ECONNREFUSED|ENOTFOUND|fetch failed/i.test(err?.message || "");
 		if (down) {
 			process.stderr.write(
-				`cc-proxy: proxy down on port ${PORT} — run /exit + /resume to re-trigger the SessionStart hook, or check /tmp/cc-proxy.log\n`,
+				`cc-proxy: proxy down on port ${PORT} — run /exit + /resume to re-trigger the SessionStart hook, or check ~/.claude/cc-proxy/cc-proxy.log\n`,
 			);
 		} else {
 			process.stderr.write(

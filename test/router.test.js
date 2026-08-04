@@ -94,15 +94,97 @@ describe("router", () => {
 			assert.equal(resolve("qwen3.8-max", withQwen).id, "qwen");
 		});
 
+		// The Qwen Token Plan serves DeepSeek builds under its OWN dated spelling.
+		// `deepseek-v4-flash-0731` 200s there and 400s at DeepSeek native ("The
+		// supported API model names are deepseek-v4-pro or deepseek-v4-flash"), so
+		// before 0.5.1 the deepseek- prefix claimed it and the user got a hard
+		// failure on a model their plan entitles them to.
+		it("routes a dated deepseek build to qwen — DeepSeek native does not know it", () => {
+			const both = {
+				port: 4000,
+				providers: buildProviders({ DASHSCOPE_API_KEY: "q", DEEPSEEK_API_KEY: "d" }, "claude"),
+			};
+			assert.equal(resolve("deepseek-v4-flash-0731", both).id, "qwen");
+			// deepseek-v4-flash stays native — the plan 403s it, so claiming it would
+			// turn a reachable model into a hard failure. (deepseek-v4-pro DOES move
+			// to the plan; that is the separate "plan before credits" rule below.)
+			assert.equal(resolve("deepseek-v4-flash", both).id, "deepseek");
+		});
+
+		// GUARDRAIL (invariant 3 — credential isolation). A dated-id predicate
+		// written as a bare /-\d{4}$/ also matches Anthropic's own pinned ids, which
+		// are dated: claude-sonnet-4-5-20250929 would route to qwen, sending the
+		// user's OAuth credentials toward a third-party backend. Nearly shipped;
+		// the DATED_ID pattern is anchored to `deepseek-` for exactly this reason.
+		it("dated claude-* ids stay on Claude, never on a third-party backend", () => {
+			const all = {
+				port: 4000,
+				providers: buildProviders(
+					{ DASHSCOPE_API_KEY: "q", DEEPSEEK_API_KEY: "d", GLM_API_KEY: "g" },
+					"claude",
+				),
+			};
+			for (const id of [
+				"claude-sonnet-4-5-20250929",
+				"claude-opus-4-1-20250805",
+				"claude-haiku-4-5-20251001",
+			]) {
+				assert.equal(resolve(id, all).id, "claude", `${id} must stay on Claude`);
+			}
+			// Same trap, other vendors: a dated id that is not DeepSeek's is not the
+			// plan's to claim.
+			assert.equal(resolve("glm-4-plus-0520", all).id, "glm");
+			assert.equal(resolve("kimi-k2-0711", all).id, "claude"); // unknown → default
+		});
+
+		// "Plan before credits" (0.5.1). DeepSeek native bills metered credits and
+		// the plan is prepaid, so the bare id goes to the plan. glm-5.2 does NOT:
+		// Z.ai is itself a plan (GLM Pro), and a native plan outranks a resold one
+		// — swapping prepaid pools saves nothing and costs +6 injected tokens.
+		it("routes plan-resold bare ids to qwen when the plan is configured", () => {
+			const withPlan = {
+				port: 4000,
+				providers: buildProviders(
+					{ DASHSCOPE_API_KEY: "q", DEEPSEEK_API_KEY: "d", GLM_API_KEY: "g" },
+					"claude",
+				),
+			};
+			assert.equal(resolve("deepseek-v4-pro", withPlan).id, "qwen");
+			assert.equal(resolve("glm-5.2", withPlan).id, "glm", "a native plan outranks a resold plan");
+			// deepseek-v4-flash is NOT resold — the plan 403s it — so it must stay
+			// native or the user loses a model they can otherwise reach.
+			assert.equal(resolve("deepseek-v4-flash", withPlan).id, "deepseek");
+			// Everything else is untouched: only the one resold id moves.
+			assert.equal(resolve("glm-5.1", withPlan).id, "glm");
+			assert.equal(resolve("glm-4.5", withPlan).id, "glm");
+		});
+
+		// The other half of the same rule: a user WITHOUT the plan must see the
+		// original native routing. The plan leg only registers with the key, and
+		// the glm/deepseek predicates only yield when it is present — otherwise
+		// these ids would resolve to a backend that is not in the registry.
+		it("leaves bare ids native when no plan key is configured", () => {
+			const noPlan = {
+				port: 4000,
+				providers: buildProviders({ DEEPSEEK_API_KEY: "d", GLM_API_KEY: "g" }, "claude"),
+			};
+			assert.equal(resolve("deepseek-v4-pro", noPlan).id, "deepseek");
+			assert.equal(resolve("glm-5.2", noPlan).id, "glm");
+			assert.equal(resolve("deepseek-v4-flash", noPlan).id, "deepseek");
+		});
+
 		it("does not route slash-namespaced qwen/* to qwen (collision-lock)", () => {
 			// qwen/qwen3.7-max has a slash → matches no prefix provider, falls to the
 			// default (claude here). OpenRouter owns the slash space, not Qwen.
 			assert.equal(resolve("qwen/qwen3.7-max", withQwen).id, "claude");
 		});
 
-		it("bare glm-/deepseek-/claude-* still route to their own providers with Qwen configured", () => {
-			// QwenCloud advertises glm-5.2 and deepseek-v4-* too, but those bare ids
-			// must keep routing to their native backends (no QWEN default hijack).
+		it("Qwen claims ONLY the ids it resells, never the rest of a vendor's line", () => {
+			// This used to assert every bare glm-/deepseek- id stayed native. 0.5.1
+			// narrowed that: the two ids the plan actually resells move (prepaid
+			// beats metered), and everything else is untouched. The invariant that
+			// survives — and matters — is that the plan cannot swallow a whole
+			// prefix, which would be a QWEN default hijack.
 			const all = {
 				port: 4000,
 				providers: buildProviders(
@@ -110,8 +192,10 @@ describe("router", () => {
 					"claude",
 				),
 			};
-			assert.equal(resolve("glm-5.2", all).id, "glm");
-			assert.equal(resolve("deepseek-v4-pro", all).id, "deepseek");
+			assert.equal(resolve("glm-5.1", all).id, "glm");
+			assert.equal(resolve("glm-4.7", all).id, "glm");
+			assert.equal(resolve("glm-5-turbo", all).id, "glm");
+			assert.equal(resolve("deepseek-v4-flash", all).id, "deepseek");
 			assert.equal(resolve("claude-opus-4-6", all).id, "claude");
 			assert.equal(resolve("qwen3.7-max", all).id, "qwen");
 		});
