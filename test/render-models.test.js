@@ -1,7 +1,7 @@
 import { strict as assert } from "node:assert";
 import { describe, it } from "node:test";
 import { CONTEXT_WINDOW } from "../scripts/list-models.js";
-import { MODEL_TIERS } from "../scripts/render-models.js";
+import { MODEL_TIERS, conduitSvg, groupByProvider } from "../scripts/render-models.js";
 import {
 	DEEPSEEK_PRICING,
 	DEFAULT_CLAUDE_MODELS,
@@ -54,5 +54,80 @@ describe("render-models MODEL_TIERS", () => {
 		for (const id of Object.keys(CONTEXT_WINDOW)) {
 			assert.ok(MODEL_TIERS[id], `MODEL_TIERS missing CONTEXT_WINDOW id ${id}`);
 		}
+	});
+});
+
+// The two derivations that produce geometry and order rather than text. Both
+// shipped visibly wrong and neither is catchable by reading the diff — the
+// diagram overlapped "OpenRouter" with "Qwen", and the GLM card listed glm-5
+// above glm-5.1. A screenshot found them; these assertions keep them found.
+describe("render-models derivations", () => {
+	it("orders models by tier, then by version descending within a tier", () => {
+		const rows = [
+			{ id: "glm-5", provider: "glm" },
+			{ id: "glm-5.2", provider: "glm" },
+			{ id: "glm-5.1", provider: "glm" },
+			{ id: "glm-4.5", provider: "glm" },
+			{ id: "glm-4.7", provider: "glm" },
+		];
+		const ids = groupByProvider(rows)
+			.get("glm")
+			.models.map((m) => m.id);
+		// glm-5.2 Flagship, then the two Strong (5.1 before 5 — numeric collation,
+		// not lexicographic, which would invert them), then Economy newest-first.
+		assert.deepEqual(ids, ["glm-5.2", "glm-5.1", "glm-5", "glm-4.7", "glm-4.5"]);
+	});
+
+	it("draws one diagram leg per provider, with no overlapping labels", () => {
+		const ids = ["glm", "deepseek", "openrouter", "qwen", "claude"];
+		const svg = conduitSvg(ids);
+		// Every provider is drawn, and nothing else is.
+		const labels = [...svg.matchAll(/class="clabel"[^>]*>([^<]+)</g)].map((m) => m[1]);
+		const legNames = labels.filter((l) => l !== "request");
+		assert.deepEqual(legNames.sort(), ["Claude", "DeepSeek", "GLM", "OpenRouter", "Qwen"].sort());
+
+		// No two labels may overlap — as BOXES, not just as same-baseline pairs.
+		// The collision that shipped ("OpenRouter" over "Qwen") was between labels
+		// 8px apart vertically, which a same-y comparison waves through; at a
+		// ~12px line box they still visually collided. Width is approximated at
+		// the same ~5.7px/char the layout uses.
+		const LINE_H = 12;
+		const box = (l) => ({
+			x1: l.x - (l.name.length * 5.7) / 2,
+			x2: l.x + (l.name.length * 5.7) / 2,
+			y1: l.y - LINE_H,
+			y2: l.y,
+			name: l.name,
+		});
+		const placed = [...svg.matchAll(/<text x="(\d+)" y="(\d+)" class="clabel"[^>]*>([^<]+)</g)]
+			.map((m) => box({ x: +m[1], y: +m[2], name: m[3] }))
+			.filter((l) => l.name !== "request");
+		for (let i = 0; i < placed.length; i++) {
+			for (let j = i + 1; j < placed.length; j++) {
+				const a = placed[i];
+				const b = placed[j];
+				const overlaps = a.x1 < b.x2 && b.x1 < a.x2 && a.y1 < b.y2 && b.y1 < a.y2;
+				assert.ok(!overlaps, `labels overlap: ${a.name} and ${b.name}`);
+			}
+		}
+
+		// The viewBox must contain every label box, or the edge one is clipped.
+		const width = Number(/viewBox="0 0 (\d+) 200"/.exec(svg)[1]);
+		for (const l of placed) {
+			assert.ok(l.x2 <= width, `${l.name} overflows the viewBox (${l.x2} > ${width})`);
+			assert.ok(l.x1 >= 0, `${l.name} is clipped at the left edge (${l.x1})`);
+		}
+	});
+
+	it("escapes model ids rather than interpolating catalog text raw", () => {
+		// Ids come from a live upstream catalog; a stray angle bracket must not
+		// become markup.
+		const rows = [{ id: '<img src=x onerror="boom">', provider: "glm" }];
+		const models = groupByProvider(rows).get("glm").models;
+		assert.equal(models[0].id, '<img src=x onerror="boom">', "grouping keeps the raw id");
+		// The escaping itself is exercised through conduitSvg, which shares esc().
+		const svg = conduitSvg(["<script>"]);
+		assert.ok(!svg.includes("<script>"), "provider name must be escaped into the SVG");
+		assert.ok(svg.includes("&lt;script&gt;"), `expected escaped name, got: ${svg}`);
 	});
 });

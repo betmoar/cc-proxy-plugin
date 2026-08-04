@@ -93,6 +93,16 @@ const tierDots = (tier) =>
 		.map((n) => `<i${n <= DOTS[tier] ? ' class="on"' : ""}></i>`)
 		.join("")}</span><span class="tname">${tier}</span>`;
 
+/** Escape for an HTML text node / quoted attribute. Model ids come from a live
+ * upstream catalog and `_errors[].message` from whatever a failing backend
+ * returned — neither is ours, so neither is interpolated raw. */
+const esc = (s) =>
+	String(s)
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;")
+		.replace(/"/g, "&quot;");
+
 async function fetchJson(url) {
 	const res = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
 	if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -103,7 +113,7 @@ async function fetchJson(url) {
  * @param {ReturnType<typeof attribute>[] & any[]} rows
  * @param {Map<string, { models: any[], live: boolean }>} acc
  */
-function groupByProvider(rows) {
+export function groupByProvider(rows) {
 	/** @type {Map<string, { live: boolean, models: Array<{ id: string, dup?: boolean, tier: string }> }>} */
 	const acc = new Map();
 	// Native ids (non-openrouter) — an OpenRouter row whose bare form is reachable
@@ -116,7 +126,14 @@ function groupByProvider(rows) {
 		const dup = r.provider === "openrouter" && nativeIds.has(r.id.split("/").pop());
 		acc.get(r.provider).models.push({ id: r.id, dup, tier: tierFor(r.id) });
 	}
-	for (const p of acc.values()) p.models.sort((a, b) => tierRank(a.tier) - tierRank(b.tier));
+	// Tier first, then id DESCENDING within a tier — newer/higher version numbers
+	// on top, which is the order a reader scanning for "the good one" expects.
+	// A plain localeCompare would put glm-5 above glm-5.1; numeric collation
+	// orders the version segments as numbers.
+	const byId = new Intl.Collator("en", { numeric: true }).compare;
+	for (const p of acc.values()) {
+		p.models.sort((a, b) => tierRank(a.tier) - tierRank(b.tier) || byId(b.id, a.id));
+	}
 	return acc;
 }
 
@@ -125,26 +142,98 @@ function providerCard([pid, group]) {
 	const name = DISPLAY[pid] || pid;
 	const tag = group.live ? `<span class="tag live">live</span>` : `<span class="tag">key ✓</span>`;
 	const rows = group.models
-		.map(
-			(m) =>
-				`<div class="mrow"><span class="mname">${m.id}</span>${
-					m.dup ? `<span class="dup">also native</span>` : ""
-				}<span class="tier">${tierDots(m.tier)}</span></div>`,
-		)
+		.map((m) => {
+			// The context window, when we know it — the same curated map the text
+			// table renders, so the two views can't disagree about a model.
+			const win = CONTEXT_WINDOW[m.id];
+			// A zero-width break opportunity after the namespace slash, so a long
+			// OpenRouter id wraps on the boundary a reader recognizes.
+			const id = esc(m.id).replace("/", "/<wbr>");
+			return `<div class="mrow"><span class="mname">${id}</span>${
+				m.dup ? `<span class="dup">also native</span>` : ""
+			}<span class="tier">${win ? `<span class="win">${esc(win)}</span>` : ""}${tierDots(m.tier)}</span></div>`;
+		})
 		.join("");
 	return `<section class="card" style="--c:${meta.color}">
-  <div class="prow"><span class="mono">${meta.glyph}</span><h2>${name}</h2>${tag}</div>
+  <div class="prow"><span class="mono">${esc(meta.glyph)}</span><h2>${esc(name)}</h2>${tag}</div>
   <p class="leg">${group.live ? "native · live model list" : "curated list"} · ${group.models.length} model${group.models.length === 1 ? "" : "s"}</p>
   <div class="models">${rows}</div>
 </section>`;
 }
 
+/** The routing diagram's fan-out, built from the providers actually present.
+ * Every leg is a real registered backend — the SVG never draws a provider the
+ * reader can't reach. Legs alternate above/below the spine, ordered outward
+ * from the proxy so the labels never collide.
+ * @param {string[]} ids provider ids, in registry order
+ */
+export function conduitSvg(ids) {
+	const SPINE_Y = 74;
+	const X0 = 258;
+	// Spacing is set by the widest label, not by taste: legs on the SAME side of
+	// the spine must not collide, and at 9.5px monospace a label is ~5.7px per
+	// character. Alternating sides then interleaves at half that pitch, which is
+	// what makes the fan read as a fan rather than a picket fence. An earlier
+	// fixed 44px step overlapped "OpenRouter" with "Qwen".
+	const widest = Math.max(...ids.map((id) => (DISPLAY[id] || id).length), 6);
+	const step = Math.max(70, Math.round(widest * 5.7) + 14);
+	let up = 0;
+	let down = 0;
+	const legs = ids.map((id, i) => {
+		const meta = PROVIDER_META[id] || { color: "#888" };
+		const isUp = i % 2 === 1;
+		// Half-step offset on the up side so the two rows interleave.
+		const x = isUp ? X0 + up++ * step + Math.round(step / 2) : X0 + down++ * step;
+		const node = isUp ? SPINE_Y - 36 : SPINE_Y + 38;
+		const labelY = isUp ? node - 14 : node + 20;
+		return { x, node, labelY, color: meta.color, name: DISPLAY[id] || id };
+	});
+	const spineEnd = Math.max(X0, ...legs.map((l) => l.x));
+	// Widest label overhanging the last node sets the right edge — otherwise a
+	// long provider name is clipped by the viewBox.
+	const overhang = Math.max(...legs.map((l) => l.x + (l.name.length * 5.7) / 2), spineEnd);
+	const paths = legs
+		.map(
+			(l) =>
+				`<path d="M${l.x} ${SPINE_Y} V${l.node + (l.node < SPINE_Y ? 8 : -8)}" stroke="var(--rail)"/>` +
+				`<circle cx="${l.x}" cy="${l.node}" r="7" fill="var(--surface-2)" stroke="${l.color}"/>`,
+		)
+		.join("");
+	const labels = legs
+		.map(
+			(l) =>
+				`<text x="${l.x}" y="${l.labelY}" class="clabel" fill="var(--ink-2)" text-anchor="middle">${esc(l.name)}</text>`,
+		)
+		.join("");
+	return `<svg viewBox="0 0 ${Math.round(overhang) + 16} 200" role="img">
+          <path d="M44 ${SPINE_Y} H104" stroke="var(--rail)" stroke-width="2" stroke-linecap="round" fill="none"/>
+          <circle cx="44" cy="${SPINE_Y}" r="5" fill="none" stroke="var(--ink-2)" stroke-width="1.6"/>
+          <text x="44" y="32" class="cnode" fill="var(--ink-2)" text-anchor="middle">Claude Code</text>
+          <text x="44" y="52" class="clabel" fill="var(--muted)" text-anchor="middle">request</text>
+          <rect x="104" y="56" width="118" height="36" rx="9" fill="var(--surface-2)" stroke="#3987e5" stroke-width="1.5"/>
+          <text x="163" y="79" class="cnode" fill="var(--ink)" text-anchor="middle" font-weight="650">cc-proxy</text>
+          <path d="M222 ${SPINE_Y} H${spineEnd}" stroke="var(--rail)" stroke-width="2" stroke-linecap="round" fill="none"/>
+          <g stroke-width="1.6" stroke-linecap="round" fill="none">${paths}</g>
+          ${labels}
+        </svg>`;
+}
+
 // --- The self-contained template. Color + ink tokens are the dataviz surfaces;
 // provider identity uses the validated categorical palette. Dark by default. ---
-function renderHtml({ providers, rows, defaultBackend, errors }) {
-	const cards = [...groupByProvider(rows)].map(providerCard).join("\n");
+function renderHtml({ rows, defaultBackend, errors, providerIds }) {
+	const groups = groupByProvider(rows);
+	const cards = [...groups].map(providerCard).join("\n");
+	// Every number below is derived — a provider added or a leg switched from
+	// curated to live updates the hero without a hand edit here.
+	const providers = providerIds.length;
+	const liveCount = [...groups.values()].filter((g) => g.live).length;
+	const names = providerIds.map((id) => DISPLAY[id] || id);
+	const lede =
+		names.length > 1
+			? `${names.slice(0, -1).join(", ")}, or ${names[names.length - 1]}`
+			: names[0] || "any backend";
 	const errorLines = (errors || [])
-		.map((e) => `<div class="warn">${e.provider}: ${e.message}</div>`)
+		.map((e) => `<div class="warn">${esc(e.provider)}: ${esc(e.message)}</div>`)
 		.join("");
 	return `<!DOCTYPE html>
 <html lang="en">
@@ -153,12 +242,28 @@ function renderHtml({ providers, rows, defaultBackend, errors }) {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>cc-proxy · reachable models</title>
 <style>
-  :root { color-scheme: dark; }
+  /* The type + page tokens live on :root, NOT on .viz. body is .viz's ANCESTOR,
+     so a --sans defined only on .viz is undefined where body reads it, and an
+     undefined var() falls back to the property's initial value — serif. That is
+     what rendered this whole page in Times. Theme/surface tokens stay scoped to
+     .viz (the component owns its palette); only what body itself consumes is
+     hoisted. */
+  :root { color-scheme: dark; --page:#0d0d0d;
+    --mono:"SF Mono",SFMono-Regular,Menlo,Consolas,"JetBrains Mono","Roboto Mono",ui-monospace,monospace;
+    --sans:system-ui,BlinkMacSystemFont,"Helvetica Neue",Helvetica,Arial,"Segoe UI",Inter,-apple-system,sans-serif; }
+  @media (prefers-color-scheme: light) { :root:where(:not([data-theme="dark"])) { --page:#f9f9f7; } }
+  :root[data-theme="dark"] { --page:#0d0d0d; }
   .viz { --surface-1:#1a1a19; --surface-2:#22221f; --page:#0d0d0d; --ink:#eef0f2;
     --ink-2:#c3c2b7; --muted:#898781; --grid:#2c2c2a; --rail:#383835;
     --hairline:rgba(255,255,255,0.10); --good:#0ca30c;
-    --mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,monospace;
-    --sans:-apple-system,system-ui,"Segoe UI",sans-serif; }
+    /* Order matters, and not for taste. A family an engine cannot resolve does
+       NOT fall through to the next entry in some engines — it lands on the
+       generic default, which is serif. Headless Chromium resolves neither
+       -apple-system nor ui-monospace nor Inter, so a stack led by any of them
+       renders the whole page in Times (it did). Both stacks now open with a
+       family that resolves everywhere and keep the fancier faces as upgrades. */
+    --mono:"SF Mono",SFMono-Regular,Menlo,Consolas,"JetBrains Mono","Roboto Mono",ui-monospace,monospace;
+    --sans:system-ui,BlinkMacSystemFont,"Helvetica Neue",Helvetica,Arial,"Segoe UI",Inter,-apple-system,sans-serif; }
   @media (prefers-color-scheme: light) {
     :root:where(:not([data-theme="dark"])) .viz { color-scheme:light;
       --surface-1:#fcfcfb; --surface-2:#f2f1ec; --page:#f9f9f7; --ink:#0b0b0b;
@@ -208,9 +313,12 @@ function renderHtml({ providers, rows, defaultBackend, errors }) {
   .models { margin-top:12px; border-top:1px solid var(--grid); }
   .mrow { display:flex; align-items:flex-start; gap:12px; padding:10px 0; border-bottom:1px solid var(--grid); }
   .mrow:last-child { border-bottom:none; }
-  .mname { font-size:13px; line-height:1.35; color:var(--ink); font-family:var(--mono); word-break:break-word; min-width:0; }
+  /* Break long ids at the namespace slash (see the wbr in providerCard), not
+     mid-token — deepseek/deepseek-v4-pro must not split as "deepsee|k-v4-pro". */
+  .mname { font-size:13px; line-height:1.35; color:var(--ink); font-family:var(--mono); overflow-wrap:anywhere; word-break:normal; min-width:0; }
   .dup { color:var(--muted); font-size:11px; font-style:italic; white-space:nowrap; align-self:center; margin-left:6px; }
   .tier { display:flex; align-items:center; gap:7px; margin-left:auto; margin-top:3px; flex:0 0 auto; }
+  .win { font-family:var(--mono); font-size:10.5px; color:var(--muted); width:3em; text-align:right; }
   .tdots { display:flex; gap:3px; }
   .tdots i { width:7px; height:7px; border-radius:50%; background:transparent; border:1px solid var(--muted); }
   .tdots i.on { background:var(--c); border-color:var(--c); }
@@ -220,8 +328,27 @@ function renderHtml({ providers, rows, defaultBackend, errors }) {
   .legend .tk { display:flex; align-items:center; gap:8px; color:var(--ink-2); font-size:12.5px; }
   .legend .tk .tdots i.on { background:var(--ink); border-color:var(--ink); }
   .warn { color:var(--muted); font-size:12px; padding:10px 14px; border:1px solid var(--hairline); border-radius:8px; margin:0 0 14px; }
-  footer { margin-top:8px; padding-top:16px; border-top:1px solid var(--grid); color:var(--muted); font-size:12px; line-height:1.65; max-width:80ch; }
-  footer b { color:var(--ink-2); font-weight:600; }
+  /* A key, not an essay: each note sits beside the mark it defines, so the
+     reader matches on the glyph they're looking at instead of hunting a
+     paragraph for it. Two columns wide, collapsing to one on narrow. */
+  footer { margin-top:30px; padding-top:20px; border-top:1px solid var(--grid); }
+  .fkey { font-family:var(--mono); font-size:10.5px; color:var(--muted); text-transform:uppercase; letter-spacing:.14em; margin:0 0 14px; }
+  /* Two columns, each row full-width within its column — an auto-fit grid left
+     a ragged hole when the count was odd. Five entries: 3 + 2. */
+  footer dl { display:grid; grid-template-columns:1fr 1fr; column-gap:44px; margin:0 0 20px; }
+  footer dl > div { display:flex; align-items:baseline; gap:14px; padding:9px 0; border-bottom:1px solid var(--grid); }
+  footer dt { flex:0 0 92px; display:flex; align-items:center; justify-content:flex-start; }
+  footer dd { margin:0; font-size:12.5px; line-height:1.5; color:var(--ink-2); }
+  footer dt .tag { margin-left:0; }
+  footer dt .win { width:auto; text-align:left; }
+  footer dt .dup { margin-left:0; }
+  footer dt .tname { display:none; }
+  /* --c is set per provider card; the footer sits outside one, so its sample
+     dots would render unfilled. Ink is the neutral stand-in, same as .legend. */
+  footer dt .tdots i.on { background:var(--ink); border-color:var(--ink); }
+  @media (max-width:760px) { footer dl { grid-template-columns:1fr; } }
+  .fnote { color:var(--muted); font-size:12px; line-height:1.65; max-width:78ch; margin:0; }
+  footer code { font-family:var(--mono); font-size:11.5px; color:var(--ink-2); }
   @media (max-width:900px) { .hero { grid-template-columns:1fr; gap:28px; } .wrap { padding:28px 20px 40px; } }
 </style>
 </head>
@@ -239,37 +366,16 @@ function renderHtml({ providers, rows, defaultBackend, errors }) {
       <div>
         <p class="hero-eyebrow">Claude Code · local routing layer</p>
         <h1>One proxy.<br>Every model.<span class="rule"> Routed by name.</span></h1>
-        <p class="lede">cc-proxy sits in front of Claude Code and dispatches each call to the model it deserves — GLM, DeepSeek, OpenRouter, Qwen, or Claude, in a single session. Your keys stay local. The route is <code>model name</code>.</p>
+        <p class="lede">cc-proxy sits in front of Claude Code and dispatches each call to the model it deserves — ${esc(lede)}, in a single session. Nothing leaves the machine but the upstream call itself. The route is <code>model name</code>.</p>
         <ul class="stats">
-          <li><span class="dot" style="background:#3987e5"></span><span class="n">${providers}</span><span class="k">providers</span></li>
+          <li><span class="dot" style="background:#3987e5"></span><span class="n">${providers}</span><span class="k">provider${providers === 1 ? "" : "s"}</span></li>
           <li><span class="n">${rows.length}</span><span class="k">models</span></li>
-          <li><span class="n">2</span><span class="k">live legs</span></li>
-          <li><span class="n">0</span><span class="k">keys on disk</span></li>
+          <li><span class="n">${liveCount}</span><span class="k">live leg${liveCount === 1 ? "" : "s"}</span></li>
+          <li><span class="dot" style="background:var(--good)"></span><span class="k">loopback&nbsp;only</span></li>
         </ul>
       </div>
       <div class="conduit" aria-label="Routing diagram: a request enters cc-proxy and is dispatched to one of the reachable providers">
-        <svg viewBox="0 0 460 200" role="img">
-          <path d="M44 74 H104" stroke="var(--rail)" stroke-width="2" stroke-linecap="round" fill="none"/>
-          <circle cx="44" cy="74" r="5" fill="none" stroke="var(--ink-2)" stroke-width="1.6"/>
-          <text x="44" y="32" class="cnode" fill="var(--ink-2)" text-anchor="middle">Claude Code</text>
-          <text x="44" y="52" class="clabel" fill="var(--muted)" text-anchor="middle">request</text>
-          <rect x="104" y="56" width="118" height="36" rx="9" fill="var(--surface-2)" stroke="#3987e5" stroke-width="1.5"/>
-          <text x="163" y="79" class="cnode" fill="var(--ink)" text-anchor="middle" font-weight="650">cc-proxy</text>
-          <path d="M222 74 H346" stroke="var(--rail)" stroke-width="2" stroke-linecap="round" fill="none"/>
-          <g stroke-width="1.6" stroke-linecap="round" fill="none">
-            <path d="M258 74 V120" stroke="var(--rail)"/><circle cx="258" cy="128" r="7" fill="var(--surface-2)" stroke="#eb6834"/>
-            <path d="M302 74 V104" stroke="var(--rail)"/><circle cx="302" cy="112" r="7" fill="var(--surface-2)" stroke="#1baf7a"/>
-            <path d="M346 74 V90" stroke="var(--rail)"/><circle cx="346" cy="98" r="7" fill="var(--surface-2)" stroke="#eda100"/>
-            <path d="M258 74 V46" stroke="var(--rail)"/><circle cx="258" cy="38" r="7" fill="var(--surface-2)" stroke="#e87ba4"/>
-            <path d="M302 74 V42" stroke="var(--rail)"/><circle cx="302" cy="34" r="7" fill="var(--surface-2)" stroke="#3987e5"/>
-          </g>
-          <text x="258" y="158" class="clabel" fill="var(--ink-2)" text-anchor="middle">GLM</text>
-          <text x="302" y="140" class="clabel" fill="var(--ink-2)" text-anchor="middle">DS</text>
-          <text x="346" y="124" class="clabel" fill="var(--ink-2)" text-anchor="middle">OR</text>
-          <text x="258" y="20" class="clabel" fill="var(--ink-2)" text-anchor="middle">Qwen</text>
-          <text x="302" y="16" class="clabel" fill="var(--ink-2)" text-anchor="middle">Claude</text>
-          <g class="pulse"><circle cx="302" cy="52" r="5" fill="#3987e5"/><circle cx="302" cy="52" r="10" fill="#3987e5" opacity=".18"/></g>
-        </svg>
+        ${conduitSvg(providerIds)}
       </div>
     </section>
 
@@ -283,7 +389,15 @@ ${cards}
     </div>
 
     <footer>
-      <b>How to read this.</b> A request enters from Claude Code and cc-proxy dispatches it to the model the request names — one proxy, multiple backends. <b>Live</b> legs fetch their model list at discovery; <b>curated</b> legs are static lists the plugin ships. Tiers are a qualitative capability ranking, deliberately hue-independent. A model tagged <i>also native</i> is reachable two ways — direct and via the OpenRouter aggregate. <code>claude-haiku-*</code> is intentionally omitted: internal Claude Code ops pin to Claude and never burn third-party quota. Generated from the live <code>/v1/models</code> (default backend: ${defaultBackend}).
+      <p class="fkey">Notation</p>
+      <dl>
+        <div><dt><span class="tag live">live</span></dt><dd>Model list fetched from the provider at discovery.</dd></div>
+        <div><dt><span class="tag">key ✓</span></dt><dd>Static list the plugin ships; the key is present and the leg is routable.</dd></div>
+        <div><dt>${tierDots("Strong")}</dt><dd>Qualitative capability tier. Ordinal, hue-independent — the fill carries it, never the color.</dd></div>
+        <div><dt><span class="win">200K</span></dt><dd>Context window, where the vendor documents one.</dd></div>
+        <div><dt><span class="dup">also native</span></dt><dd>Reachable two ways — direct, and via the OpenRouter aggregate.</dd></div>
+      </dl>
+      <p class="fnote"><code>claude-haiku-*</code> is omitted by design: Claude Code's internal ops pin to Claude so they never burn third-party quota. Generated from the live <code>/v1/models</code> · default backend <code>${esc(defaultBackend)}</code>.</p>
     </footer>
   </div>
 </div>
@@ -321,7 +435,10 @@ async function main() {
 
 	process.stdout.write(
 		renderHtml({
-			providers: providerSet.size,
+			// Registry order, restricted to providers that actually have a
+			// reachable model — an empty leg gets no card, so it gets no
+			// diagram spur or lede mention either.
+			providerIds: providers.map((p) => p.id).filter((id) => rows.some((r) => r.provider === id)),
 			rows,
 			defaultBackend,
 			errors: models._errors || [],

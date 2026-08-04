@@ -252,19 +252,18 @@ async function loadDeepSeekBalance(cacheDir) {
 		});
 		if (!res.ok) throw new Error(`HTTP ${res.status}`);
 		const json = await res.json();
-		// The gauge is denominated in dollars (`dollarTier`), so only a USD
-		// balance_infos row can drive it. A CNY-only account keeps its currency
-		// for reporting but leaves `remaining` NaN, which renders `--` rather
-		// than a wrong-currency dollar tier.
+		// The gauge is denominated in dollars (`dollarTier`), so ONLY a USD row
+		// may drive it. This used to fall back to balance_infos[0], which
+		// rendered a CNY-only account's ¥50 as `$$` — a confidently wrong
+		// number, worse than none. Non-USD now leaves `remaining` unset, which
+		// renders `--`. `currency` is diagnostic only (nothing reads it at
+		// render time): it survives in the cache file so a user staring at a
+		// bare `--` can see which currency the account actually reports.
 		const infos = Array.isArray(json?.balance_infos) ? json.balance_infos : [];
 		const usd = infos.find((b) => b?.currency === "USD") || null;
-		const row = usd || infos[0] || null;
-		const remaining = usd ? Number(usd.total_balance) : Number.NaN;
-		const result = {
-			remaining,
-			currency: row?.currency || null,
-			_ts: Date.now(),
-		};
+		const remaining = usd ? Number(usd.total_balance) : null;
+		const currency = (usd || infos[0])?.currency || null;
+		const result = { remaining, currency, _ts: Date.now() };
 		if (cachePath) {
 			try {
 				fs.mkdirSync(path.dirname(cachePath), { recursive: true });
@@ -341,10 +340,10 @@ process.stdin.on("end", async () => {
 	// (String(NaN).length === 3 would yield "$$$"). Shared by the OpenRouter and
 	// DeepSeek balance gauges.
 	function dollarTier(remaining) {
-		// null/undefined mean "no number", not zero. Number(null) === 0 would
-		// otherwise render `$0` — and NaN round-trips through the JSON cache as
-		// null (JSON.stringify(NaN) === "null"), so an unknown-balance cache
-		// entry read back on the next render must not become a false `$0`.
+		// null/undefined mean "no number", not zero — Number(null) === 0 would
+		// otherwise render a false `$0`. This is the unknown-balance carrier
+		// (DeepSeek's non-USD case) precisely because null survives the JSON
+		// cache round-trip, which NaN does not (JSON.stringify(NaN) === "null").
 		if (remaining === null || remaining === undefined) return "--";
 		const r = Number(remaining);
 		if (!Number.isFinite(r)) return "--";
