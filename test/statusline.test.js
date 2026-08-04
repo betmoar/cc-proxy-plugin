@@ -178,6 +178,61 @@ describe("statusline.js", () => {
 		}
 	});
 
+	// GUARDRAIL: the ds: gauge is denominated in dollars (`dollarTier`), but
+	// /user/balance is per-currency. The loader used to fall back to
+	// balance_infos[0] when no USD row existed, so a CNY-only account rendered
+	// ¥50 as `$$` — a confidently wrong dollar reading. Only a USD row may drive
+	// the gauge; anything else is unknown (`--`). Uses a local stub backend
+	// (no cache seeded) so the real selection logic runs, not a fixture.
+	it("renders ds:-- for a CNY-only balance instead of a wrong-currency $ tier", async () => {
+		const http = await import("node:http");
+		const bodies = {
+			// CNY-only: no USD row at all → unknown.
+			cny: { balance_infos: [{ currency: "CNY", total_balance: "50.00" }] },
+			// Both present, CNY listed first → the USD row must still win, and
+			// the tier must come from 42 (`$$`), not 50.
+			both: {
+				balance_infos: [
+					{ currency: "CNY", total_balance: "50.00" },
+					{ currency: "USD", total_balance: "42.00" },
+				],
+			},
+		};
+		for (const [name, expected] of [
+			["cny", "--"],
+			["both", "$$"],
+		]) {
+			const server = http.createServer((_req, res) => {
+				res.writeHead(200, { "content-type": "application/json" });
+				res.end(JSON.stringify(bodies[name]));
+			});
+			await new Promise((r) => server.listen(0, "127.0.0.1", r));
+			const url = `http://127.0.0.1:${server.address().port}/user/balance`;
+			// A fresh empty dir: no seeded cache, so the fetch path runs. The
+			// loader writes its result here rather than into a shared location.
+			const dir = fs.mkdtempSync(path.join(os.tmpdir(), "statusline-test-"));
+			try {
+				const { stdout } = await run(
+					{},
+					{
+						GLM_API_KEY: "",
+						OPENROUTER_API_KEY: "",
+						DEEPSEEK_API_KEY: "dummy",
+						DEEPSEEK_BALANCE_URL: url,
+						CLAUDE_PLUGIN_DATA: dir,
+					},
+				);
+				assert.ok(
+					plain(stdout).includes(`ds:${expected} `) || plain(stdout).endsWith(`ds:${expected}`),
+					`${name}: expected ds:${expected}, got: ${plain(stdout)}`,
+				);
+			} finally {
+				await new Promise((r) => server.close(r));
+				fs.rmSync(dir, { recursive: true, force: true });
+			}
+		}
+	});
+
 	it("omits the ds: segment entirely when DEEPSEEK_API_KEY is unset", async () => {
 		// A seeded cache must not be enough — the no-key guard short-circuits first,
 		// so an unconfigured user never sees a DeepSeek gauge.

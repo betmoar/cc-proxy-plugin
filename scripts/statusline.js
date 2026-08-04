@@ -16,7 +16,12 @@ loadEnv();
 
 const QUOTA_URL = "https://api.z.ai/api/monitor/usage/quota/limit";
 const OPENROUTER_CREDITS_URL = "https://openrouter.ai/api/v1/credits";
-const DEEPSEEK_BALANCE_URL = "https://api.deepseek.com/user/balance";
+// Overridable so tests can point the balance fetch at a local stub and exercise
+// the real per-currency selection. Deliberately NOT in .env.example / the README
+// env table — it is a test seam, not a user knob (same posture as config-only
+// `modelsTimeoutMs`), and the env-doc coupling test only reads .env.example.
+const DEEPSEEK_BALANCE_URL =
+	process.env.DEEPSEEK_BALANCE_URL || "https://api.deepseek.com/user/balance";
 const CACHE_TTL_MS = 60_000;
 const PROXY_PORT = Number(process.env.PROXY_PORT || 4000);
 const PROXY_PROBE_TIMEOUT_MS = 300;
@@ -222,8 +227,8 @@ async function loadOpenRouterCredits(cacheDir) {
 }
 
 // DeepSeek balance (opt-in via DEEPSEEK_API_KEY). Same 60s cache + stale fallback as
-// the GLM/OpenRouter fetchers. The /user/balance response is per-currency; we render
-// the USD row if present, else the first balance_infos entry. Unlike OpenRouter (which
+// the GLM/OpenRouter fetchers. The /user/balance response is per-currency; only a USD
+// row can drive the dollar gauge (see below). Unlike OpenRouter (which
 // reports credits used/remaining), DeepSeek reports a single total_balance, so the
 // gauge reflects remaining balance (= total) and carries no used-percentage.
 async function loadDeepSeekBalance(cacheDir) {
@@ -336,6 +341,11 @@ process.stdin.on("end", async () => {
 	// (String(NaN).length === 3 would yield "$$$"). Shared by the OpenRouter and
 	// DeepSeek balance gauges.
 	function dollarTier(remaining) {
+		// null/undefined mean "no number", not zero. Number(null) === 0 would
+		// otherwise render `$0` — and NaN round-trips through the JSON cache as
+		// null (JSON.stringify(NaN) === "null"), so an unknown-balance cache
+		// entry read back on the next render must not become a false `$0`.
+		if (remaining === null || remaining === undefined) return "--";
 		const r = Number(remaining);
 		if (!Number.isFinite(r)) return "--";
 		if (r <= 0) return "$0";
