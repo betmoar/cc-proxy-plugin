@@ -230,3 +230,37 @@ tests in `providers.test.js` + `router.test.js`. Never a router/server change.
    `docs/ARCHITECTURE.md` (last section); only matters past ~128 concurrently
    stalled upstream calls to one origin.
 7. **Windows** — untested end to end (detached spawn, log paths).
+8. **Explicit provider-prefix ids (`<provider>:<model>`)** — a way to say "this
+   model, *that* backend" when one model is reachable through several. Motive is
+   billing, not availability: the Qwen Token Plan is prepaid capacity, so a model
+   reached through it is already paid for, while the same model natively is
+   metered credits. Live-probed 2026-08-04 against the Token Plan host with
+   `DASHSCOPE_API_KEY` (re-verify before building — this vendor's catalog moves):
+
+   | id | qwen token-plan | native |
+   |---|---|---|
+   | `deepseek-v4-flash-0731` | 200 | 400 — id unknown to DeepSeek |
+   | `deepseek-v4-flash` | 403 AccessDenied | 200 |
+   | `deepseek-v4-pro` | 200 | 200 — **same id, different bill** |
+   | `glm-5.2` | 200 | 200 — **same id, different bill** |
+   | `glm-5.1`, `glm-5` | 403 | 200 |
+
+   So the plan resells exactly one GLM (5.2) and two DeepSeek models. Only
+   `deepseek-v4-flash-0731` is unambiguous — the dated suffix exists nowhere else,
+   so it could be routed to Qwen today by making the `deepseek` predicate exclude
+   dated ids and the `qwen` one claim them; disjointness is preserved, and it is
+   the cheap 80% of this item. The other two ids are the actual problem: nothing
+   in the string says which account pays.
+
+   **The trap for any prefix scheme**: OpenRouter matches on `includes("/")` and
+   sits *before* qwen in the registry, so `qwen/deepseek-v4-pro` routes to
+   OpenRouter, not Qwen. A slash-namespaced scheme therefore cannot be added
+   without rewriting OpenRouter's predicate to an allowlist (it currently claims
+   the entire slash namespace by design — that is what makes it the aggregator).
+   A different separator (`qwen:deepseek-v4-pro`) sidesteps it but must survive
+   Claude Code's `/model` picker and `ANTHROPIC_CUSTOM_MODEL_OPTION`, neither of
+   which is public API.
+
+   Not a fallback mechanism: "use the plan when the Z.ai quota is spent" needs
+   cross-request state (invariant 2). An explicit alias the user selects is
+   stateless; automatic failover is not.
