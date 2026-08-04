@@ -273,9 +273,10 @@ tests in `providers.test.js` + `router.test.js`. Never a router/server change.
 7. **Windows** — untested end to end (detached spawn, log paths).
 8. **Explicit provider-prefix ids (`<provider>:<model>`)** — a way to say "this
    model, *that* backend" when one model is reachable through several. Motive is
-   billing, not availability: the Qwen Token Plan is prepaid capacity, so a model
-   reached through it is already paid for, while the same model natively is
-   metered credits. Live-probed 2026-08-04 against the Token Plan host with
+   billing, not availability: a model reached through a plan is already paid for
+   (sunk capacity), while the same model on a credit-billed backend costs real
+   money per call — see the billing table below, and note it does NOT track
+   first-party-ness. Live-probed 2026-08-04 against the Token Plan host with
    `DASHSCOPE_API_KEY` (re-verify before building — this vendor's catalog moves):
 
    Full cross-host matrix, every cell probed (`POST /v1/messages`, 1 token):
@@ -372,11 +373,27 @@ tests in `providers.test.js` + `router.test.js`. Never a router/server change.
    uniquely name one. Compression is the point of a tier; uniqueness is the
    point of a selector. Keep the explicit prefix as the selector.
 
-   **Cost rank (belongs here, NOT in item 9).** When one model is reachable
-   several ways, prefer: prepaid plan capacity (GLM Pro, Qwen Token Plan) →
-   native metered (DeepSeek) → aggregator (OpenRouter, lowest). Plan capacity is
-   sunk cost; credits are marginal spend. OpenRouter ranks last because it is
-   metered *and* tier 3.
+   **Cost rank (belongs here, NOT in item 9).** Billing is a SEPARATE axis from
+   the tier above — do not read one off the other. Three distinct plans and two
+   credit pools, verified against each provider's own quota/balance endpoint
+   (2026-08-04):
+
+   | backend | billing | evidence |
+   |---|---|---|
+   | Z.ai (GLM) | **plan** — GLM Pro | `/quota/limit` → `level=pro`, TIME_LIMIT + TOKENS_LIMIT |
+   | Qwen Token Plan | **plan** — Individual | prepaid capacity, no balance endpoint at all |
+   | Claude | **plan** — Max/Pro (OAuth) | no key, no meter; the session's own quota |
+   | DeepSeek native | **credits** | `/user/balance` → `topped_up_balance: $19.56` |
+   | OpenRouter | **credits** | `/credits` → remaining USD |
+
+   So preference order is: any plan route (sunk cost — the capacity is already
+   bought) → credits (marginal spend, real money per call), with OpenRouter last
+   among credit routes because it is also tier 3.
+   Note this makes DeepSeek's own native endpoint the EXPENSIVE way to reach
+   `deepseek-v4-pro` and the plan route the cheap one — the opposite of the
+   intuition that first-party is cheapest. That inversion is the entire reason
+   this item exists. `deepseek-v4-flash`, though, is credits-only: the plan
+   403s it (see the matrix above), so it has no cheap route.
    This is a **cost** ranking, not a knowledge ranking, and the two are
    deliberately not correlated — measuring capability-per-currency is out of
    scope. `deepseek/deepseek-v4-pro` via OpenRouter is the same weights as
