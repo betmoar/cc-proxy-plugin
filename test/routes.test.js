@@ -130,12 +130,16 @@ describe("discovery ↔ routing coherence", () => {
 	// Both of these shipped broken in the first implementation pass and were
 	// caught only by rendering against a live proxy. They are offline-testable,
 	// so they are tested offline now.
-	it("the winning backend of every routed id actually publishes that id", async () => {
-		// If the route table awards an id to a backend whose catalog does not list
-		// it, the id vanishes from discovery entirely — no other leg will claim it,
-		// because they all see themselves as the dedup loser. That is how bare
-		// deepseek-v4-pro disappeared: the table gave it to the plan, and the plan's
-		// static catalog did not carry it.
+	it("no static catalog restates a route it does not own", async () => {
+		// The winner is DERIVED from ROUTES by collectModels(), never re-stated in a
+		// leg's catalog. An earlier pass did the opposite — it added deepseek-v4-pro
+		// to DEFAULT_QWEN_MODELS so the plan (its cheapest route) had something to
+		// publish. That put the same curated fact in two places, which is the drift
+		// this repo's coupling tests exist to prevent: the route table could then
+		// award the id elsewhere while the catalog still claimed it.
+		//
+		// So a catalog lists only ids that backend ADVERTISES — its own vendor's, or
+		// (like deepseek-v4-flash-0731) an id that exists nowhere else.
 		const { DEFAULT_QWEN_MODELS, DEFAULT_CLAUDE_MODELS, DEFAULT_OPENROUTER_MODELS } = await import(
 			"../src/models.js"
 		);
@@ -144,15 +148,23 @@ describe("discovery ↔ routing coherence", () => {
 			claude: DEFAULT_CLAUDE_MODELS.map((m) => m.id),
 			openrouter: DEFAULT_OPENROUTER_MODELS.map((m) => m.id),
 		};
-		for (const id of Object.keys(ROUTES)) {
-			const winner = rankRoutes(id)[0]?.provider;
-			// glm/deepseek fetch their catalogs live, so there is nothing static to
-			// check them against.
-			if (!winner || !catalogs[winner]) continue;
-			assert.ok(
-				catalogs[winner].includes(id),
-				`${id} routes to ${winner}, but ${winner}'s catalog does not publish it`,
-			);
+		for (const [provider, ids] of Object.entries(catalogs)) {
+			for (const id of ids) {
+				const routes = ROUTES[id];
+				// An id only ONE backend serves cannot be a restatement — nobody else
+				// could have supplied it (deepseek-v4-flash-0731 is the live case:
+				// plan-only, so the plan's catalog is the only possible source).
+				if (!routes || routes.filter((r) => r.status === 200).length < 2) continue;
+				// Multi-backend id in a catalog that is not its vendor's = restatement.
+				// Checking vendor rather than winner is the point: when the lister IS
+				// the current winner the two questions look identical, and that is
+				// exactly the case that must still fail — the winner is derived, so
+				// listing it duplicates the route table instead of reflecting it.
+				assert.ok(
+					id.startsWith(provider),
+					`${provider}'s catalog lists ${id}, a model it does not own and that ${routes.length} backends serve — remove it and let collectModels() derive the winner from ROUTES`,
+				);
+			}
 		}
 	});
 

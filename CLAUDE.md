@@ -73,16 +73,23 @@ Each is locked by tests; the test names tell you what you broke.
 
 ## Couplings — if you touch X, you must also update Y
 
-- **A model's route and its catalog must agree.** `src/routes.js` `ROUTES` says
-  which backend WINS an id; discovery publishes the bare id from that winner's
-  catalog and republishes the losers as `<provider>:<id>`. So if the table awards
-  an id to a backend whose catalog does not list it, **the id disappears from
-  discovery entirely** — every other leg sees itself as the dedup loser and no
-  one emits the bare form. That is exactly how `deepseek-v4-pro` vanished during
-  implementation (the table gave it to the plan; `DEFAULT_QWEN_MODELS` did not
-  carry it). Adding a cross-vendor route means adding the id to the winner's
-  catalog too. → `test/routes.test.js` "the winning backend of every routed id
-  actually publishes that id" (mutation-verified).
+- **Routes are DERIVED from `ROUTES`, never restated in a catalog.** A leg's
+  static list says what that backend *advertises* (its own vendor's models, or
+  an id that exists nowhere else — `deepseek-v4-flash-0731` is plan-only, so the
+  plan is its only possible source). `src/routes.js` says who *serves* what.
+  `collectModels()` publishes the bare id under the cheapest registered backend
+  and republishes losers as `<provider>:<id>`, deriving the winner — so a
+  cross-vendor route like the plan's `deepseek-v4-pro` needs NO catalog entry,
+  and a one-line `200`→`403` edit in `ROUTES` moves the id on its own
+  (verified: bare id flips qwen t2 → deepseek t3 and the `deepseek:` alias
+  disappears, no other file touched).
+  The first implementation did the opposite — it added `deepseek-v4-pro` to
+  `DEFAULT_QWEN_MODELS` so the winner had something to publish. That is the same
+  curated fact in two places, i.e. exactly the drift the coupling tests exist to
+  stop, and it is now forbidden rather than required. → `test/routes.test.js`
+  "no static catalog restates a route it does not own" (mutation-verified; note
+  the check keys on *vendor ownership*, not on who currently wins — when the
+  lister IS the winner the two look identical, and that case must still fail).
 - **Capability grade lives in `src/models.js` only.** `MODEL_GRADES` (+
   `gradeOf`) is published on `/v1/models` as `grade`;
   `scripts/render-models.js` re-exports it as `MODEL_TIERS` and must never

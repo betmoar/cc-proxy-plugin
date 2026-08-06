@@ -218,17 +218,11 @@ export const DEFAULT_QWEN_MODELS = [
 		display_name: "DeepSeek V4 Flash (0731, Qwen plan)",
 		created_at: null,
 	},
-	// Resold, and the CHEAPEST route to it (plan capacity vs DeepSeek's metered
-	// credits) — so the plan leg is what publishes the bare id, and the native
-	// leg is republished as `deepseek:deepseek-v4-pro`. It must be listed here
-	// or the winner emits nothing and the bare id disappears from discovery
-	// entirely: the route table says qwen wins, so no other leg will claim it.
-	{
-		type: "model",
-		id: "deepseek-v4-pro",
-		display_name: "DeepSeek V4 Pro (Qwen plan)",
-		created_at: null,
-	},
+	// NOT listed here: `deepseek-v4-pro`, which the plan also resells and wins on
+	// cost. It is a DeepSeek id — this list is what Qwen ADVERTISES, and adding a
+	// foreign vendor's model to it would restate a fact `src/routes.js` already
+	// owns. collectModels() derives the winner from ROUTES instead, so a table
+	// edit alone moves the id and there is nothing to keep in step by hand.
 ];
 
 /** OpenRouter ids as Anthropic-skin compatible (HTTP 200 + message shape at POST
@@ -432,9 +426,14 @@ export async function collectModels(config) {
 
 	const settled = await Promise.allSettled(legs.map((leg) => leg()));
 
+	/** @type {ModelEntry[]} */
 	const data = [];
 	const seen = new Set();
 	const _errors = [];
+	// Every bare id any leg returned, so a route whose winner does not advertise
+	// the model can still be published from the entry its origin vendor supplied.
+	/** @type {Map<string, ModelEntry>} */
+	const byBareId = new Map();
 	for (const s of settled) {
 		// leg thunks never reject, but guard defensively.
 		const r = s.status === "fulfilled" ? s.value : { provider: "unknown", error: "fetch failed" };
@@ -448,23 +447,69 @@ export async function collectModels(config) {
 			// `<provider>:<id>` lens so they stay selectable. Which is which comes
 			// from the probed table — an id absent from it has no dedup to do and
 			// keeps the bare spelling on whichever leg emitted it.
-			const ranked = rankRoutes(entry.id);
-			const winner = ranked.find((route) => providerById(config, route.provider))?.provider;
+			//
+			// The WINNER is derived, never re-stated in a leg's catalog: a leg says
+			// what it advertises, ROUTES says who serves what, and the bare id is
+			// emitted by whichever backend wins — even if that backend's own list
+			// does not mention it (see below). Restating a route in a catalog would
+			// be the same curated fact in two places, i.e. drift waiting to happen.
+			if (!byBareId.has(entry.id)) byBareId.set(entry.id, entry);
+			const winner = winnerOf(entry.id, config);
 			const loses = winner !== undefined && winner !== r.provider;
-			const id = loses ? `${r.provider}:${entry.id}` : entry.id;
-			if (seen.has(id)) continue;
-			seen.add(id);
-			data.push({
-				// Window is looked up on the BARE id, then the (possibly prefixed) id
-				// is applied — the curated table is keyed by vendor id, and an alias
-				// is the same model reached another way, so it has the same window.
-				...withContextWindow(entry),
-				id,
-				provider: r.provider,
-				tier: tierOf(r.provider),
-				grade: gradeOf(entry.id),
-			});
+			push(entry, loses ? `${r.provider}:${entry.id}` : entry.id, r.provider);
 		}
 	}
+
+	// Cross-vendor routes the winner does not advertise. `deepseek-v4-pro` is the
+	// case: the Qwen plan resells it (cheapest route), but it is a DeepSeek id and
+	// has no business in Qwen's own catalog — Qwen advertises qwen* models. So the
+	// bare id arrives from the DeepSeek leg, is republished there as
+	// `deepseek:deepseek-v4-pro` (the losing route), and the bare spelling is
+	// emitted here, attributed to the winner. Without this the id would vanish
+	// entirely: every leg that has it sees itself as the loser.
+	//
+	// Derived from ROUTES + what the legs actually returned, so a table edit alone
+	// moves the id. Nothing to keep in step by hand.
+	for (const [id, entry] of byBareId) {
+		const winner = winnerOf(id, config);
+		if (winner === undefined || seen.has(id)) continue;
+		push(entry, id, winner);
+	}
+
 	return { data, _errors };
+
+	/** Cheapest REGISTERED backend for an id, or undefined if the table is silent. */
+	function winnerOf(id, cfg) {
+		return rankRoutes(id).find((route) => providerById(cfg, route.provider))?.provider;
+	}
+
+	/**
+	 * Append, or — for an entry derived after its leg already ran — slot in with
+	 * that provider's other rows. Consumers group by provider (list-models.js
+	 * prints a blank line whenever it changes), so a trailing row would open a
+	 * second, one-model group for a backend already listed above.
+	 * @param {ModelEntry} entry
+	 * @param {string} id
+	 * @param {string} provider
+	 */
+	function push(entry, id, provider) {
+		if (seen.has(id)) return;
+		seen.add(id);
+		// Scan back to just after this provider's last row. If it has none yet
+		// (a new group), the scan runs to 0 — so fall back to appending, which is
+		// what the in-order leg loop wants.
+		let at = data.length;
+		while (at > 0 && data[at - 1].provider !== provider) at--;
+		if (at === 0) at = data.length;
+		data.splice(at, 0, {
+			// Window is looked up on the BARE id, then the (possibly prefixed) id is
+			// applied — the curated table is keyed by vendor id, and an alias is the
+			// same model reached another way, so it has the same window.
+			...withContextWindow(entry),
+			id,
+			provider,
+			tier: tierOf(provider),
+			grade: gradeOf(entry.id),
+		});
+	}
 }

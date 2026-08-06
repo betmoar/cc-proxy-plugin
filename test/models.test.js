@@ -77,12 +77,13 @@ describe("models.js pure helpers", () => {
 				"qwen3.6-flash",
 				// Not qwen-branded: a DeepSeek build the plan serves under its own dated
 				// spelling, unknown to DeepSeek native. Routed by the DATED_ID rule.
+				// It belongs here because it exists NOWHERE ELSE — the plan is the only
+				// backend that has it, so no other catalog could supply it.
 				"deepseek-v4-flash-0731",
-				// Resold, and the CHEAPEST route to it. The plan leg must publish the
-				// bare id because the route table awards it to qwen — if this row is
-				// dropped, the winner emits nothing and deepseek-v4-pro disappears
-				// from discovery instead of falling back to the native leg.
-				"deepseek-v4-pro",
+				// deepseek-v4-pro is deliberately ABSENT even though the plan resells it
+				// and wins on cost: it is a DeepSeek id, and restating a route in a
+				// catalog would duplicate what src/routes.js owns. collectModels()
+				// derives the winner from ROUTES.
 			],
 		);
 		for (const m of DEFAULT_QWEN_MODELS) {

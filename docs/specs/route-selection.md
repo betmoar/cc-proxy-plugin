@@ -267,6 +267,13 @@ lens nor a strip applied.
 
 - `collectModels()` emits one entry per **canonical** id (deduped across backends by
   `rankRoutes`), plus prefixed entries for the losing routes.
+- **The winner is derived, never restated.** A leg's catalog lists what that
+  backend advertises; `ROUTES` says who serves what. When the cheapest backend
+  does not advertise a model it resells (the plan's `deepseek-v4-pro` — a
+  DeepSeek id with no business in Qwen's list), the bare entry is emitted from
+  whichever leg *did* return it and attributed to the winner. Adding the id to
+  the winner's catalog instead would duplicate a curated fact across two files.
+  → `test/routes.test.js` "no static catalog restates a route it does not own".
 - Each entry gains `provider` (winning backend) and `tier` (integer 1–4).
 - `MODEL_TIERS` moves from `scripts/render-models.js:42` into `src/models.js` and is
   published as **`grade`** — the capability axis, deliberately a separate field from
