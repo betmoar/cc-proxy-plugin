@@ -60,35 +60,70 @@ Two consequences worth stating plainly:
   leaves.
 - We own the spelling, so it is free to change without vendor coordination.
 
-### Both separators; canonical is `/`
+### Colon is the ONLY separator; `/` keeps meaning OpenRouter
 
-`<provider>/<model>` and `<provider>:<model>` both parse, when the leading segment
-is a **registered provider id**. `/` is canonical for display and is verified to
-survive Claude Code's `/model` picker today; `:` is carried because neither the
-picker nor `ANTHROPIC_CUSTOM_MODEL_OPTION` is public API and `/` could be mangled by
-a future CC release.
+`<provider>:<model>`, and nothing else. `/` is left entirely to OpenRouter's
+existing `includes("/")` predicate, forever.
+
+Probed 2026-08-06 — Claude Code's `/model` picker accepts a colon id and it
+reaches the proxy:
+
+```
+[2026-08-06T15:32:53.838Z] qwen:qwen3.7-max -> qwen /v1/messages?beta=true
+```
+
+(The upstream 400 that followed is the lens leaking — nothing strips the prefix
+yet. That is the half this spec adds.)
+
+**Why a `/` selector was dropped rather than carried as a second spelling:** the
+bare id already resolves to the cheapest route and the slash form already
+resolves to the most expensive one. Verified against the live registry:
+
+| spelling | route | tier |
+|---|---|---|
+| `qwen3.7-max` | qwen plan | 2 |
+| `qwen/qwen3.7-max` | openrouter | 4 |
+| `deepseek-v4-pro` | qwen plan | 2 |
+
+So a `/` selector buys nothing in either direction. Its one unique job was
+naming a plan-resold id under a foreign vendor name (`qwen/deepseek-v4-pro`), and
+`qwen:deepseek-v4-pro` does that identically — without touching OpenRouter's
+namespace, without consulting any catalog, and without breaking a single existing
+test.
+
+Consequently `test/router.test.js:65,77,179` (the `deepseek/*` and `qwen/*`
+collision-locks) stay green **as written**. There is no breaking change here.
+
+### The selector parse is explicit and runs FIRST
+
+Today's colon handling is accidental and mostly wrong — the ids that work do so
+by luck:
+
+```
+qwen:qwen3.7-max          -> qwen        (luck: startsWith("qwen"))
+glm:glm-5.2               -> claude      (fallback — wrong)
+deepseek:deepseek-v4-pro  -> claude      (fallback — wrong)
+openrouter:tencent/hy3    -> openrouter  (luck: includes("/"))
+```
+
+`parseModelSelector(model, config)` matches `^(<registered provider id>):(.+)$`
+and nothing else. No catalog lookup. The tail **keeps any slash it carries**, so
+`openrouter:tencent/hy3` yields tail `tencent/hy3`. It runs strictly ahead of
+every predicate, so nothing can resolve by coincidence.
 
 ### Provider == name prefix ⇒ no prefix rendered
 
-`glm/glm-5.2` resolves, but canonicalizes to `glm-5.2`. A prefix is *rendered* only
-on a **dedup hit** — a backend carrying a model whose id does not begin with that
-backend's own name. Hence the target listing:
+`glm:glm-5.2` resolves, but canonicalizes to `glm-5.2`. A prefix is *rendered*
+only on a **dedup hit** — a backend carrying a model whose id does not begin with
+that backend's own name. Hence the target listing:
 
 ```
 glm-5.2                       GLM
 deepseek-v4-pro               DeepSeek
 qwen3.8-max                   Qwen
-qwen/deepseek-v4-pro          Qwen   <- dedup hit, prefix rendered
-qwen/deepseek-v4-flash-0731   Qwen   <- dedup hit, prefix rendered
+qwen:deepseek-v4-pro          Qwen   <- dedup hit, prefix rendered
+qwen:deepseek-v4-flash-0731   Qwen   <- dedup hit, prefix rendered
 ```
-
-### OpenRouter catalog ids beat prefix parsing
-
-`deepseek/deepseek-v4-pro` is a literal OpenRouter vendor id and keeps meaning
-OpenRouter. The selector parser checks `config.openRouterModels` **first**;
-`openrouter/<vendor>/<model>` is the explicit escape hatch. This is why OpenRouter's
-`includes("/")` predicate can survive unchanged: the aggregator still owns the whole
-slash namespace, and the lens sits in front of it.
 
 ### Prefix-strip rewrites `body.model`
 
@@ -171,32 +206,62 @@ on Z.ai) without special-casing it.
   `match()` predicates. `ROUTES` subsumes them.
 - Otherwise leave every predicate **unchanged** — they are the fallback for ids the
   table has never seen.
-- Add `parseModelSelector(model, config)` → `{ providerId | null, model }`.
-  Order: (a) exact hit in `config.openRouterModels` → no selector;
-  (b) `^(<registered provider id>)[/:](.+)$` → selector + tail; (c) no selector.
+- Add `parseModelSelector(model, config)` → `{ providerId | null, model }`:
+  match `^(<registered provider id>):(.+)$`, else no selector. No catalog lookup,
+  no `/` case; the tail keeps any slash it has.
 
 ### `src/router.js`
 
 ```
-1. claude-haiku-*                   -> claude                    (invariant 4, unchanged)
-2. parseModelSelector -> providerId -> that provider if registered
-3. ROUTES[model] -> rankRoutes      -> first candidate that is registered
-4. first non-default p.match(model)                              (unchanged)
-5. defaultProvider                                               (unchanged)
+0. parseModelSelector             -> { providerId, tail }
+1. tail startsWith claude-haiku-  -> claude   ALWAYS, selector discarded
+2. providerId, if registered      -> that provider
+3. ROUTES[tail] -> rankRoutes     -> first candidate that is registered
+4. first non-default p.match(tail)                              (unchanged predicate)
+5. defaultProvider                                              (unchanged)
 ```
 
+**Step 1 tests the stripped tail, not the raw input** — and it outranks the
+selector. `src/router.js:20` currently pins on `startsWith("claude-haiku-")`
+against the raw string, so a prefixed id would skip the pin entirely and the body
+rewrite would then send the *bare* haiku id to a third party:
+
+```
+glm:claude-haiku-4-5-20251001  -> glm    *** haiku leaves Claude, quota burned ***
+```
+
+That is invariant 4, not a preference, so a `claude-haiku-*` tail discards any
+selector rather than honoring it.
+
 `resolve()` now returns `{ provider, upstreamModel }`; `upstreamModel` differs from
-the input only when a selector was stripped. **This is a signature change** — every
-call site must be updated: `src/server.js` (routing log + forward),
-`scripts/list-models.js:94` `attribute()`. A missed call site silently routes on the
-un-stripped id, so a thin `resolveProvider()` wrapper is acceptable if the diff gets
-noisy.
+the input only when a selector was stripped. **This is a signature change** with
+three call sites, not two:
+
+- `src/server.js:178` — `handleProxy`, the live path.
+- `scripts/list-models.js:95` — `resolve(id, { providers })`.
+- `test/models.test.js:94`.
+
+A missed call site silently routes on the un-stripped id, so a thin
+`resolveProvider()` wrapper is acceptable if the diff gets noisy.
 
 ### Body rewrite
 
-In the place the body is already parsed for the thinking-strip: if
-`upstreamModel !== body.model`, set it — nothing else. Applies on **both** the
-streaming and buffered paths; they are separate code.
+`handleProxy` already holds the parsed `body` **before** either path branches, so
+one decision serves both. Note the streaming path does *not* parse the body
+itself (`src/server.js:196-198` hands `outboundBuffer` straight to `forward()`),
+and `outboundBuffer` reuses `bodyBuffer` byte-for-byte when nothing was stripped
+(`:182-185`). Extend that same condition:
+
+```js
+const rewritten = upstreamModel !== body.model;
+if (rewritten) stripped.body.model = upstreamModel;
+const outboundBuffer = (stripped.modified || rewritten)
+  ? Buffer.from(JSON.stringify(stripped.body))
+  : bodyBuffer;
+```
+
+No second parse, and the byte-for-byte reuse survives untouched when neither a
+lens nor a strip applied.
 
 ### `src/models.js` — discovery
 
@@ -233,11 +298,15 @@ Reuses `formatContextWindow` (`:61`) and `DEEPSEEK_PRICING` (`src/models.js:263`
   before resold plan for `glm-5.2`); non-200 routes never returned; every `ROUTES`
   provider id is a real provider id; coverage check (every discovery id is in
   `ROUTES` *or* matched by a predicate).
-- **`test/router.test.js`** — `qwen/deepseek-v4-pro` → qwen with `upstreamModel`
-  stripped; `qwen:deepseek-v4-pro` identical; `deepseek/deepseek-v4-pro` still →
-  openrouter; `openrouter/qwen/qwen3.7-max` → openrouter unstripped; a selector
-  naming an unregistered provider falls through rather than erroring. Every existing
-  test must still pass — especially "dated `claude-*` ids stay on Claude".
+- **`test/router.test.js`** — `qwen:deepseek-v4-pro` → qwen with `upstreamModel`
+  stripped to the bare id; `glm:glm-5.2` → glm (selector honored where luck
+  previously sent it to the default); `openrouter:tencent/hy3` → openrouter with
+  the slash-bearing tail intact; `deepseek/deepseek-v4-pro` still → openrouter
+  (slash untouched); a selector naming an unregistered provider falls through
+  rather than erroring; **`glm:claude-haiku-4-5-20251001` → claude** (invariant 4
+  outranks the lens). Every existing test must still pass — the slash
+  collision-locks at `:65,:77,:179` unmodified, and "dated `claude-*` ids stay on
+  Claude".
 - **`test/server.test.js`** — end-to-end against a local stub: a prefixed id arrives
   upstream carrying the **bare** `model`, on both the streaming and buffered paths;
   a non-prefixed body stays byte-identical.
@@ -246,18 +315,26 @@ Reuses `formatContextWindow` (`:61`) and `DEEPSEEK_PRICING` (`src/models.js:263`
 
 ## Verification
 
+Baseline before any edit, measured 2026-08-06: **250 tests / 248 pass / 0 fail /
+2 skipped**. Report the delta against exactly that.
+
 ```bash
-pnpm check                                   # lint + suite, must be green
+pnpm check                                   # 0 fail; no previously-passing test regresses
 curl -sX POST localhost:4000/_shutdown       # then restart the proxy
 curl -s localhost:4000/v1/models | jq '.data[] | {id,provider,tier,grade}'
 node scripts/list-models.js                  # visual: matches the grouping above
 pnpm models:html                             # only AFTER the restart
 ```
 
-Live route check (bills real tokens, run once): `/model qwen/deepseek-v4-pro` then
-`/model deepseek-v4-pro`. The first must report ~+79 input tokens against an
-identical prompt — that gap is the proof the two routes are genuinely distinct and
-that the lens is doing something.
+Live checks (bill real tokens, run once each):
+
+- `/model qwen:deepseek-v4-pro` must now **succeed** where it 400s today, and the
+  proxy log must show `qwen:deepseek-v4-pro -> qwen` with the upstream body
+  carrying bare `deepseek-v4-pro`.
+- `/model glm:claude-haiku-4-5-20251001` must log `-> claude`.
+- `/model qwen:deepseek-v4-pro` vs `/model deepseek-v4-pro` on an identical
+  prompt: the plan route should report ~+79 input tokens. That gap is the proof
+  the two routes are genuinely distinct and the lens is doing something.
 
 ## Risks
 
@@ -265,5 +342,9 @@ that the lens is doing something.
   fallback (correct, possibly more expensive) rather than failing — acceptable — but
   a rename that the predicates *don't* catch drops the model out of discovery.
   Re-probe before each release; no offline test can catch this.
-- **`:` may not survive the `/model` picker.** `/` is the fallback and works today.
-- **`resolve()` signature change** touches every call site.
+- **`resolve()` signature change** touches three call sites; a missed one silently
+  routes on the un-stripped id.
+- **A provider id that prefixes a real model id** would make the parse ambiguous.
+  None does today (`glm`, `qwen`, `deepseek`, `openrouter`, `claude` vs ids that
+  all continue with `-` or a digit), but the parse requires a literal `:` so the
+  ambiguity cannot arise without a vendor shipping a colon in an id.
