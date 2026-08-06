@@ -87,13 +87,18 @@ The second active normalization, same spirit as overflow: GLM's `1302` request-r
 ### Model discovery (`/v1/models`)
 
 `GET /v1/models` synthesizes a merged model list rather than forwarding. It lives
-outside the router because it aggregates across backends: GLM and DeepSeek are
-fetched live, while Claude, OpenRouter, and Qwen come from curated static lists
-(Qwen's host exposes no `/models` route — it 404s). The discovery list advertises
+outside the router because it aggregates across backends: GLM, DeepSeek, Qwen,
+and OpenRouter are fetched live, while Claude is a curated static list. Each live
+leg keeps a curated list as its offline fallback. Qwen's catalog is on the
+OpenAI-compatible path (`/compatible-mode/v1/models`), not the Anthropic skin the
+proxy forwards to (`/apps/anthropic/v1/models`, which 404s "Not support") — that
+asymmetry is why this leg was static for so long. The discovery list advertises
 only generally-reachable models (Glasswing-gated and region-blocked ids are
-omitted). Best-effort by design: a failed live leg yields an `_errors` entry, not
-a failed response, keeping the endpoint stateless (invariant 2) and the fan-out
-non-blocking.
+omitted); ids a backend serves that this proxy cannot use (multimodal, `:batch`,
+`~latest` aliases) are published with `usable: false` rather than dropped, and
+the field is absent when the entry is usable. Best-effort by design: a failed
+live leg yields an `_errors` entry, not a failed response, keeping the endpoint
+stateless (invariant 2) and the fan-out non-blocking.
 
 Each entry carries a non-standard `context_window` when its id has a curated
 window (`src/models.js` `CONTEXT_WINDOW`, attached uniformly by
@@ -167,7 +172,7 @@ cc-proxy-plugin/                    ← the plugin IS the repo root; the marketp
 │   ├── proxy.js                    upstream forwarding (transparent pipe)
 │   ├── server.js                   HTTP server, overflow conversion, /_status
 │   ├── sanitize.js                 strips thinking blocks from history
-│   └── models.js                   /v1/models discovery: fans out to GLM + DeepSeek (live) + Claude/OpenRouter/Qwen (static), merges best-effort
+│   └── models.js                   /v1/models discovery: fans out to GLM + DeepSeek + Qwen + OpenRouter (live, curated fallback) + Claude (static), merges best-effort
 ├── hooks/                          SessionStart proxy auto-start (proxy-lifecycle.js)
 ├── scripts/statusline.js           quota / credits / proxy-down indicator
 ├── scripts/status.js               /cc-proxy:status report builder

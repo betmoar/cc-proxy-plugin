@@ -73,23 +73,31 @@ Each is locked by tests; the test names tell you what you broke.
 
 ## Couplings — if you touch X, you must also update Y
 
-- **Routes are DERIVED from `ROUTES`, never restated in a catalog.** A leg's
-  static list says what that backend *advertises* (its own vendor's models, or
-  an id that exists nowhere else — `deepseek-v4-flash-0731` is plan-only, so the
-  plan is its only possible source). `src/routes.js` says who *serves* what.
-  `collectModels()` publishes the bare id under the cheapest registered backend
-  and republishes losers as `<provider>:<id>`, deriving the winner — so a
-  cross-vendor route like the plan's `deepseek-v4-pro` needs NO catalog entry,
-  and a one-line `200`→`403` edit in `ROUTES` moves the id on its own
-  (verified: bare id flips qwen t2 → deepseek t3 and the `deepseek:` alias
-  disappears, no other file touched).
-  The first implementation did the opposite — it added `deepseek-v4-pro` to
-  `DEFAULT_QWEN_MODELS` so the winner had something to publish. That is the same
-  curated fact in two places, i.e. exactly the drift the coupling tests exist to
-  stop, and it is now forbidden rather than required. → `test/routes.test.js`
-  "no static catalog restates a route it does not own" (mutation-verified; note
-  the check keys on *vendor ownership*, not on who currently wins — when the
-  lister IS the winner the two look identical, and that case must still fail).
+- **A catalog says what a backend SERVES; `ROUTES` says who serves it CHEAPEST;
+  namespace ownership decides the SPELLING.** Three questions, three places —
+  keep them separate. A leg's static list is the offline mirror of that
+  backend's live catalog, so it legitimately includes FOREIGN ids: the Qwen plan
+  really does serve `glm-5.2` and `deepseek-v4-pro`, and omitting them would
+  make the fallback publish a different list than the live fetch. That is not a
+  restatement of the route table — the two answer different questions.
+  What must hold: a foreign id in a catalog has a `200` `ROUTES` entry naming
+  that backend, or the catalog claims a route nothing has ever probed.
+  → `test/routes.test.js` "a catalog may list a foreign id it serves — the lens
+  keeps it unambiguous", plus its looser sibling "every id that a static catalog
+  publishes has a route or a predicate".
+  Display then follows **ownership, not cost** (`ownsId` in `src/models.js`):
+  a backend publishes ids in its own namespace bare and everything else under
+  the `<provider>:` lens, so `deepseek-v4-pro` stays bare on DeepSeek's card and
+  appears as `qwen:deepseek-v4-pro` on the plan's. Routing is still cost-ranked
+  and independent of that — the bare id resolves to the cheapest route, which
+  for `deepseek-v4-pro` is the plan, not the vendor whose namespace it is.
+  **Reversed 7b4361c.** The prior rule was the opposite — catalogs listed only
+  their own vendor's ids, `collectModels()` derived the winner, and a foreign
+  entry was forbidden (locked by a now-deleted test "no static catalog restates
+  a route it does not own"). That held while catalogs were hand-curated. Once
+  the Qwen and OpenRouter legs became LIVE fetches, a catalog stopped being a
+  curated opinion and became a mirror of someone else's response, which the
+  fallback must match. If you make a leg static again, this reverses back.
 - **Capability grade lives in `src/models.js` only.** `MODEL_GRADES` (+
   `gradeOf`) is published on `/v1/models` as `grade`;
   `scripts/render-models.js` re-exports it as `MODEL_TIERS` and must never
