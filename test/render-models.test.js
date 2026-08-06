@@ -1,8 +1,13 @@
 import { strict as assert } from "node:assert";
+import { execFile as execFileCb } from "node:child_process";
 import fs from "node:fs";
+import http from "node:http";
 import path from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
+
+const execFile = promisify(execFileCb);
 import { CONTEXT_WINDOW } from "../scripts/list-models.js";
 import { MODEL_TIERS, conduitSvg, groupByProvider } from "../scripts/render-models.js";
 import {
@@ -338,5 +343,146 @@ describe("route aliases keep their model's grade", () => {
 		assert.equal(MODEL_TIERS["deepseek/deepseek-v4-pro"], "Flagship", "curated separately");
 		const [card] = groupByProvider([{ id: "vendor/never-seen", provider: "openrouter" }]).values();
 		assert.equal(card.models[0].tier, "Specialist", "unknown slash id falls to the default");
+	});
+});
+
+// The gap an adversarial review proved on 2026-08-07: every test above reads
+// the COMMITTED docs/models.html, so reintroducing the renderer's attribution
+// defect left all 17 of them green. The panel had to drive render-models.js
+// against a stub proxy to show the bug was real. These tests close that — they
+// run the renderer as a subprocess against a fake /_status + /v1/models, so a
+// regression fails the gate instead of waiting for someone to regenerate.
+describe("render-models against a live-shaped proxy", () => {
+	/** Serve the two endpoints the renderer fetches, then run it and return stdout. */
+	async function render(modelsData, env = {}) {
+		const server = http.createServer((req, res) => {
+			const body = req.url.startsWith("/_status")
+				? JSON.stringify({
+						port: 0,
+						version: "test",
+						defaultBackend: "claude",
+						providers: ["glm", "deepseek", "qwen", "claude"],
+					})
+				: JSON.stringify({ object: "list", data: modelsData });
+			res.writeHead(200, { "content-type": "application/json" });
+			res.end(body);
+		});
+		await new Promise((r) => server.listen(0, "127.0.0.1", r));
+		const { port } = server.address();
+		try {
+			const script = path.join(
+				path.dirname(fileURLToPath(import.meta.url)),
+				"../scripts/render-models.js",
+			);
+			const { stdout } = await execFile(process.execPath, [script], {
+				env: {
+					...process.env,
+					...env,
+					PROXY_PORT: String(port),
+					GLM_API_KEY: "g",
+					DEEPSEEK_API_KEY: "d",
+					DASHSCOPE_API_KEY: "q",
+				},
+				maxBuffer: 32 * 1024 * 1024,
+			});
+			return stdout;
+		} finally {
+			server.close();
+		}
+	}
+
+	const cardFor = (html, h2) => {
+		const i = html.indexOf(`<h2>${h2}</h2>`);
+		assert.ok(i > 0, `${h2} card missing`);
+		return html.slice(html.lastIndexOf("<section", i), html.indexOf("</section>", i));
+	};
+
+	// Discovery publishes BOTH spellings; the bare one is owned by DeepSeek while
+	// the plan's copy carries the qwen: lens. Re-deriving the provider through the
+	// cost-ranked router (the defect) collapses both onto Qwen and deletes the
+	// DeepSeek card entirely.
+	const DUAL = [
+		{ type: "model", id: "deepseek-v4-pro", display_name: "P", provider: "deepseek", tier: 3 },
+		{ type: "model", id: "qwen:deepseek-v4-pro", display_name: "P", provider: "qwen", tier: 2 },
+		{ type: "model", id: "qwen3.8-max", display_name: "M", provider: "qwen", tier: 2 },
+	];
+
+	it("files each row under the provider DISCOVERY published, not the cheapest route", async () => {
+		const html = await render(DUAL);
+		assert.ok(
+			cardFor(html, "DeepSeek").includes(">deepseek-v4-pro<"),
+			"the owning vendor must keep its bare id — re-deriving sends it to the cheaper plan",
+		);
+		const qwen = cardFor(html, "Qwen");
+		assert.ok(qwen.includes("qwen:deepseek-v4-pro"), "the plan's copy renders under its lens");
+		assert.ok(
+			!qwen.includes(">deepseek-v4-pro<"),
+			"the bare id must not ALSO appear on Qwen — that is the duplicate row",
+		);
+	});
+
+	it("drops unusable entries and caps a card, declaring what it hid", async () => {
+		const many = Array.from({ length: 25 }, (_, i) => ({
+			type: "model",
+			id: `glm-9.${i}`,
+			display_name: `G${i}`,
+			provider: "glm",
+			tier: 2,
+		}));
+		const html = await render([
+			...many,
+			{ type: "model", id: "glm-x", display_name: "X", provider: "glm", usable: false },
+		]);
+		assert.ok(!html.includes(">glm-x<"), "an unusable entry is not selectable, so it is not shown");
+		const glm = cardFor(html, "GLM");
+		assert.match(glm, /20 of 25 models/, "a capped card states both numbers");
+		assert.equal([...glm.matchAll(/<div class="mrow">/g)].length, 20);
+		assert.match(glm, /<div class="more">5 more/, "and admits how many it hid");
+	});
+
+	it("MODELS_HTML_LIMIT=0 restores the uncapped list", async () => {
+		const many = Array.from({ length: 25 }, (_, i) => ({
+			type: "model",
+			id: `glm-9.${i}`,
+			display_name: `G${i}`,
+			provider: "glm",
+			tier: 2,
+		}));
+		const html = await render(many, { MODELS_HTML_LIMIT: "0" });
+		assert.equal([...cardFor(html, "GLM").matchAll(/<div class="mrow">/g)].length, 25);
+		assert.ok(!html.includes('class="more"'), "nothing hidden, so nothing to declare");
+	});
+
+	it("orders by grade first, then newest within a grade", async () => {
+		// A fresh Economy model must not displace a Flagship on a capped card —
+		// sorting on date alone was the tempting simplification.
+		const html = await render([
+			{
+				type: "model",
+				id: "glm-4.5",
+				display_name: "old-economy",
+				provider: "glm",
+				created_at: "2020-01-01T00:00:00Z",
+			},
+			{
+				type: "model",
+				id: "glm-5.2",
+				display_name: "flagship",
+				provider: "glm",
+				created_at: "2019-01-01T00:00:00Z",
+			},
+			{
+				type: "model",
+				id: "glm-4.6",
+				display_name: "new-economy",
+				provider: "glm",
+				created_at: "2026-01-01T00:00:00Z",
+			},
+		]);
+		const ids = [...cardFor(html, "GLM").matchAll(/<span class="mname">([^<]+)<\/span>/g)].map(
+			(m) => m[1],
+		);
+		assert.equal(ids[0], "glm-5.2", "Flagship leads despite being the oldest");
+		assert.deepEqual(ids.slice(1), ["glm-4.6", "glm-4.5"], "within Economy, newest first");
 	});
 });

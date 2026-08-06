@@ -3,8 +3,15 @@
 **Target repo:** `cc-proxy-plugin`. Touches `src/router.js`, `src/providers.js`,
 `src/models.js`, plus a new `src/routes.js`.
 
-**Status:** design, implementation-ready. Written 2026-08-06. Route matrix probed
-2026-08-04 (see CLAUDE.md backlog item 8 for the raw probe output).
+**Status:** SHIPPED 2026-08-07 on `feat/route-selection`. Written 2026-08-06 as a
+design. Route matrix probed 2026-08-04 (see CLAUDE.md backlog item 8 for the raw
+probe output).
+
+**Read this as the design record, not as current behavior.** Where the
+implementation departed from the design the section says so inline (see
+"discovery" below — the biggest departure by far). For what the code does today,
+`CLAUDE.md` and the tests are authoritative; this file explains *why* the shape
+is what it is.
 
 ---
 
@@ -267,13 +274,28 @@ lens nor a strip applied.
 
 - `collectModels()` emits one entry per **canonical** id (deduped across backends by
   `rankRoutes`), plus prefixed entries for the losing routes.
-- **The winner is derived, never restated.** A leg's catalog lists what that
-  backend advertises; `ROUTES` says who serves what. When the cheapest backend
-  does not advertise a model it resells (the plan's `deepseek-v4-pro` — a
-  DeepSeek id with no business in Qwen's list), the bare entry is emitted from
-  whichever leg *did* return it and attributed to the winner. Adding the id to
-  the winner's catalog instead would duplicate a curated fact across two files.
-  → `test/routes.test.js` "no static catalog restates a route it does not own".
+- **SUPERSEDED IN IMPLEMENTATION — three axes, not two.** This section originally
+  said "the winner is derived, never restated": a catalog listed only its own
+  vendor's ids, `collectModels()` derived the bare entry from whoever won the
+  cost rank, and a foreign catalog entry was forbidden (locked by a test named
+  "no static catalog restates a route it does not own", since deleted).
+  That held while catalogs were hand-curated. It stopped holding when the Qwen
+  and OpenRouter legs became LIVE fetches: a catalog is then a mirror of another
+  host's response, and its offline fallback must match — foreign ids included,
+  or the fallback publishes a different list than the live path.
+  What shipped instead separates three questions that the original conflated:
+  - a **catalog** says what a backend SERVES (foreign ids allowed; each needs a
+    `200` `ROUTES` entry naming that backend, or it claims an unprobed route),
+  - **`ROUTES`** says who serves it CHEAPEST — this is what the bare id resolves
+    to,
+  - **namespace ownership** (`ownsId`) decides the published SPELLING: own
+    namespace bare, everything else under the `<provider>:` lens.
+  So `deepseek-v4-pro` is published bare under DeepSeek and as
+  `qwen:deepseek-v4-pro` under the plan, while the bare id ROUTES to the plan.
+  Listing and routing disagree deliberately.
+  → `test/routes.test.js` "a catalog may list a foreign id it serves — the lens
+  keeps it unambiguous", plus "every id that a static catalog publishes has a
+  route or a predicate". Both mutation-verified.
 - Each entry gains `provider` (winning backend) and `tier` (integer 1–4).
 - `MODEL_TIERS` moves from `scripts/render-models.js:42` into `src/models.js` and is
   published as **`grade`** — the capability axis, deliberately a separate field from
