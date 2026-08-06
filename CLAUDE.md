@@ -499,3 +499,7 @@ tests in `providers.test.js` + `router.test.js`. Never a router/server change.
     skew by up to the round-trip time — 60s is safe, 5s would false-positive on
     a slow network. Pure insurance while the clock is correct, which is exactly
     when it is cheap to write.
+
+## Operator
+
+@OPERATOR.md — it is this session's operating charter.
