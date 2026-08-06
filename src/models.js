@@ -283,13 +283,27 @@ export function parseOpenRouterModels(str) {
 
 /**
  * Coerce an upstream created value to the Anthropic schema (ISO string or null).
- * A numeric (OpenAI-style Unix) timestamp is dropped to null rather than emitted
- * as a non-ISO value.
+ *
+ * A numeric (OpenAI-style Unix) timestamp is CONVERTED, not dropped. It used to
+ * return null here, on the reasoning that a non-ISO value must never reach the
+ * wire — correct, but converting honors that better than discarding does, and
+ * discarding cost real information: OpenRouter sends `created` as unix seconds
+ * for all ~400 of its models, so the old rule nulled the date on 372 of the 396
+ * published entries and made "sort by newest" impossible for any consumer.
+ *
+ * Seconds vs milliseconds is decided by magnitude: a seconds-epoch past ~2001 is
+ * >1e9, and the same number read as ms is 1970. Anything at or above 1e12 is
+ * therefore already ms. Non-finite, negative, and out-of-range values still go
+ * to null rather than emitting `Invalid Date`.
  * @param {unknown} v
  * @returns {string | null}
  */
 export function coerceCreated(v) {
-	return typeof v === "string" ? v : null;
+	if (typeof v === "string") return v;
+	if (typeof v !== "number" || !Number.isFinite(v) || v <= 0) return null;
+	const ms = v >= 1e12 ? v : v * 1000;
+	const d = new Date(ms);
+	return Number.isNaN(d.getTime()) ? null : d.toISOString();
 }
 
 /**

@@ -149,13 +149,17 @@ describe("docs/models.html artifact", () => {
 	);
 
 	it("contains every curated (non-live) discovery id", () => {
-		// Only the static lists — GLM and DeepSeek are fetched live, so their
-		// rows legitimately depend on what the vendor returned at render time.
-		const curated = [
-			...DEFAULT_QWEN_MODELS.map((m) => m.id),
-			...DEFAULT_CLAUDE_MODELS.map((m) => m.id),
-			...DEFAULT_OPENROUTER_MODELS.map((m) => m.id),
-		];
+		// NARROWED TWICE, both times because the premise moved:
+		// (1) Qwen and OpenRouter became LIVE legs — their static lists are now
+		//     offline FALLBACKS, so what renders is whatever the vendor returned,
+		//     not these ids. Asserting on them tested the fallback, not the page.
+		// (2) Cards are capped at ROW_LIMIT, so even a genuinely-served id can be
+		//     legitimately absent when it ranks below the cut (this is how
+		//     `tencent/hy3` started failing: real, reachable, just not top-20).
+		// Claude is the only leg still truly static — no catalog endpoint — so it
+		// is the only one whose curated ids MUST all appear. It is also small
+		// enough to never be capped, which is what makes the assertion sound.
+		const curated = DEFAULT_CLAUDE_MODELS.map((m) => m.id);
 		for (const id of curated) {
 			// The renderer inserts <wbr> after the namespace slash; match the
 			// rendered form rather than the raw id.
@@ -167,14 +171,57 @@ describe("docs/models.html artifact", () => {
 		}
 	});
 
-	it("its model count matches the rows it actually renders", () => {
+	it("an uncapped card renders its whole leg — the cap is the only thing that hides a row", () => {
+		// Replaces the coverage the narrowed test above gave up. A card with no
+		// "N of M" header is claiming completeness, so its drawn rows must equal
+		// the count it prints. This still catches a silently-dropped model on
+		// every small leg (GLM, DeepSeek, Qwen, Claude) without asserting that a
+		// live vendor returned any particular id.
+		for (const card of html.split("<section").slice(1)) {
+			if (!/<h2>/.test(card) || /\d+ of \d+ models/.test(card)) continue;
+			const claim = /· (\d+) models?</.exec(card);
+			assert.ok(claim, "an uncapped card must print its model count");
+			const drawn = [...card.matchAll(/<div class="mrow">/g)].length;
+			assert.equal(
+				drawn,
+				Number(claim[1]),
+				`${/<h2>([^<]+)</.exec(card)[1]} claims ${claim[1]} models but draws ${drawn}`,
+			);
+		}
+	});
+
+	it("its model count matches the rows it renders plus the ones it admits hiding", () => {
+		// The hero counts every REACHABLE model; cards are capped at ROW_LIMIT, so
+		// drawn rows alone no longer add up. What must still hold is that nothing
+		// vanishes silently: hero == drawn + explicitly-declared hidden. A cap that
+		// forgets to print its "N more" line breaks this, which is the point.
 		const claimed = Number(/<span class="n">(\d+)<\/span><span class="k">models/.exec(html)[1]);
 		const rendered = [...html.matchAll(/<div class="mrow">/g)].length;
+		const hidden = [...html.matchAll(/<div class="more">(\d+) more/g)].reduce(
+			(n, m) => n + Number(m[1]),
+			0,
+		);
 		assert.equal(
 			claimed,
-			rendered,
-			`the hero claims ${claimed} models but ${rendered} rows are drawn — regenerate with \`pnpm models:html\``,
+			rendered + hidden,
+			`the hero claims ${claimed} models but ${rendered} rows are drawn and only ${hidden} are declared hidden — regenerate with \`pnpm models:html\``,
 		);
+	});
+
+	it("every capped card declares how many it hid", () => {
+		// A truncated list that does not say so is a false claim about the backend's
+		// scope. Pairs the "N of M models" header with the "N more" footer.
+		const cards = html.split("<section").slice(1);
+		for (const card of cards) {
+			const of = /(\d+) of (\d+) models/.exec(card);
+			if (!of) continue;
+			const [shown, total] = [Number(of[1]), Number(of[2])];
+			const drawn = [...card.matchAll(/<div class="mrow">/g)].length;
+			assert.equal(drawn, shown, `card claims ${shown} shown but draws ${drawn}`);
+			const more = /<div class="more">(\d+) more/.exec(card);
+			assert.ok(more, `a capped card must print its "N more" line`);
+			assert.equal(Number(more[1]), total - shown, "hidden count must be total - shown");
+		}
 	});
 });
 
@@ -224,27 +271,37 @@ describe("render-models route/billing axes", () => {
 		);
 	});
 
-	it("places each model on the card it ROUTES to, per plan-before-credits", () => {
-		// A card shows what it routes, so misplacement here means the page
-		// advertises a backend the proxy does not use. This pair encodes the whole
-		// rule: deepseek-v4-pro moves to the plan (its native route is
-		// credit-billed), glm-5.2 does NOT (Z.ai is itself a plan, and a native
-		// plan outranks a resold one) — it stays on GLM with an "also on plan" tag.
+	it("places each model on the card that OWNS its id, aliases on the reseller", () => {
+		// REVERSED: this used to assert bare `deepseek-v4-pro` renders on the QWEN
+		// card, because the renderer re-derived the provider through the router,
+		// which resolves a bare id to its CHEAPEST route. That put the bare id and
+		// its own `qwen:` alias side by side on one card while DeepSeek's card lost
+		// the model it owns. Display follows NAMESPACE OWNERSHIP; routing follows
+		// cost; the renderer now reads the published `provider` field instead of
+		// recomputing one. Routing itself is unchanged and tested in router.test.js.
 		const cardFor = (h2) => {
 			const i = html.indexOf(`<h2>${h2}</h2>`);
 			assert.ok(i > 0, `${h2} card missing`);
 			return html.slice(html.lastIndexOf("<section", i), html.indexOf("</section>", i));
 		};
+		const qwen = cardFor("Qwen");
 		assert.ok(
-			cardFor("Qwen").includes(">deepseek-v4-pro<"),
-			"deepseek-v4-pro must render on the Qwen card — its native route meters",
+			cardFor("DeepSeek").includes(">deepseek-v4-pro<"),
+			"deepseek-v4-pro is DeepSeek's id — it renders bare on DeepSeek's card",
+		);
+		assert.ok(
+			!qwen.includes(">deepseek-v4-pro<"),
+			"the bare id must NOT also appear on Qwen — that was the duplicate row",
+		);
+		assert.ok(
+			qwen.includes("deepseek-v4-pro<") && /qwen:deepseek-v4-pro/.test(qwen),
+			"the plan advertises it under the qwen: lens",
 		);
 		const glm = cardFor("GLM");
-		assert.ok(glm.includes(">glm-5.2<"), "glm-5.2 must stay on the GLM card");
-		assert.match(glm, /also on plan/, "glm-5.2 is plan-served too — say so");
+		assert.ok(glm.includes(">glm-5.2<"), "glm-5.2 renders bare on the GLM card");
 		assert.ok(
-			!cardFor("Qwen").includes(">glm-5.2<"),
-			"glm-5.2 must NOT move to Qwen: a native plan outranks a resold plan",
+			!qwen.includes(">glm-5.2<"),
+			"bare glm-5.2 must not appear on Qwen; the plan's copy is qwen:glm-5.2",
 		);
 	});
 

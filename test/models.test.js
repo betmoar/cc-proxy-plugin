@@ -125,11 +125,23 @@ describe("models.js pure helpers", () => {
 		assert.deepEqual(parseOpenRouterModels(undefined), []);
 	});
 
-	it("coerceCreated passes strings through, nulls everything else", () => {
+	it("coerceCreated passes strings through and converts unix timestamps", () => {
 		assert.equal(coerceCreated("2026-07-28T00:00:00Z"), "2026-07-28T00:00:00Z");
-		assert.equal(coerceCreated(1700000000), null);
+		// Unix SECONDS (what OpenRouter sends) — converted, not dropped. Dropping
+		// nulled the date on 372 of 396 published entries, which is why the page
+		// could not sort by newest. Magnitude picks the unit: <1e12 is seconds.
+		assert.equal(coerceCreated(1700000000), "2023-11-14T22:13:20.000Z");
+		// Unix MILLISECONDS pass through as ms rather than being multiplied into
+		// the year 55000.
+		assert.equal(coerceCreated(1700000000000), "2023-11-14T22:13:20.000Z");
+		// Junk still nulls rather than emitting "Invalid Date".
 		assert.equal(coerceCreated(undefined), null);
 		assert.equal(coerceCreated(null), null);
+		assert.equal(coerceCreated(0), null);
+		assert.equal(coerceCreated(-5), null);
+		assert.equal(coerceCreated(Number.NaN), null);
+		assert.equal(coerceCreated(Number.POSITIVE_INFINITY), null);
+		assert.equal(coerceCreated(1e18), null, "out-of-range ms must not emit Invalid Date");
 	});
 
 	it("CONTEXT_WINDOW holds integer token counts, never display strings", () => {
@@ -375,7 +387,7 @@ describe("collectModels fan-out", () => {
 		assert.deepEqual(_errors, [{ provider: "glm", message: "invalid response shape" }]);
 	});
 
-	it("GLM entry coercion: drops no-id, nulls numeric created, defaults display_name", async () => {
+	it("GLM entry coercion: drops no-id, converts numeric created, defaults display_name", async () => {
 		glm = await startBackend(() => ({
 			status: 200,
 			headers: { "content-type": "application/json" },
@@ -392,7 +404,8 @@ describe("collectModels fan-out", () => {
 			type: "model",
 			id: "glm:x",
 			display_name: "x",
-			created_at: null,
+			// Unix seconds from the backend, converted to ISO — see coerceCreated.
+			created_at: "2023-11-14T22:13:20.000Z",
 			// Route metadata, attached to every entry: which backend won it, what
 			// that route costs (tier 2 = plan), and how strong the model is. An
 			// uncurated id grades Specialist by default — a shape, not a rung.
