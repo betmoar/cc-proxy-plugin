@@ -509,6 +509,20 @@ tests in `providers.test.js` + `router.test.js`. Never a router/server change.
    a curated opinion is now API surface, so **every new model needs a grade or
    discovery silently publishes `Specialist`**.
 
+   **The live catalogs changed the SCALE of that, not just the principle.**
+   Grading was tractable while the catalog was ~27 hand-curated ids. Discovery
+   now publishes ~320 usable models, almost all of them OpenRouter's, and the
+   curated table covers a couple of dozen — so the overwhelming majority of the
+   response ships the `Specialist` default, which reads as a claim and is really
+   an absence. Measured 2026-08-07 against the live proxy: of 320 usable
+   entries, **299 are `Specialist`** (7 Flagship, 9 Strong, 5 Economy). Two consequences to decide on before item 9 is called done:
+   (a) a consumer cannot distinguish "graded Specialist" from "never graded",
+   which argues for OMITTING `grade` when there is no entry, exactly as
+   `context_window` already omits rather than sending `null`;
+   (b) grading ~320 models by hand is not going to happen, so the eval harness
+   below is now a prerequisite rather than a refinement — or the field is
+   honestly scoped to the ids someone has actually assessed.
+
    TWO FIELDS, TWO AXES, NEVER READ ONE OFF THE OTHER: `deepseek/deepseek-v4-pro`
    is tier 4 (expensive, resold) and Flagship (same weights as native); a cheap
    fast model can be tier 2 and Economy. Collapsing them would make one a lie.
@@ -574,6 +588,37 @@ tests in `providers.test.js` + `router.test.js`. Never a router/server change.
     skew by up to the round-trip time — 60s is safe, 5s would false-positive on
     a slow network. Pure insurance while the clock is correct, which is exactly
     when it is cheap to write.
+12. **`ROUTES` is hand-probed and silently rots.** Every entry in
+    `src/routes.js` is a status a host returned on one day. Nothing offline can
+    tell you it still holds, and the two failure modes differ sharply:
+    - an id that starts **403-ing** on a plan degrades safely — `rankRoutes()`
+      skips it and the predicate fallback in `providers.js` still routes the
+      request, just to a costlier backend and without saying so;
+    - an id that is **renamed or withdrawn** drops out of discovery entirely,
+      and because a catalog now mirrors a live response, the offline fallback
+      keeps advertising it until someone notices.
+    Re-probe before each release (`POST /v1/messages`, 1 token, per cell). The
+    matrix in item 8 is the reference shape. There is no test that can catch
+    this — that is the point of writing it down.
+13. **`docs/models.html` regressions are invisible to CI, and one already got
+    through.** The artifact is generated against a LIVE proxy, so the gate can
+    only ever compare a committed file to the static catalog. An adversarial
+    review proved the consequence on 2026-08-07: reintroducing the renderer's
+    provider-attribution defect left **all 17 artifact tests green**, because
+    they read the committed HTML rather than running the renderer.
+    Partly closed — `test/render-models.test.js` now drives
+    `scripts/render-models.js` as a subprocess against a stub `/_status` +
+    `/v1/models` (mutation-verified: the defect fails with "DeepSeek card
+    missing"). What remains open is everything only a real backend can produce:
+    a vendor renaming an id, a leg timing out, a catalog shape change. Those
+    still surface only when a human regenerates and looks.
+14. **`coerceCreated()` does not validate its string branch.** A string is
+    passed through verbatim, so `"junk"` reaches the wire as
+    `created_at: "junk"` where the schema promises ISO-8601. Every current
+    backend sends either ISO or a unix number, so this is latent, not live.
+    Cheap fix (`Number.isNaN(Date.parse(v)) ? null : v`); deliberately not done
+    in the route-selection PR because it was outside the reviewed criteria and
+    the behavior predates that branch.
 
 ## Operator
 

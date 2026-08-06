@@ -48,10 +48,29 @@ Steps:
 4. **Anthropic-Messages only.** This proxy does no format translation; a
    provider must speak the Anthropic Messages API (or its compatible "skin").
    That is a deliberate constraint — see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) (Invariants).
-5. **Add tests** in `test/providers.test.js` (registry shape, auth, `match`) and
-   `test/router.test.js` (routing). Live integration tests gate on the key being
-   present (`{ skip: !process.env.MYPROVIDER_API_KEY }`).
-6. **Optional: statusline.** Add a quota/credits fetch in
+5. **Probe every id you claim, and record it in `ROUTES`** (`src/routes.js`).
+   One entry per (id, backend) pair with the status the host actually returned
+   and a cost tier: `1` OAuth/Anthropic, `2` prepaid plan, `3` metered credits,
+   `4` reseller. `rankRoutes()` makes the bare id resolve to the cheapest `200`
+   route, so a missing entry means your backend silently never wins one.
+   **Probe, never read a vendor page** — both QwenCloud's public model list and
+   the account's own plan page omit ids their gateway genuinely serves.
+   A shared id is then also reachable explicitly as `<provider>:<id>`; the
+   selector is stripped before forwarding, so the backend sees only its own id.
+6. **Decide what your catalog lists, and grade the models.** A catalog says what
+   your backend *serves* — foreign ids included if it really serves them (the
+   Qwen plan serves `glm-5.2`), each needing a `200` `ROUTES` entry naming your
+   backend. What is published *bare* is decided by namespace ownership, not by
+   who wins the cost rank: ids outside your namespace publish as
+   `<provider>:<id>`. Add a `MODEL_GRADES` entry per model in `src/models.js`
+   or discovery silently publishes `Specialist`. `grade` (capability) and
+   `tier` (cost) are separate fields — never derive one from the other.
+7. **Add tests** in `test/providers.test.js` (registry shape, auth, `match`),
+   `test/router.test.js` (routing), and `test/routes.test.js` (the coherence
+   locks pick up new catalog/ROUTES entries automatically). Live integration
+   tests gate on the key being present
+   (`{ skip: !process.env.MYPROVIDER_API_KEY }`).
+8. **Optional: statusline.** Add a quota/credits fetch in
    `scripts/statusline.js`, opt-in on the key, cached like the
    existing GLM/OpenRouter sections.
 
