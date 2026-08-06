@@ -25,6 +25,7 @@
 // makes a curated opinion part of the API surface and wants evals first.
 
 import { loadEnv } from "../src/env.js";
+import { DEFAULT_GRADE, MODEL_GRADES } from "../src/models.js";
 import { buildProviders } from "../src/providers.js";
 import { CONTEXT_WINDOW, DISPLAY, attribute, registeredProviders } from "./list-models.js";
 
@@ -34,48 +35,19 @@ loadEnv();
 const PORT = Number(process.env.PROXY_PORT || 4000);
 const FETCH_TIMEOUT_MS = 3000;
 
-/** Intelligence tier per model id — display-layer judgment, curated here and
- * not in src/ (see the header note on the 0.5.1 CONTEXT_WINDOW reversal).
- * A model absent from this map renders the default "Specialist".
+/**
+ * Intelligence tier per model id. NO LONGER CURATED HERE — the table moved to
+ * `src/models.js` as MODEL_GRADES (2026-08-06) when a second consumer needed it
+ * programmatically, exactly as CONTEXT_WINDOW moved in 0.5.1. This re-export
+ * keeps the display layer's vocabulary while making drift impossible.
+ *
+ * Do not reintroduce a local copy: "the same curated data in two places" is the
+ * failure `test/couplings.test.js` exists to catch.
  * @type {Record<string, "Flagship" | "Strong" | "Specialist" | "Economy">}
  */
-export const MODEL_TIERS = {
-	// GLM
-	"glm-5.2": "Flagship",
-	"glm-5.1": "Strong",
-	"glm-5": "Strong",
-	"glm-5-turbo": "Specialist",
-	"glm-4.7": "Economy",
-	"glm-4.6": "Economy",
-	"glm-4.5": "Economy",
-	"glm-4.5-air": "Economy",
-	// DeepSeek (native)
-	"deepseek-v4-pro": "Flagship",
-	"deepseek-v4-flash": "Strong",
-	// OpenRouter (curated allowlist)
-	"deepseek/deepseek-v4-pro": "Flagship",
-	"deepseek/deepseek-v4-flash": "Strong",
-	"tencent/hy3": "Specialist",
-	"moonshotai/kimi-k2.7-code": "Specialist",
-	"moonshotai/kimi-k3": "Specialist",
-	"qwen/qwen3.7-max": "Strong",
-	// Qwen (curated, DashScope)
-	"qwen3.8-max": "Strong",
-	"qwen3.8-max-preview": "Strong",
-	"qwen3.7-max": "Strong",
-	"qwen3.7-plus": "Specialist",
-	"qwen3.6-flash": "Economy",
-	// Plan-served DeepSeek build — graded as its bare sibling deepseek-v4-flash,
-	// which it is a dated snapshot of. Capability, not cost: reaching it through
-	// the plan is cheaper, but the tier grades the model (CLAUDE.md item 8/9).
-	"deepseek-v4-flash-0731": "Strong",
-	// Claude (curated, OAuth)
-	"claude-fable-5": "Flagship",
-	"claude-opus-5": "Flagship",
-	"claude-sonnet-5": "Strong",
-};
+export const MODEL_TIERS = MODEL_GRADES;
 
-const DEFAULT_TIER = "Specialist";
+const DEFAULT_TIER = DEFAULT_GRADE;
 
 /** The rank of a tier, for ordering rows Flagship → Economy. Unknown ranks below Economy. */
 const TIER_ORDER = { Flagship: 0, Strong: 1, Specialist: 2, Economy: 3 };

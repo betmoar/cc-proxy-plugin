@@ -13,7 +13,7 @@ import {
 	withContextWindow,
 } from "../src/models.js";
 import { buildProviders } from "../src/providers.js";
-import { resolve } from "../src/router.js";
+import { resolveProvider as resolve } from "../src/router.js";
 import { createServer } from "../src/server.js";
 
 describe("models.js pure helpers", () => {
@@ -78,6 +78,11 @@ describe("models.js pure helpers", () => {
 				// Not qwen-branded: a DeepSeek build the plan serves under its own dated
 				// spelling, unknown to DeepSeek native. Routed by the DATED_ID rule.
 				"deepseek-v4-flash-0731",
+				// Resold, and the CHEAPEST route to it. The plan leg must publish the
+				// bare id because the route table awards it to qwen — if this row is
+				// dropped, the winner emits nothing and deepseek-v4-pro disappears
+				// from discovery instead of falling back to the native leg.
+				"deepseek-v4-pro",
 			],
 		);
 		for (const m of DEFAULT_QWEN_MODELS) {
@@ -357,6 +362,12 @@ describe("collectModels fan-out", () => {
 			id: "x",
 			display_name: "x",
 			created_at: null,
+			// Route metadata, attached to every entry: which backend won it, what
+			// that route costs (tier 2 = plan), and how strong the model is. An
+			// uncurated id grades Specialist by default — a shape, not a rung.
+			provider: "glm",
+			tier: 2,
+			grade: "Specialist",
 		});
 		assert.ok(!data.some((m) => m.id === ""));
 	});

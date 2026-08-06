@@ -1,10 +1,83 @@
 // @ts-check
 
 import { providerById } from "./providers.js";
+import { rankRoutes, tierOf } from "./routes.js";
 
 /**
- * @typedef {{ type: "model", id: string, display_name: string, created_at: string | null, context_window?: number }} ModelEntry
+ * @typedef {{ type: "model", id: string, display_name: string, created_at: string | null, context_window?: number, provider?: string, tier?: number, grade?: string }} ModelEntry
  */
+
+/**
+ * CAPABILITY grade per model id — how strong the model is. Promoted here from
+ * `scripts/render-models.js` (2026-08-06) for the same reason CONTEXT_WINDOW
+ * was: a second consumer needed it programmatically. cc-operator dispatches
+ * work by model strength and was otherwise left guessing whenever an id it had
+ * never seen appeared in the catalog.
+ *
+ * DELIBERATELY A DIFFERENT AXIS FROM `tier`. `tier` is what a route COSTS
+ * (1 oauth-plan … 4 reseller); `grade` is what the model can DO. They are not
+ * correlated and must never be read off one another: `deepseek/deepseek-v4-pro`
+ * is tier 4 (expensive, resold) and Flagship (same weights as native), while a
+ * cheap fast model can be tier 2 and Economy. Publishing them as one field
+ * would make one of those a lie.
+ *
+ * Grade attaches to the MODEL; tier attaches to the (id, backend) pair. That is
+ * why the dated plan build below grades as its bare sibling.
+ *
+ * Consumers own their own role mapping (JUDGMENT/IMPLEMENT/MECHANICAL/RECON is
+ * cc-operator's vocabulary, not ours) — this repo publishes capability, never
+ * roles, or it starts encoding another tool's policy. Note also that a bound id
+ * need not appear in discovery at all: `claude-haiku-*` is pinned by invariant
+ * 4 and deliberately unlisted, so a lookup must tolerate a miss.
+ *
+ * @type {Record<string, "Flagship" | "Strong" | "Specialist" | "Economy">}
+ */
+export const MODEL_GRADES = {
+	// GLM
+	"glm-5.2": "Flagship",
+	"glm-5.1": "Strong",
+	"glm-5": "Strong",
+	"glm-5-turbo": "Specialist",
+	"glm-4.7": "Economy",
+	"glm-4.6": "Economy",
+	"glm-4.5": "Economy",
+	"glm-4.5-air": "Economy",
+	// DeepSeek (native)
+	"deepseek-v4-pro": "Flagship",
+	"deepseek-v4-flash": "Strong",
+	// OpenRouter (curated allowlist)
+	"deepseek/deepseek-v4-pro": "Flagship",
+	"deepseek/deepseek-v4-flash": "Strong",
+	"tencent/hy3": "Specialist",
+	"moonshotai/kimi-k2.7-code": "Specialist",
+	"moonshotai/kimi-k3": "Specialist",
+	"qwen/qwen3.7-max": "Strong",
+	// Qwen (curated, DashScope)
+	"qwen3.8-max": "Strong",
+	"qwen3.8-max-preview": "Strong",
+	"qwen3.7-max": "Strong",
+	"qwen3.7-plus": "Specialist",
+	"qwen3.6-flash": "Economy",
+	// Plan-served DeepSeek build — graded as its bare sibling deepseek-v4-flash,
+	// which it is a dated snapshot of. Capability, not cost: reaching it through
+	// the plan is cheaper, but that is the tier's business, not the grade's.
+	"deepseek-v4-flash-0731": "Strong",
+	// Claude (curated, OAuth)
+	"claude-fable-5": "Flagship",
+	"claude-opus-5": "Flagship",
+	"claude-sonnet-5": "Strong",
+};
+
+/** Grade of a model id; unknown ids are Specialist (a shape, not a rung). */
+export const DEFAULT_GRADE = "Specialist";
+
+/**
+ * @param {string} id
+ * @returns {string}
+ */
+export function gradeOf(id) {
+	return Object.hasOwn(MODEL_GRADES, id) ? MODEL_GRADES[id] : DEFAULT_GRADE;
+}
 
 /**
  * Curated context windows (integer token counts), keyed by the bare discovery
@@ -143,6 +216,17 @@ export const DEFAULT_QWEN_MODELS = [
 		type: "model",
 		id: "deepseek-v4-flash-0731",
 		display_name: "DeepSeek V4 Flash (0731, Qwen plan)",
+		created_at: null,
+	},
+	// Resold, and the CHEAPEST route to it (plan capacity vs DeepSeek's metered
+	// credits) — so the plan leg is what publishes the bare id, and the native
+	// leg is republished as `deepseek:deepseek-v4-pro`. It must be listed here
+	// or the winner emits nothing and the bare id disappears from discovery
+	// entirely: the route table says qwen wins, so no other leg will claim it.
+	{
+		type: "model",
+		id: "deepseek-v4-pro",
+		display_name: "DeepSeek V4 Pro (Qwen plan)",
 		created_at: null,
 	},
 ];
@@ -359,9 +443,27 @@ export async function collectModels(config) {
 			continue;
 		}
 		for (const entry of r.entries || []) {
-			if (seen.has(entry.id)) continue;
-			seen.add(entry.id);
-			data.push(withContextWindow(entry));
+			// A model served by several backends appears once under its CHEAPEST
+			// route as the bare id; the losing routes are published under the local
+			// `<provider>:<id>` lens so they stay selectable. Which is which comes
+			// from the probed table — an id absent from it has no dedup to do and
+			// keeps the bare spelling on whichever leg emitted it.
+			const ranked = rankRoutes(entry.id);
+			const winner = ranked.find((route) => providerById(config, route.provider))?.provider;
+			const loses = winner !== undefined && winner !== r.provider;
+			const id = loses ? `${r.provider}:${entry.id}` : entry.id;
+			if (seen.has(id)) continue;
+			seen.add(id);
+			data.push({
+				// Window is looked up on the BARE id, then the (possibly prefixed) id
+				// is applied — the curated table is keyed by vendor id, and an alias
+				// is the same model reached another way, so it has the same window.
+				...withContextWindow(entry),
+				id,
+				provider: r.provider,
+				tier: tierOf(r.provider),
+				grade: gradeOf(entry.id),
+			});
 		}
 	}
 	return { data, _errors };

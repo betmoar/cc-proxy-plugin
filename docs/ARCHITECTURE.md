@@ -105,6 +105,46 @@ published contract with a named downstream consumer (cc-reload budgets a
 session against it), which is why the table lives in `src/` rather than in the
 display layer — see CLAUDE.md "Reversed decisions".
 
+Entries also carry `provider`, `tier` (cost, from `src/routes.js` `tierOf()`),
+and `grade` (capability, from `src/models.js` `MODEL_GRADES`). Two fields
+because they are two axes: a resold model is expensive to reach and just as
+capable as its native twin. Collapsing them would force one of the two claims
+to be false.
+
+## Route selection
+
+A model id does not name a backend. `deepseek-v4-pro` is served by three of
+them at three prices; `glm-5.2` by two. `src/routes.js` records the probed
+matrix (`ROUTES` — complete, including the 403/400 rows, so a known-unavailable
+route is documented rather than merely absent) and ranks the usable ones by
+cost: prepaid plan capacity is sunk, metered credits are marginal spend, an
+aggregator is last. Ties break toward the native provider, which is how "a
+native plan outranks a resold plan" (`glm-5.2` stays on Z.ai) falls out of the
+ordering instead of needing a special case.
+
+The table is deliberately **not authoritative**: an id absent from it falls
+through to the provider `match()` predicates and still routes. Vendor ids
+rename, and a table that could strand a model on rename would be worse than no
+table.
+
+To name a route explicitly, `<provider>:<model>` — a **local lens**. Only
+`src/router.js` interprets it; `handleProxy` rewrites `body.model` to the bare
+id before forwarding, so no backend ever sees cc-proxy's spelling. Colon only:
+`/` belongs to OpenRouter's `includes("/")` predicate. A slash selector was
+considered and dropped because it buys nothing — the bare id already resolves to
+the cheapest route and the slash form already resolves to the most expensive one.
+
+Two ordering constraints in `resolve()`, both load-bearing:
+
+1. The selector is parsed **first**, so nothing resolves by coincidence (before
+   the explicit parse, `qwen:qwen3.7-max` worked only because it happened to
+   satisfy `startsWith("qwen")`, while `glm:glm-5.2` silently fell to the
+   default backend).
+2. The `claude-haiku-*` pin tests the **stripped tail** and outranks the
+   selector. Pinning on the raw id would let `glm:claude-haiku-…` skip it, and
+   the strip would then deliver the bare haiku id to a third party — invariant 4
+   violated and paid quota burned.
+
 ### Registering models in `/model`
 
 Claude Code's picker rejects unknown ids unless injected via `ANTHROPIC_CUSTOM_MODEL_OPTION` (exactly one slot; validation skipped). `/cc-proxy:setup` registers `glm-5.2[1m]`.

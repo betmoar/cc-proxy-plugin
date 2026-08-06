@@ -41,7 +41,7 @@
 import { loadEnv } from "../src/env.js";
 import { CONTEXT_WINDOW as CONTEXT_WINDOW_TOKENS, DEEPSEEK_PRICING } from "../src/models.js";
 import { buildProviders } from "../src/providers.js";
-import { resolve } from "../src/router.js";
+import { resolveProvider } from "../src/router.js";
 
 // MUST stay directly under the imports: PROXY_PORT is evaluated at load time,
 // and a loadEnv() call below it would silently ignore a port set only in ~/.env
@@ -92,7 +92,7 @@ export const DISPLAY = {
  * @returns {string} provider id
  */
 export function attribute(id, providers) {
-	return resolve(id, { providers }).id;
+	return resolveProvider(id, { providers }).id;
 }
 
 /**
@@ -156,12 +156,16 @@ async function main() {
 	const rows = (models.data || []).map((m) => {
 		const pid = attribute(m.id, providers);
 		const name = DISPLAY[pid] || pid;
-		const ctx = CONTEXT_WINDOW[m.id] || "";
+		// A prefixed id (`qwen:deepseek-v4-pro`) is a dedup loser — the curated
+		// window and price tables are keyed on the BARE id, so look them up by the
+		// tail rather than shipping a blank column for every aliased row.
+		const bare = m.id.slice(m.id.indexOf(":") + 1);
+		const ctx = CONTEXT_WINDOW[bare] || "";
 		const price =
-			pid === "deepseek" && DEEPSEEK_PRICING[m.id]
-				? `$${DEEPSEEK_PRICING[m.id].out.toFixed(2)}/M out`
+			pid === "deepseek" && DEEPSEEK_PRICING[bare]
+				? `$${DEEPSEEK_PRICING[bare].out.toFixed(2)}/M out`
 				: "";
-		return { id: m.id, name, ctx, price };
+		return { id: m.id, name, pid, ctx, price };
 	});
 
 	const idw = Math.max(4, ...rows.map((r) => r.id.length));
@@ -170,7 +174,13 @@ async function main() {
 	process.stdout.write(
 		`models: ${rows.length} reachable via cc-proxy (default backend: ${defaultBackend})\n\n`,
 	);
+	// Group by backend, in the order the rows arrived (registry order: glm,
+	// deepseek, openrouter, qwen, claude), with a blank line between groups. The
+	// ordering is discovery's, not this script's — one place decides it.
+	let group;
 	for (const r of rows) {
+		if (group !== undefined && r.pid !== group) process.stdout.write("\n");
+		group = r.pid;
 		// ctx column only when the id has a known window; price column only for
 		// DeepSeek. Trailing fields are trimmed so short rows don't pad wastefully.
 		const base = `  ${r.id.padEnd(idw)}  ${r.name.padEnd(nmw)}`;

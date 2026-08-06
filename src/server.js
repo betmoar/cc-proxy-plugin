@@ -175,14 +175,22 @@ function forwardBuffered(clientReq, clientRes, provider, outboundBuffer, inbound
 }
 
 function handleProxy(req, res, body, bodyBuffer, config) {
-	const provider = resolve(body.model, config);
+	const { provider, upstreamModel } = resolve(body.model, config);
 	const inboundModel = body.model || "unknown";
 
 	const stripped = stripAssistantThinking(body);
 	if (stripped.modified) debug("  stripped thinking blocks from assistant history");
-	const outboundBuffer = stripped.modified
-		? Buffer.from(JSON.stringify(stripped.body))
-		: bodyBuffer;
+
+	// The `<provider>:` selector is cc-proxy's LOCAL lens — no backend has ever
+	// heard of it, so it is stripped here and the bare vendor id goes upstream.
+	// This is the second deliberate exception to the byte-for-byte body rule
+	// (invariant 1), alongside the thinking-strip above; it changes `model` and
+	// nothing else. Decided here, before the stream/non-stream branch, because
+	// the streaming path never parses the body itself.
+	const rewritten = typeof upstreamModel === "string" && upstreamModel !== body.model;
+	if (rewritten) stripped.body.model = upstreamModel;
+	const outboundBuffer =
+		stripped.modified || rewritten ? Buffer.from(JSON.stringify(stripped.body)) : bodyBuffer;
 
 	console.log(`[${new Date().toISOString()}] ${inboundModel} -> ${provider.id} ${req.url}`);
 	debug(

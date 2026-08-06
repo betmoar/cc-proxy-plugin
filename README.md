@@ -82,6 +82,32 @@ without a curated window (the OpenRouter-prefixed `vendor/model` ids, and
 `claude-*`) **omit the field entirely** rather than sending `null`, so a
 consumer tells "unknown" from "known" with `"context_window" in entry`.
 
+Every entry also carries `provider` (which backend serves it), `tier`, and
+`grade`. **`tier` and `grade` are different axes and must not be read off one
+another:** `tier` is what the route COSTS (`1` Anthropic/OAuth, `2` prepaid plan,
+`3` metered credits, `4` reseller), `grade` is what the model can DO
+(`Flagship` / `Strong` / `Specialist` / `Economy`, unknown ids default
+`Specialist`). A resold Flagship is tier 4 and Flagship; a cheap fast model is
+tier 2 and Economy.
+
+## Choosing a route
+
+A model reachable through several backends appears **once under its cheapest
+route**, as the bare id. The other routes stay selectable under a
+`<provider>:<model>` prefix:
+
+```
+/model deepseek-v4-pro           # cheapest route (prepaid plan capacity)
+/model deepseek:deepseek-v4-pro  # DeepSeek's own endpoint (metered credits)
+/model deepseek/deepseek-v4-pro  # via OpenRouter (a real OpenRouter id, unchanged)
+```
+
+The prefix is local to cc-proxy — it is stripped before the request is
+forwarded, so the backend only ever sees its own id. Note the routes are not
+byte-identical: a plan gateway injects a preamble (measured at +79 input tokens
+on `deepseek-v4-pro`), which is precisely why the choice is explicit rather than
+silent. `claude-haiku-*` ignores any prefix and always goes to Anthropic.
+
 ## Commands
 
 The plugin ships slash commands that reach proxy backends **without changing your session model**.

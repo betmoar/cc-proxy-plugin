@@ -21,8 +21,14 @@ Each is locked by tests; the test names tell you what you broke.
 
 1. **Transparent pipe.** The proxy rewrites auth/headers only. Full inbound
    path *including the query string* reaches the upstream; bodies are forwarded
-   byte-for-byte (except the thinking-strip, below). No prompt inspection, no
-   rewriting, no retry/replay. One deliberate header exception: hop-by-hop
+   byte-for-byte (except the thinking-strip and the selector-strip, below). No
+   prompt inspection, no rewriting, no retry/replay. **Second body exception:**
+   a `<provider>:` selector is cc-proxy's LOCAL lens — no backend has heard of
+   it — so `handleProxy` rewrites `body.model` to the bare id and nothing else.
+   The rewrite is decided before the stream/non-stream branch (the streaming
+   path never parses the body) and is gated on `upstreamModel !== body.model`,
+   so an unprefixed request still reuses the original buffer verbatim. →
+   `test/server.test.js` "provider selector strip…". One deliberate header exception: hop-by-hop
    headers (RFC 9110 §7.6.1 — above all `transfer-encoding`) are dropped,
    because the proxy always sends a buffered body with an exact
    `content-length`, and forwarding CL+TE together trips upstream
@@ -59,12 +65,33 @@ Each is locked by tests; the test names tell you what you broke.
 | 2 | `src/providers.js` `applyAuth()` / `buildUpstreamHeaders()` | credential leak, or auth failure everywhere |
 | 3 | `hooks/proxy-lifecycle.js` `ensureProxyRunning()` | proxy never starts → all sessions `ECONNREFUSED` |
 | 4 | `src/server.js` `forwardBuffered()` | GLM overflow becomes silent empty turns again |
-| 5 | `src/router.js` `resolve()` | wrong backend / haiku traffic burns GLM quota |
+| 5 | `src/router.js` `resolve()` + `parseModelSelector()` | wrong backend / haiku traffic burns GLM quota. The haiku pin must test the STRIPPED tail — pinning on the raw id lets `glm:claude-haiku-…` skip it |
+| 5b | `src/routes.js` `rankRoutes()` | every shared id silently takes the expensive route |
 | 6 | `.claude-plugin/plugin.json` `version` | users silently never receive updates (cache key) |
 | 7 | `skills/setup/SKILL.md` | corrupts the user's `~/.claude/settings.json` |
 | 8 | `src/sanitize.js` | mid-session backend switch 400s ("Invalid signature in thinking block") |
 
 ## Couplings — if you touch X, you must also update Y
+
+- **A model's route and its catalog must agree.** `src/routes.js` `ROUTES` says
+  which backend WINS an id; discovery publishes the bare id from that winner's
+  catalog and republishes the losers as `<provider>:<id>`. So if the table awards
+  an id to a backend whose catalog does not list it, **the id disappears from
+  discovery entirely** — every other leg sees itself as the dedup loser and no
+  one emits the bare form. That is exactly how `deepseek-v4-pro` vanished during
+  implementation (the table gave it to the plan; `DEFAULT_QWEN_MODELS` did not
+  carry it). Adding a cross-vendor route means adding the id to the winner's
+  catalog too. → `test/routes.test.js` "the winning backend of every routed id
+  actually publishes that id" (mutation-verified).
+- **Capability grade lives in `src/models.js` only.** `MODEL_GRADES` (+
+  `gradeOf`) is published on `/v1/models` as `grade`;
+  `scripts/render-models.js` re-exports it as `MODEL_TIERS` and must never
+  reintroduce a local copy. A new model with no grade silently ships
+  `Specialist`.
+- **`grade` (capability) and `tier` (cost) are separate fields on purpose.**
+  `tier` comes from `src/routes.js` `tierOf()`, `grade` from `MODEL_GRADES`.
+  They do not correlate — tier 4 + Flagship and tier 2 + Economy are both
+  normal. Never derive one from the other or collapse them into one field.
 
 - **Routing log format** `[<iso>] <model> -> <provider> <path>` (`src/server.js`) is
   **parsed** by `scripts/status.js` `parseRoutingLines()`. Change one → both + tests.
@@ -271,8 +298,34 @@ tests in `providers.test.js` + `router.test.js`. Never a router/server change.
    `docs/ARCHITECTURE.md` (last section); only matters past ~128 concurrently
    stalled upstream calls to one origin.
 7. **Windows** — untested end to end (detached spawn, log paths).
-8. **Explicit provider-prefix ids (`<provider>:<model>`)** — a way to say "this
-   model, *that* backend" when one model is reachable through several. Motive is
+8. ~~**Explicit provider-prefix ids (`<provider>:<model>`)**~~ — **DONE
+   (feat/route-selection).** Shipped as a COLON-ONLY selector (`src/router.js`
+   `parseModelSelector`), with the cost rank in `src/routes.js` (`ROUTES`,
+   `rankRoutes`, `tierOf`). Spec: `docs/specs/route-selection.md`. Keep reading
+   the item — the probe matrix and the billing/tier vocabulary below are still
+   the reference, and item 9 builds on them.
+
+   **The `/` trap dissolved rather than being solved.** The worry was that
+   OpenRouter's `includes("/")` claims the whole slash namespace, so
+   `qwen/deepseek-v4-pro` could never mean the plan. True — and irrelevant, once
+   probed: the BARE id already routes to the cheapest backend and the slash form
+   already routes to the most expensive one (`qwen3.7-max` → plan,
+   `qwen/qwen3.7-max` → OpenRouter). A slash selector therefore buys nothing in
+   either direction, so `/` was left to OpenRouter untouched and the collision-
+   lock tests (`test/router.test.js:65,77,179`) never needed changing.
+   `:` was live-verified through Claude Code's `/model` picker on 2026-08-06 —
+   it reaches the proxy intact.
+
+   **What the lens cost, and where the danger was.** The selector must be
+   stripped before forwarding (a backend 400s on our local spelling), and that
+   strip is what nearly broke invariant 4: the haiku pin tested the RAW model
+   id, so `glm:claude-haiku-…` skipped the pin AND arrived upstream as the bare
+   haiku id — internal ops billed to a third party. The pin now tests the
+   STRIPPED TAIL and discards any selector. Caught by an adversarial review, not
+   by the original design; both the unit and end-to-end guards were
+   mutation-tested against a reintroduction of the defect.
+
+   Original scoping notes follow. Motive is
    billing, not availability: a model reached through a plan is already paid for
    (sunk capacity), while the same model on a credit-billed backend costs real
    money per call — see the billing table below, and note it does NOT track
@@ -432,15 +485,22 @@ tests in `providers.test.js` + `router.test.js`. Never a router/server change.
    plugin installable alone. A tier field on the discovery response respects the
    arrow; a tiers.env read does not.
 
-   **The judgment already exists**: `MODEL_TIERS` in `scripts/render-models.js`
-   (Flagship / Strong / Specialist / Economy, unknown ids default Specialist).
-   Shipping it means moving that map from `scripts/` into `src/models.js` — a
-   real decision, because today the header of that file says the tier is
-   deliberately display-layer judgment, NOT src/. Moving it makes a curated
-   opinion part of the API surface: every new model then needs a tier before
-   discovery is correct, and a wrong one silently mis-tiers a dispatch. The
-   existing `test/render-models.test.js` coverage assertion (every curated
-   discovery id has a tier) becomes load-bearing rather than cosmetic.
+   **MECHANICALLY DONE (feat/route-selection); the grades themselves are not.**
+   The map moved from `scripts/render-models.js` to `src/models.js` as
+   `MODEL_GRADES` (+ `gradeOf`, `DEFAULT_GRADE`), and every `/v1/models` entry
+   now carries **`grade`** (capability) alongside **`tier`** (cost, 1–4 from
+   `src/routes.js`). `render-models.js` re-exports `MODEL_TIERS = MODEL_GRADES`
+   so the two cannot drift. That was the reversal this paragraph warned about:
+   a curated opinion is now API surface, so **every new model needs a grade or
+   discovery silently publishes `Specialist`**.
+
+   TWO FIELDS, TWO AXES, NEVER READ ONE OFF THE OTHER: `deepseek/deepseek-v4-pro`
+   is tier 4 (expensive, resold) and Flagship (same weights as native); a cheap
+   fast model can be tier 2 and Economy. Collapsing them would make one a lie.
+
+   **What remains open is the part that actually needed evals** — the grades are
+   still one person's read of vendor marketing, now published where another tool
+   dispatches on them. Everything under "Grades need evals" below still stands.
 
    **The two tier vocabularies are not the same axis** — this is the part to
    think through before building. cc-proxy's are *capability grades* (how strong

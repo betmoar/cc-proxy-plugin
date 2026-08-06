@@ -903,3 +903,105 @@ describe("server end-to-end routing", () => {
 		assert.match(route, /] unknown -> claude \/v1\/messages\/count_tokens$/);
 	});
 });
+
+describe("provider selector strip (the local lens must never leak upstream)", () => {
+	let qwen;
+	let claude;
+	let proxy;
+
+	afterEach(async () => {
+		await close(qwen?.server, claude?.server, proxy?.server);
+		qwen = claude = proxy = undefined;
+	});
+
+	async function wire(qwenHandler) {
+		qwen = await startBackend(qwenHandler);
+		claude = await startBackend(() => ({
+			status: 200,
+			headers: { "content-type": "application/json" },
+			body: NORMAL_200,
+		}));
+		const providers = buildProviders({ GLM_API_KEY: "g", DASHSCOPE_API_KEY: "q" }, "claude");
+		providers.find((p) => p.id === "qwen").baseUrl = qwen.baseUrl;
+		providers.find((p) => p.id === "claude").baseUrl = claude.baseUrl;
+		proxy = await startProxy({ port: 0, providers });
+	}
+
+	const okJson = () => ({
+		status: 200,
+		headers: { "content-type": "application/json" },
+		body: NORMAL_200,
+	});
+
+	it("buffered path: upstream receives the BARE id, not the prefixed one", async () => {
+		// Live-probed 2026-08-06: sending "qwen:deepseek-v4-pro" un-stripped returns
+		// 400 "Model not exist" — the plan host has never heard of our prefix.
+		await wire(okJson);
+		const res = await post(proxy.port, {
+			model: "qwen:deepseek-v4-pro",
+			messages: [{ role: "user", content: "hi" }],
+		});
+		assert.equal(res.status, 200);
+		assert.equal(qwen.calls.length, 1, "routed to the selected provider");
+		assert.equal(JSON.parse(qwen.calls[0].body).model, "deepseek-v4-pro");
+		assert.equal(claude.calls.length, 0);
+	});
+
+	it("streaming path: upstream receives the BARE id too", async () => {
+		// Separate code from the buffered path, and it never parses the body — the
+		// rewrite has to happen before the stream/non-stream branch or SSE leaks.
+		await wire(() => ({
+			status: 200,
+			headers: { "content-type": "text/event-stream" },
+			body: 'event: message_start\ndata: {"type":"message_start"}\n\n',
+		}));
+		const res = await post(proxy.port, {
+			model: "qwen:deepseek-v4-pro",
+			stream: true,
+			messages: [{ role: "user", content: "hi" }],
+		});
+		assert.equal(res.status, 200);
+		assert.equal(JSON.parse(qwen.calls[0].body).model, "deepseek-v4-pro");
+	});
+
+	it("a non-prefixed body is forwarded byte-for-byte (invariant 1 intact)", async () => {
+		// The rewrite is gated on upstreamModel !== body.model, so an untouched
+		// request must still reuse the original buffer verbatim — key order and
+		// whitespace included.
+		await wire(okJson);
+		const payload = { model: "deepseek-v4-pro", messages: [{ role: "user", content: "hi" }] };
+		await post(proxy.port, payload);
+		assert.equal(qwen.calls[0].body, JSON.stringify(payload));
+	});
+
+	it("logs the inbound (prefixed) id, so the lens is visible in the audit trail", async () => {
+		await wire(okJson);
+		const logged = [];
+		const orig = console.log;
+		console.log = (...a) => logged.push(a.join(" "));
+		try {
+			await post(proxy.port, {
+				model: "qwen:deepseek-v4-pro",
+				messages: [{ role: "user", content: "hi" }],
+			});
+		} finally {
+			console.log = orig;
+		}
+		const route = logged.find((l) => / -> /.test(l));
+		assert.match(route, /qwen:deepseek-v4-pro -> qwen/);
+	});
+
+	it("a haiku tail goes to Claude with the bare id, never to the selected backend", async () => {
+		// Invariant 4 under the lens: the pin outranks the selector, AND the strip
+		// still applies so Claude receives an id it recognizes.
+		await wire(okJson);
+		const res = await post(proxy.port, {
+			model: "qwen:claude-haiku-4-5-20251001",
+			messages: [{ role: "user", content: "hi" }],
+		});
+		assert.equal(res.status, 200);
+		assert.equal(qwen.calls.length, 0, "haiku must not reach a third-party backend");
+		assert.equal(claude.calls.length, 1);
+		assert.equal(JSON.parse(claude.calls[0].body).model, "claude-haiku-4-5-20251001");
+	});
+});
