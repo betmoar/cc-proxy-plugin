@@ -13,7 +13,7 @@ import {
 	withContextWindow,
 } from "../src/models.js";
 import { buildProviders } from "../src/providers.js";
-import { resolveProvider as resolve } from "../src/router.js";
+import { resolve as resolve2 } from "../src/router.js";
 import { createServer } from "../src/server.js";
 
 describe("models.js pure helpers", () => {
@@ -64,43 +64,55 @@ describe("models.js pure helpers", () => {
 		assert.equal(DEEPSEEK_PRICING["deepseek-v4-flash"].out, 0.28);
 	});
 
-	it("DEFAULT_QWEN_MODELS holds the curated plan-served ids with display names", () => {
-		// Static (Qwen exposes no /models endpoint). Pins the live-verified ids so a
-		// dropped model, or one the qwen predicate would not claim, is caught.
+	it("DEFAULT_QWEN_MODELS is the offline fallback for the live plan catalog", () => {
+		// No longer the primary source: fetchQwenModels() pulls
+		// /compatible-mode/v1/models live (the Anthropic-skin path 404s, which is
+		// why this was hand-curated for so long). This list is what discovery falls
+		// back to when that fetch fails, so it mirrors the 2026-08-06 live response.
 		assert.deepEqual(
 			DEFAULT_QWEN_MODELS.map((m) => m.id),
 			[
 				"qwen3.8-max",
-				"qwen3.8-max-preview",
 				"qwen3.7-max",
 				"qwen3.7-plus",
 				"qwen3.6-flash",
-				// Not qwen-branded: a DeepSeek build the plan serves under its own dated
-				// spelling, unknown to DeepSeek native. Routed by the DATED_ID rule.
-				// It belongs here because it exists NOWHERE ELSE — the plan is the only
-				// backend that has it, so no other catalog could supply it.
+				// Not qwen-branded: DeepSeek builds and a GLM the plan also serves.
+				// Discovery publishes these under the `qwen:` lens because the plan
+				// does not own those namespaces — listing them here says only "the
+				// plan serves this", which is exactly what a catalog is for.
 				"deepseek-v4-flash-0731",
-				// deepseek-v4-pro is deliberately ABSENT even though the plan resells it
-				// and wins on cost: it is a DeepSeek id, and restating a route in a
-				// catalog would duplicate what src/routes.js owns. collectModels()
-				// derives the winner from ROUTES.
+				"deepseek-v4-pro",
+				"glm-5.2",
+				// qwen3.8-max-preview is deliberately ABSENT: a pure alias onto
+				// qwen3.8-max (same weights, production billing), so publishing it
+				// would be a second name for a model already listed. Still callable.
 			],
+		);
+		assert.equal(
+			DEFAULT_QWEN_MODELS.some((m) => m.id === "qwen3.8-max-preview"),
+			false,
+			"an alias must not be published as its own model",
 		);
 		for (const m of DEFAULT_QWEN_MODELS) {
 			assert.equal(m.type, "model");
 			assert.equal(m.created_at, null);
 			assert.ok(m.display_name.length > 0);
 		}
-		// The real invariant is not the spelling — it is that every advertised id
-		// actually ROUTES to qwen. A `qwen` prefix used to be sufficient; now the
-		// list carries a third-party id too, so assert routing directly.
-		const providers = buildProviders({ DASHSCOPE_API_KEY: "q", DEEPSEEK_API_KEY: "d" }, "claude");
+		// The invariant is that every advertised id is REACHABLE on the plan — via
+		// the `qwen:` lens, which is what discovery publishes for the foreign ones.
+		// NOT that the bare id routes there: `glm-5.2` bare goes to Z.ai (a native
+		// plan outranks a resold one) and `deepseek-v4-pro` bare goes to the plan
+		// (prepaid beats DeepSeek's metered credits). Both are correct, and both
+		// are the ROUTER's business, not the catalog's — which is exactly why the
+		// lens exists.
+		const providers = buildProviders(
+			{ DASHSCOPE_API_KEY: "q", DEEPSEEK_API_KEY: "d", GLM_API_KEY: "g" },
+			"claude",
+		);
 		for (const m of DEFAULT_QWEN_MODELS) {
-			assert.equal(
-				resolve(m.id, { providers }).id,
-				"qwen",
-				`${m.id} is advertised on the qwen leg but does not route there`,
-			);
+			const r = resolve2(`qwen:${m.id}`, { providers });
+			assert.equal(r.provider.id, "qwen", `qwen:${m.id} must reach the plan`);
+			assert.equal(r.upstreamModel, m.id, "the lens must be stripped before forwarding");
 		}
 	});
 
@@ -232,6 +244,9 @@ function wireConfig(
 		dsKey,
 		qwenKey,
 		openRouterModels,
+		openRouterBaseUrl,
+		qwenBaseUrl,
+		openRouterModelsExplicit = true,
 		claudeModels,
 		qwenModels,
 		claudeBaseUrl,
@@ -251,11 +266,23 @@ function wireConfig(
 	const deepseek = providers.find((p) => p.id === "deepseek");
 	if (deepseek && dsKey) deepseek.baseUrl = glmBaseUrl;
 	if (claudeBaseUrl) providers.find((p) => p.id === "claude").baseUrl = claudeBaseUrl;
+	// OpenRouter's leg fetches a LIVE catalog in production. Tests must never
+	// reach the network, so the default here is the explicit-set path (static
+	// list, no fetch). Pass openRouterModelsExplicit:false + openRouterBaseUrl to
+	// exercise the fetch against a local stub.
+	const or = providers.find((p) => p.id === "openrouter");
+	if (or && openRouterBaseUrl) or.baseUrl = openRouterBaseUrl;
+	// Qwen fetches from the compatible-mode path, derived by stripping the
+	// /apps/anthropic suffix — so point the provider at `${stub}/apps/anthropic`
+	// and fetchQwenModels() GETs ${stub}/compatible-mode/v1/models.
+	const qw = providers.find((p) => p.id === "qwen");
+	if (qw && qwenBaseUrl) qw.baseUrl = `${qwenBaseUrl}/apps/anthropic`;
 	return {
 		providers,
 		claudeModels: claudeModels ?? DEFAULT_CLAUDE_MODELS,
 		qwenModels: qwenModels ?? DEFAULT_QWEN_MODELS,
 		openRouterModels: openRouterModels ?? DEFAULT_OPENROUTER_MODELS,
+		openRouterModelsExplicit,
 		modelsTimeoutMs,
 		modelsForceThrow,
 	};
@@ -356,11 +383,14 @@ describe("collectModels fan-out", () => {
 		}));
 		const config = wireConfig(glm.baseUrl);
 		const { data } = await collectModels(config);
-		const glmEntries = data.filter((m) => m.id === "x");
+		// Published as `glm:x`, not `x`: the id is not in glm's namespace, so the
+		// lens is what says which backend serves it. (A vendor's real ids are
+		// `glm-*` and render bare — this stub id is deliberately foreign.)
+		const glmEntries = data.filter((m) => m.id === "glm:x");
 		assert.equal(glmEntries.length, 1);
 		assert.deepEqual(glmEntries[0], {
 			type: "model",
-			id: "x",
+			id: "glm:x",
 			display_name: "x",
 			created_at: null,
 			// Route metadata, attached to every entry: which backend won it, what
@@ -543,7 +573,7 @@ describe("collectModels fan-out", () => {
 		assert.ok(!_errors.some((e) => e.provider === "qwen"));
 	});
 
-	it("dedup: glm and claude both claim an id → first (glm) wins, single entry", async () => {
+	it("same id from two backends: each publishes under its own lens, none dropped", async () => {
 		glm = await startBackend(() => ({
 			status: 200,
 			headers: { "content-type": "application/json" },
@@ -562,9 +592,23 @@ describe("collectModels fan-out", () => {
 			claudeModels: [{ type: "model", id: "dupe", display_name: "Claude Dupe", created_at: null }],
 		});
 		const { data } = await collectModels(config);
-		const dupes = data.filter((m) => m.id === "dupe");
-		assert.equal(dupes.length, 1);
-		assert.equal(dupes[0].display_name, "GLM Dupe");
+		// Namespace ownership makes a same-id clash impossible rather than resolving
+		// it: `dupe` belongs to neither vendor, so each backend publishes it under
+		// its own lens and both stay reachable. (Before this rule the second leg's
+		// entry was silently dropped, which lost a route the user could reach.)
+		assert.deepEqual(
+			data.filter((m) => m.id.endsWith("dupe")).map((m) => [m.id, m.provider]),
+			[
+				["glm:dupe", "glm"],
+				["claude:dupe", "claude"],
+			],
+		);
+		assert.equal(data.find((m) => m.id === "glm:dupe").display_name, "GLM Dupe");
+		// The bare spelling is nobody's: it would claim an ownership no backend has.
+		assert.equal(
+			data.some((m) => m.id === "dupe"),
+			false,
+		);
 	});
 
 	it("collectModels attaches context_window to a covered id, omits it for an uncovered one", async () => {
@@ -776,5 +820,138 @@ describe("GET /v1/models endpoint", () => {
 		// proxy still serving:
 		const status = await getReq(proxy.port, "/_status");
 		assert.equal(status.status, 200);
+	});
+});
+
+describe("live catalog legs (qwen + openrouter)", () => {
+	let stub;
+	afterEach(async () => {
+		await close(stub?.server);
+		stub = undefined;
+	});
+
+	it("qwen fetches the COMPATIBLE-MODE path, not the anthropic skin", async () => {
+		// The skin path 404s ("Not support") while /compatible-mode/v1/models 200s
+		// with 11 ids. Probing only the skin is what produced years of hand
+		// curation and a stale "Qwen exposes no /models endpoint" comment.
+		stub = await startBackend(() => ({
+			status: 200,
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ data: [{ id: "qwen3.8-max" }, { id: "glm-5.2" }] }),
+		}));
+		const config = wireConfig("http://127.0.0.1:1", { qwenKey: "q", qwenBaseUrl: stub.baseUrl });
+		const { data } = await collectModels(config);
+		assert.equal(stub.calls[0].url, "/compatible-mode/v1/models");
+		assert.equal(stub.calls[0].headers.authorization, "Bearer q");
+		const ids = data.filter((m) => m.provider === "qwen").map((m) => m.id);
+		// glm-5.2 is foreign to the plan's namespace → published under the lens.
+		assert.deepEqual(ids, ["qwen3.8-max", "qwen:glm-5.2"]);
+	});
+
+	it("qwen flags multimodal ids as not chat-usable rather than hiding them", async () => {
+		// They resolve on /v1/messages and then fail on BODY SHAPE, so dropping
+		// them would misreport the plan while listing them silently is a trap.
+		stub = await startBackend(() => ({
+			status: 200,
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				data: [
+					{ id: "qwen3.8-max" },
+					{ id: "wan2.7-image" },
+					{ id: "qwen-audio-3.0-tts-plus" },
+					{ id: "qwen-audio-3.0-realtime-plus" },
+				],
+			}),
+		}));
+		const config = wireConfig("http://127.0.0.1:1", { qwenKey: "q", qwenBaseUrl: stub.baseUrl });
+		const { data } = await collectModels(config);
+		const flag = (id) => data.find((m) => m.id === id)?.usable;
+		assert.equal(flag("qwen3.8-max"), undefined, "a usable model carries no flag");
+		assert.equal(flag("qwen:wan2.7-image"), false);
+		assert.equal(flag("qwen-audio-3.0-tts-plus"), false);
+		assert.equal(flag("qwen-audio-3.0-realtime-plus"), false);
+	});
+
+	it("qwen falls back to the static list when the fetch fails", async () => {
+		// A flaky network must degrade to the previous behaviour, not an empty leg.
+		const config = wireConfig("http://127.0.0.1:1", {
+			qwenKey: "q",
+			qwenBaseUrl: "http://127.0.0.1:1",
+			modelsTimeoutMs: 300,
+		});
+		const { data, _errors } = await collectModels(config);
+		assert.ok(
+			data.some((m) => m.id === "qwen3.8-max"),
+			"static fallback supplies the plan's models",
+		);
+		// The qwen leg still DELIVERED, so it must not report an error — a fallback
+		// is a successful degradation, not a failure. (The glm leg does error here:
+		// this config points it at a dead port too, which is incidental.)
+		assert.equal(
+			_errors.some((e) => e.provider === "qwen"),
+			false,
+			"a fallback is not an error — the leg still delivered",
+		);
+	});
+
+	it("openrouter takes the vendor's context_length and drops anthropic/* copies", async () => {
+		// context_length is the aggregator's OWN per-deployment number, which is
+		// exactly what CONTEXT_WINDOW refuses to guess for a vendor/model id.
+		// anthropic/* is dropped, not flagged: it would bill per token for what the
+		// session's OAuth plan already covers, and would sit in /model looking like
+		// the obvious pick (invariants 3 and 4 keep Claude traffic on the Claude route).
+		stub = await startBackend(() => ({
+			status: 200,
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				data: [
+					{ id: "moonshotai/kimi-k3", name: "MoonshotAI: Kimi K3", context_length: 1048576 },
+					{ id: "anthropic/claude-opus-5", name: "Anthropic: Opus 5", context_length: 200000 },
+					{ id: "google/gemini-3.6-flash:batch", name: "Batch", context_length: 100 },
+					{ id: "vendor/bad-window", name: "Bad", context_length: "lots" },
+				],
+			}),
+		}));
+		const config = wireConfig("http://127.0.0.1:1", {
+			orKey: "o",
+			openRouterModelsExplicit: false,
+			openRouterBaseUrl: stub.baseUrl,
+		});
+		const { data } = await collectModels(config);
+		const or = data.filter((m) => m.provider === "openrouter");
+		assert.equal(or.find((m) => m.id === "moonshotai/kimi-k3").context_window, 1048576);
+		assert.equal(or.find((m) => m.id === "moonshotai/kimi-k3").display_name, "MoonshotAI: Kimi K3");
+		assert.equal(
+			or.some((m) => m.id.startsWith("anthropic/")),
+			false,
+			"a reseller's Claude copy must never be advertised",
+		);
+		assert.equal(or.find((m) => m.id === "google/gemini-3.6-flash:batch").usable, false);
+		assert.ok(
+			!("context_window" in or.find((m) => m.id === "vendor/bad-window")),
+			"a malformed window must be omitted, never published as a string or NaN",
+		);
+	});
+
+	it("an explicit OPENROUTER_MODELS set suppresses the live fetch entirely", async () => {
+		// The user named a specific set; the vendor's full catalog is not wanted.
+		stub = await startBackend(() => ({
+			status: 200,
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ data: [{ id: "should/never-appear" }] }),
+		}));
+		const config = wireConfig("http://127.0.0.1:1", {
+			orKey: "o",
+			openRouterBaseUrl: stub.baseUrl,
+			openRouterModels: [
+				{ type: "model", id: "only/this", display_name: "only", created_at: null },
+			],
+		});
+		const { data } = await collectModels(config);
+		assert.equal(stub.calls.length, 0, "no fetch when the set is explicit");
+		assert.deepEqual(
+			data.filter((m) => m.provider === "openrouter").map((m) => m.id),
+			["only/this"],
+		);
 	});
 });

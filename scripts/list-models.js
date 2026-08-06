@@ -154,18 +154,29 @@ async function main() {
 	);
 
 	const rows = (models.data || []).map((m) => {
-		const pid = attribute(m.id, providers);
+		// `provider` is which backend PUBLISHED the row — discovery already knows,
+		// because it built the row. attribute() answers a different question ("where
+		// would /model send this id?"), and the two diverge exactly where it matters:
+		// a bare id routes to its cheapest backend, so re-deriving here filed
+		// deepseek-v4-pro under Qwen while DeepSeek's own card lost the model it
+		// owns. Fall back to the router only for a proxy older than this field.
+		const pid = m.provider || attribute(m.id, providers);
 		const name = DISPLAY[pid] || pid;
-		// A prefixed id (`qwen:deepseek-v4-pro`) is a dedup loser — the curated
-		// window and price tables are keyed on the BARE id, so look them up by the
-		// tail rather than shipping a blank column for every aliased row.
+		// A prefixed id (`qwen:deepseek-v4-pro`) is the same model reached another
+		// way, and the curated window/price tables are keyed on the BARE id — so
+		// look them up by the tail rather than blanking the column on every alias.
 		const bare = m.id.slice(m.id.indexOf(":") + 1);
 		const ctx = CONTEXT_WINDOW[bare] || "";
 		const price =
 			pid === "deepseek" && DEEPSEEK_PRICING[bare]
 				? `$${DEEPSEEK_PRICING[bare].out.toFixed(2)}/M out`
 				: "";
-		return { id: m.id, name, pid, ctx, price };
+		// `usable: false` = reachable but not selectable from a Claude Code session
+		// (image/audio models want another request schema; `:batch`/`~latest`/auto
+		// are not chat models). Shown rather than hidden so the catalog stays a
+		// true picture of the backend — but marked, so nobody picks one from /model
+		// and gets an opaque body-shape error.
+		return { id: m.id, name, pid, ctx, price, unusable: m.usable === false };
 	});
 
 	const idw = Math.max(4, ...rows.map((r) => r.id.length));
@@ -183,9 +194,11 @@ async function main() {
 		group = r.pid;
 		// ctx column only when the id has a known window; price column only for
 		// DeepSeek. Trailing fields are trimmed so short rows don't pad wastefully.
-		const base = `  ${r.id.padEnd(idw)}  ${r.name.padEnd(nmw)}`;
+		const mark = r.unusable ? " ·" : "  ";
+		const base = `${mark}${r.id.padEnd(idw)}  ${r.name.padEnd(nmw)}`;
 		const withCtx = r.ctx ? `${base}  ${r.ctx.padEnd(cw)}` : base;
-		process.stdout.write(r.price ? `${withCtx}  ${r.price}\n` : `${withCtx}\n`);
+		const tail = r.unusable ? "  (not chat-usable)" : r.price ? `  ${r.price}` : "";
+		process.stdout.write(`${withCtx}${tail}\n`);
 	}
 	for (const e of models._errors || []) {
 		process.stdout.write(

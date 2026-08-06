@@ -63,8 +63,12 @@ const tierRank = (t) => TIER_ORDER[t] ?? 99;
 const tierFor = (id) =>
 	MODEL_TIERS[id] ?? MODEL_TIERS[id.slice(id.indexOf(":") + 1)] ?? DEFAULT_TIER;
 
-/** Which provider legs pull their list live vs. ship a curated static list. */
-const LIVE_LEGS = new Set(["glm", "deepseek"]);
+/** Which provider legs pull their list live vs. ship a curated static list.
+ * As of 2026-08-06 only Claude is static: it has no discoverable catalog
+ * endpoint (OAuth, and invariant 4 deliberately hides claude-haiku-*). Qwen
+ * joined the live set once the compatible-mode path was found — the Anthropic
+ * skin 404s a models route, which is why it looked static for so long. */
+const LIVE_LEGS = new Set(["glm", "deepseek", "openrouter", "qwen"]);
 
 /** Third-party ids the Qwen Token Plan also serves, but which keep routing to
  * their NATIVE backend — the bare id can't say which account pays, so moving

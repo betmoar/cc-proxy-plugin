@@ -18,7 +18,8 @@ import { buildProviders } from "./providers.js";
  *   SessionStart hook can detect (and replace) a stale running proxy.
  * @property {import("./models.js").ModelEntry[]} [claudeModels] - static Claude discovery list.
  * @property {import("./models.js").ModelEntry[]} [qwenModels] - static Qwen discovery list (Qwen has no /models endpoint).
- * @property {import("./models.js").ModelEntry[]} [openRouterModels] - OpenRouter allowlist for discovery.
+ * @property {import("./models.js").ModelEntry[]} [openRouterModels] - offline fallback for the live OpenRouter fetch, or the explicit set when OPENROUTER_MODELS is configured.
+ * @property {boolean} [openRouterModelsExplicit] - true when OPENROUTER_MODELS named a set, which suppresses the live fetch.
  * @property {number} [modelsTimeoutMs] - per-leg timeout for the /v1/models fan-out.
  */
 
@@ -50,6 +51,12 @@ export function load(overrides = {}) {
 		version: packageVersion(),
 		claudeModels: DEFAULT_CLAUDE_MODELS.filter((m) => m?.id),
 		qwenModels: DEFAULT_QWEN_MODELS.filter((m) => m?.id),
+		// OpenRouter's catalog is fetched LIVE (~400 ids, public endpoint, no auth).
+		// This list is the offline fallback for that fetch — or, when
+		// OPENROUTER_MODELS is set, the explicit set the user asked for, in which
+		// case the fetch is skipped rather than merged. Hence the separate flag: the
+		// entries alone cannot say whether they are a preference or a fallback.
+		openRouterModelsExplicit: parseOpenRouterModels(process.env.OPENROUTER_MODELS).length > 0,
 		openRouterModels: (() => {
 			const parsed = parseOpenRouterModels(process.env.OPENROUTER_MODELS);
 			return (parsed.length ? parsed : DEFAULT_OPENROUTER_MODELS).filter((m) => m?.id);

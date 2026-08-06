@@ -130,16 +130,18 @@ describe("discovery ↔ routing coherence", () => {
 	// Both of these shipped broken in the first implementation pass and were
 	// caught only by rendering against a live proxy. They are offline-testable,
 	// so they are tested offline now.
-	it("no static catalog restates a route it does not own", async () => {
-		// The winner is DERIVED from ROUTES by collectModels(), never re-stated in a
-		// leg's catalog. An earlier pass did the opposite — it added deepseek-v4-pro
-		// to DEFAULT_QWEN_MODELS so the plan (its cheapest route) had something to
-		// publish. That put the same curated fact in two places, which is the drift
-		// this repo's coupling tests exist to prevent: the route table could then
-		// award the id elsewhere while the catalog still claimed it.
+	it("a catalog may list a foreign id it serves — the lens keeps it unambiguous", async () => {
+		// A catalog says what a backend SERVES, which for a plan legitimately
+		// includes other vendors' models — the Qwen plan really does serve
+		// `glm-5.2` and `deepseek-v4-pro`. That is not a restatement of the route
+		// table, because the two answer different questions: the catalog says
+		// "reachable here", ROUTES says "cheapest here". Discovery publishes the
+		// foreign ones under the `<provider>:` lens, so both can be true without
+		// either shadowing the other.
 		//
-		// So a catalog lists only ids that backend ADVERTISES — its own vendor's, or
-		// (like deepseek-v4-flash-0731) an id that exists nowhere else.
+		// What must hold: a foreign id in a catalog has a ROUTES entry naming that
+		// backend. Otherwise the catalog claims a route the table has never seen,
+		// and the two really are inconsistent.
 		const { DEFAULT_QWEN_MODELS, DEFAULT_CLAUDE_MODELS, DEFAULT_OPENROUTER_MODELS } = await import(
 			"../src/models.js"
 		);
@@ -150,19 +152,11 @@ describe("discovery ↔ routing coherence", () => {
 		};
 		for (const [provider, ids] of Object.entries(catalogs)) {
 			for (const id of ids) {
+				if (id.startsWith(provider) || id.includes("/")) continue; // own namespace
 				const routes = ROUTES[id];
-				// An id only ONE backend serves cannot be a restatement — nobody else
-				// could have supplied it (deepseek-v4-flash-0731 is the live case:
-				// plan-only, so the plan's catalog is the only possible source).
-				if (!routes || routes.filter((r) => r.status === 200).length < 2) continue;
-				// Multi-backend id in a catalog that is not its vendor's = restatement.
-				// Checking vendor rather than winner is the point: when the lister IS
-				// the current winner the two questions look identical, and that is
-				// exactly the case that must still fail — the winner is derived, so
-				// listing it duplicates the route table instead of reflecting it.
 				assert.ok(
-					id.startsWith(provider),
-					`${provider}'s catalog lists ${id}, a model it does not own and that ${routes.length} backends serve — remove it and let collectModels() derive the winner from ROUTES`,
+					routes?.some((r) => r.provider === provider && r.status === 200),
+					`${provider}'s catalog lists the foreign id ${id}, but ROUTES has no 200 route for it on ${provider} — probe it and record the result, or drop it`,
 				);
 			}
 		}
