@@ -12,17 +12,20 @@
 // predicate restated here. Providers are filtered to the set / _status reports
 // registered (registeredProviders()).
 //
-// The ONLY curated data is the intelligence tier (MODEL_TIERS): display-layer
-// judgment, deliberately NOT in src/. Keys are the model ids as /v1/models
-// returns them. Unknown ids fall back to "Specialist" so a future model still
-// renders a tier. Pinned by test/render-models.test.js so a silent drop (the
-// opus-4-8 class of bug) is caught at the test gate.
+// NOTHING is curated here any more. The intelligence tier now lives in
+// src/models.js as MODEL_GRADES and is published on /v1/models as `grade`;
+// MODEL_TIERS below is a re-export so this layer keeps its vocabulary while
+// drift stays impossible. That followed CONTEXT_WINDOW's move in 0.5.1, for the
+// same reason: a second consumer (cc-operator, dispatching by model strength)
+// needed it programmatically, and the alternative was the same curated table in
+// two repos. The caveat that reversal carried still stands — a published grade
+// is API surface, so a new model with no entry silently ships "Specialist", and
+// the grades themselves still want evals (CLAUDE.md backlog item 9).
 //
-// CONTEXT_WINDOW used to sit beside it under the same rule; as of 0.5.1 it is
-// in src/models.js and published on /v1/models, because a second consumer
-// (cc-reload) needed the number. Do NOT read that reversal as precedent for
-// moving MODEL_TIERS too — see CLAUDE.md backlog item 9: publishing a tier
-// makes a curated opinion part of the API surface and wants evals first.
+// Lookup keys are VENDOR ids. A `<provider>:` route alias is stripped before the
+// lookup (tierFor) — it is the same model reached another way. Pinned by
+// test/render-models.test.js so a silent drop (the opus-4-8 class of bug) is
+// caught at the test gate.
 
 import { loadEnv } from "../src/env.js";
 import { DEFAULT_GRADE, MODEL_GRADES } from "../src/models.js";
@@ -52,7 +55,13 @@ const DEFAULT_TIER = DEFAULT_GRADE;
 /** The rank of a tier, for ordering rows Flagship → Economy. Unknown ranks below Economy. */
 const TIER_ORDER = { Flagship: 0, Strong: 1, Specialist: 2, Economy: 3 };
 const tierRank = (t) => TIER_ORDER[t] ?? 99;
-const tierFor = (id) => MODEL_TIERS[id] ?? DEFAULT_TIER;
+// Strips a `<provider>:` route selector before the lookup: the grade table is
+// keyed on VENDOR ids, and an alias is the same model reached another way — so
+// `deepseek:deepseek-v4-pro` must grade Flagship like its bare form, not fall to
+// the Specialist default. (Not `/`: an OpenRouter `vendor/model` id is its own
+// key, deliberately — see CONTEXT_WINDOW's "keyed on the EXACT id" note.)
+const tierFor = (id) =>
+	MODEL_TIERS[id] ?? MODEL_TIERS[id.slice(id.indexOf(":") + 1)] ?? DEFAULT_TIER;
 
 /** Which provider legs pull their list live vs. ship a curated static list. */
 const LIVE_LEGS = new Set(["glm", "deepseek"]);

@@ -260,3 +260,26 @@ describe("render-models route/billing axes", () => {
 		);
 	});
 });
+
+describe("route aliases keep their model's grade", () => {
+	// docs/models.html is generated against a LIVE proxy and cannot be rebuilt in
+	// CI, so a rendering bug is invisible until someone regenerates by hand. This
+	// one shipped exactly that way: `deepseek:deepseek-v4-pro` rendered
+	// "Specialist" (2 of 4 dots) because the grade table is keyed on vendor ids
+	// and the renderer looked up the PUBLISHED id. The API was already correct —
+	// collectModels() grades on entry.id — so only the infographic lied.
+	it("strips a <provider>: selector before the grade lookup", () => {
+		const [card] = groupByProvider([
+			{ id: "deepseek:deepseek-v4-pro", provider: "deepseek" },
+		]).values();
+		assert.equal(card.models[0].tier, "Flagship", "an alias is the same model, so the same grade");
+	});
+
+	it("does NOT strip a slash — an aggregator id is its own key", () => {
+		// Deliberate asymmetry, matching CONTEXT_WINDOW's "keyed on the EXACT id":
+		// vendor/model is a distinct deployment, not an alias of the bare id.
+		assert.equal(MODEL_TIERS["deepseek/deepseek-v4-pro"], "Flagship", "curated separately");
+		const [card] = groupByProvider([{ id: "vendor/never-seen", provider: "openrouter" }]).values();
+		assert.equal(card.models[0].tier, "Specialist", "unknown slash id falls to the default");
+	});
+});
