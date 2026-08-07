@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/cc-proxy-hero.svg" alt="cc-proxy — one proxy to rule them all." width="100%">
+</p>
+
 # cc-proxy
 
 A Claude Code plugin + local proxy that lets you use **GLM (Z.ai)**, **OpenRouter**, **DeepSeek**, **Qwen**, and **Claude** side-by-side in one session. Switch backends with `/model` — no restart. Zero runtime dependencies.

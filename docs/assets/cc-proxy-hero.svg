@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="500" viewBox="0 0 1600 500" role="img" aria-labelledby="title desc">
+  <title id="title">cc-proxy — one proxy to rule them all.</title>
+  <desc id="desc">A request enters cc-proxy and is routed to five model providers.</desc>
+  <defs>
+    <pattern id="grid" width="26" height="26" patternUnits="userSpaceOnUse">
+      <circle cx="1.5" cy="1.5" r="1.25" fill="#2c2c2a"/>
+    </pattern>
+    <clipPath id="grid-clip"><path d="M760 0h840v500H690z"/></clipPath>
+  </defs>
+
+  <rect width="1600" height="500" rx="24" fill="#0d0d0d"/>
+  <rect width="1600" height="500" rx="24" fill="url(#grid)" clip-path="url(#grid-clip)" opacity=".55"/>
+  <path d="M72 56h80" stroke="#5fa8a8" stroke-width="4"/>
+  <text x="168" y="61" fill="#898781" font-family="SFMono-Regular,Consolas,Liberation Mono,monospace" font-size="15" letter-spacing="3">CLAUDE CODE · LOCAL ROUTING LAYER</text>
+
+  <!-- Family mark: one ingress, one decision point, three egresses. -->
+  <g transform="translate(76 154) scale(.56)" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M152 256h80m0 0 80-112h38m-118 112h118m-118 0 80 112h38" stroke="#5fa8a8" stroke-width="18"/>
+    <circle cx="104" cy="256" r="31" fill="#0d0d0d" stroke="#c96442" stroke-width="16"/>
+    <circle cx="392" cy="144" r="26" fill="#0d0d0d" stroke="#c96442" stroke-width="14"/>
+    <circle cx="392" cy="256" r="26" fill="#0d0d0d" stroke="#eef0f2" stroke-width="14"/>
+    <circle cx="392" cy="368" r="26" fill="#0d0d0d" stroke="#eef0f2" stroke-width="14"/>
+  </g>
+
+  <text x="338" y="245" fill="#c96442" font-family="system-ui,-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="86" font-weight="700" letter-spacing="-4">cc<tspan fill="#eef0f2">-proxy</tspan></text>
+  <text x="344" y="306" fill="#c3c2b7" font-family="SFMono-Regular,Consolas,Liberation Mono,monospace" font-size="20" letter-spacing="3">one proxy to rule them all.</text>
+
+  <line x1="805" y1="96" x2="805" y2="404" stroke="#2c2c2a"/>
+
+  <!-- The product in one glance: request → proxy → named upstream. -->
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="884" cy="250" r="10" stroke="#c96442" stroke-width="3"/>
+    <path d="M894 250h60" stroke="#5fa8a8" stroke-width="4"/>
+    <rect x="954" y="219" width="144" height="62" rx="13" fill="#1a1a19" stroke="#5fa8a8" stroke-width="2"/>
+    <path d="M1098 250h58m0 0c39 0 33-112 81-112h233m-314 112c39 0 33-56 81-56h233m-314 56h314m-314 0c39 0 33 56 81 56h233m-314-56c39 0 33 112 81 112h233" stroke="#5fa8a8" stroke-width="3"/>
+    <path d="M1098 250h58" stroke="#5fa8a8" stroke-width="4"/>
+    <circle cx="1470" cy="138" r="9" fill="#0d0d0d" stroke="#c96442" stroke-width="4"/>
+    <circle cx="1470" cy="194" r="9" fill="#0d0d0d" stroke="#c0c0c0" stroke-width="4"/>
+    <circle cx="1470" cy="250" r="9" fill="#0d0d0d" stroke="#4d6bfe" stroke-width="4"/>
+    <circle cx="1470" cy="306" r="9" fill="#0d0d0d" stroke="#653aff" stroke-width="4"/>
+    <circle cx="1470" cy="362" r="9" fill="#0d0d0d" stroke="#c8ff00" stroke-width="4"/>
+  </g>
+  <g fill="#898781" font-family="SFMono-Regular,Consolas,Liberation Mono,monospace" font-size="12" letter-spacing="1.2">
+    <text x="854" y="225">REQUEST</text>
+    <text x="1026" y="257" fill="#c96442" font-size="15" font-weight="600" letter-spacing="0" text-anchor="middle">cc<tspan fill="#eef0f2">-proxy</tspan></text>
+    <text x="1445" y="117" text-anchor="end">CLAUDE</text>
+    <text x="1445" y="177" text-anchor="end">GLM</text>
+    <text x="1445" y="233" text-anchor="end">DEEPSEEK</text>
+    <text x="1445" y="289" text-anchor="end">QWEN</text>
+    <text x="1445" y="345" text-anchor="end">OPENROUTER</text>
+  </g>
+</svg>

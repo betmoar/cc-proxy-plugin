@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">cc-proxy logo</title>
+  <desc id="desc">One input routed through a central junction to three outputs.</desc>
+  <rect width="512" height="512" rx="88" fill="#0d0d0d"/>
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M152 256h80m0 0 80-112h38m-118 112h118m-118 0 80 112h38" stroke="#5fa8a8" stroke-width="18"/>
+    <circle cx="104" cy="256" r="31" fill="#0d0d0d" stroke="#c96442" stroke-width="16"/>
+    <circle cx="392" cy="144" r="26" fill="#0d0d0d" stroke="#c96442" stroke-width="14"/>
+    <circle cx="392" cy="256" r="26" fill="#0d0d0d" stroke="#eef0f2" stroke-width="14"/>
+    <circle cx="392" cy="368" r="26" fill="#0d0d0d" stroke="#eef0f2" stroke-width="14"/>
+  </g>
+</svg>
