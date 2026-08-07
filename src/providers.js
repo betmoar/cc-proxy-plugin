@@ -69,19 +69,18 @@ const DATED_ID = /^deepseek-.*-\d{4}(\d{4})?$/;
  * set or it becomes a hard failure on a model the user could otherwise reach.
  * `deepseek-v4-flash` is absent for exactly that reason (403 AccessDenied).
  */
-// REVERSED for `deepseek-v4-pro` (issue #19): this set is now EMPTY. The bare
-// id routes to its native DeepSeek backend, not the Qwen plan. The plan still
-// SERVES it and `qwen:deepseek-v4-pro` still works via the selector lens, but
-// the default no longer spends plan capacity to avoid metered credits, because
-// the plan gateway injects a +79-token preamble that makes the routes
-// behaviourally non-interchangeable and the bare id is the one /model sets.
-//
-// The set is kept (as an empty Set) rather than deleted because the predicate
-// machinery below (planResells → deepseek/qwen match()) is still the structure
-// for any FUTURE plan-resold id; emptying it is the reversal, removing it would
-// also rip out the mechanism. The docstring above describing the policy is
-// retained as the record of the reversed decision.
-const QWEN_PLAN_RESELLS = new Set(/** @type {string[]} */ ([]));
+// ISSUE #19: this set STILL CLAIMS `deepseek-v4-pro` for the qwen predicate —
+// the plan genuinely serves it, and the predicate is the last-resort router
+// (router.js step 5) that fires only when no ranked route is registered. The
+// DEFAULT changed (the bare id now resolves native via rankRoutes' native-first
+// sort), but the predicate's job is capability, not preference: it must keep
+// claiming the id so a plan-holder WITHOUT a native DeepSeek key still routes
+// to the plan rather than falling to the default backend. The two are layered:
+// rankRoutes expresses "prefer native"; the predicate expresses "the plan can
+// serve this"; they don't conflict because rankRoutes runs first and its
+// native-first ordering already lands a plan-holder on qwen when deepseek is
+// absent. See the QWEN_PLAN_RESELLS docstring above for the billing rationale.
+const QWEN_PLAN_RESELLS = new Set(["deepseek-v4-pro"]);
 
 /**
  * Build the provider registry from the environment. Order matters: `resolve()`

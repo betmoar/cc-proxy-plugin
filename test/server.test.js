@@ -967,15 +967,14 @@ describe("provider selector strip (the local lens must never leak upstream)", ()
 	it("a non-prefixed body is forwarded byte-for-byte (invariant 1 intact)", async () => {
 		// The rewrite is gated on upstreamModel !== body.model, so an untouched
 		// request must still reuse the original buffer verbatim — key order and
-		// whitespace included. Uses the qwen: selector's OWN id (deepseek-v4-pro)
-		// WITHOUT the prefix: under the stub setup (no DEEPSEEK_API_KEY) and the
-		// issue-#19 reversal, the bare id no longer reaches qwen's predicate and
-		// falls through to the default (claude) — which is fine, the point is the
-		// body, not the destination.
+		// whitespace included. Under the stub setup (GLM + DASHSCOPE, no
+		// DEEPSEEK_API_KEY), the bare id routes to the qwen plan (native not
+		// registered → plan fallback, issue #19), which is what makes this a
+		// real forwarding path rather than a default-backend fallthrough.
 		await wire(okJson);
-		const payload = { model: "claude-opus-5", messages: [{ role: "user", content: "hi" }] };
+		const payload = { model: "deepseek-v4-pro", messages: [{ role: "user", content: "hi" }] };
 		await post(proxy.port, payload);
-		assert.equal(claude.calls[0].body, JSON.stringify(payload));
+		assert.equal(qwen.calls[0].body, JSON.stringify(payload));
 	});
 
 	it("logs the inbound (prefixed) id, so the lens is visible in the audit trail", async () => {

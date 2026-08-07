@@ -121,11 +121,16 @@ to be false.
 A model id does not name a backend. `deepseek-v4-pro` is served by three of
 them at three prices; `glm-5.2` by two. `src/routes.js` records the probed
 matrix (`ROUTES` — complete, including the 403/400 rows, so a known-unavailable
-route is documented rather than merely absent) and ranks the usable ones by
-cost: prepaid plan capacity is sunk, metered credits are marginal spend, an
-aggregator is last. Ties break toward the native provider, which is how "a
-native plan outranks a resold plan" (`glm-5.2` stays on Z.ai) falls out of the
-ordering instead of needing a special case.
+route is documented rather than merely absent) and ranks the usable ones. The
+sort is **native first, then cost**: the native provider wins outright over a
+cheaper resold route (prepaid plan capacity is sunk, metered credits are
+marginal spend, an aggregator is last), because a resold gateway may inject a
+preamble that makes the routes behaviourally non-interchangeable, and the bare
+id is the one `/model` sets. This is the issue-#19 rule; before it, native only
+broke cost ties (which is still how `glm-5.2` stays on Z.ai). When the native
+backend is not registered, `resolve()` skips it and falls to the next-ranked
+route — so a plan-holder without a native DeepSeek key still reaches
+`deepseek-v4-pro` through the plan.
 
 The table is deliberately **not authoritative**: an id absent from it falls
 through to the provider `match()` predicates and still routes. Vendor ids
@@ -137,7 +142,7 @@ To name a route explicitly, `<provider>:<model>` — a **local lens**. Only
 id before forwarding, so no backend ever sees cc-proxy's spelling. Colon only:
 `/` belongs to OpenRouter's `includes("/")` predicate. A slash selector was
 considered and dropped because it buys nothing — the bare id already resolves to
-the cheapest route and the slash form already resolves to the most expensive one.
+the native route and the slash form already resolves to the reseller.
 
 Two ordering constraints in `resolve()`, both load-bearing:
 

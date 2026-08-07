@@ -180,6 +180,38 @@ describe("router", () => {
 			assert.equal(resolve("deepseek-v4-flash", noPlan).id, "deepseek");
 		});
 
+		// A plan-holder WITHOUT a native DeepSeek key must still reach
+		// deepseek-v4-pro through the plan — the native-first DEFAULT only applies
+		// when native is actually registered. This is the case the first issue-#19
+		// fix broke (review REFUTED): it excluded the qwen route from rankRoutes
+		// unconditionally, so a plan-only user fell through to the default backend
+		// (or worse, to a metered reseller) and lost the model entirely.
+		it("falls back to the plan for a plan-holder with no native DeepSeek key", () => {
+			const planOnly = {
+				port: 4000,
+				providers: buildProviders({ DASHSCOPE_API_KEY: "q", GLM_API_KEY: "g" }, "claude"),
+			};
+			assert.equal(
+				resolve("deepseek-v4-pro", planOnly).id,
+				"qwen",
+				"native not registered → plan wins",
+			);
+			// Even with the reseller present, the prepaid plan outranks metered
+			// OpenRouter credits once native is out of the picture.
+			const planAndReseller = {
+				port: 4000,
+				providers: buildProviders(
+					{ DASHSCOPE_API_KEY: "q", OPENROUTER_API_KEY: "o", GLM_API_KEY: "g" },
+					"claude",
+				),
+			};
+			assert.equal(
+				resolve("deepseek-v4-pro", planAndReseller).id,
+				"qwen",
+				"plan (tier 2) beats reseller (tier 4) when native is absent",
+			);
+		});
+
 		it("does not route slash-namespaced qwen/* to qwen (collision-lock)", () => {
 			// qwen/qwen3.7-max has a slash → matches no prefix provider, falls to the
 			// default (claude here). OpenRouter owns the slash space, not Qwen.
@@ -322,10 +354,11 @@ describe("router", () => {
 		};
 
 		it("prefers the native route for a plan-resold id (issue #19)", () => {
-			// REVERSED: "plan before credits" was the default for deepseek-v4-pro
-			// until the +79-token plan preamble made the routes non-interchangeable.
-			// The bare id now routes to native DeepSeek; the plan route stays
-			// reachable via the qwen: selector (see the lens block above).
+			// "plan before credits" was the default for deepseek-v4-pro until the
+			// +79-token plan preamble made the routes non-interchangeable. The bare
+			// id now routes native WHEN NATIVE IS REGISTERED. The plan route still
+			// wins for a plan-holder without a DeepSeek key (tested above) and is
+			// always reachable via the qwen: selector (see the lens block).
 			assert.equal(resolve("deepseek-v4-pro", all).id, "deepseek");
 		});
 

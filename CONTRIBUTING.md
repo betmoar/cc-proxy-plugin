@@ -51,8 +51,11 @@ Steps:
 5. **Probe every id you claim, and record it in `ROUTES`** (`src/routes.js`).
    One entry per (id, backend) pair with the status the host actually returned
    and a cost tier: `1` OAuth/Anthropic, `2` prepaid plan, `3` metered credits,
-   `4` reseller. `rankRoutes()` makes the bare id resolve to the cheapest `200`
-   route, so a missing entry means your backend silently never wins one.
+   `4` reseller. `rankRoutes()` orders the `200` routes **native first, then by
+   tier**, so the bare id resolves to the native backend when one is registered
+   and otherwise to the cheapest one — a missing entry means your backend
+   silently never wins one. (Native-over-tier is the issue-#19 rule: a resold
+   route may inject a preamble, so the bare id prefers the weights it names.)
    **Probe, never read a vendor page** — both QwenCloud's public model list and
    the account's own plan page omit ids their gateway genuinely serves.
    A shared id is then also reachable explicitly as `<provider>:<id>`; the

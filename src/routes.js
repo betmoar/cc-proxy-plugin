@@ -24,13 +24,6 @@
  * @property {string} provider - provider id, must exist in the registry
  * @property {number} status - what the live probe returned (200 = usable)
  * @property {"plan" | "credits"} [billing] - overrides the provider default
- * @property {boolean} [default=true] - false = probe RECORDED but never an
- *   auto-pick. A backend may genuinely SERVE a foreign id (so its catalog lists
- *   it, and the route is honestly probed) yet not be the route the bare id
- *   resolves to. Such a route is reachable only via the `<provider>:` selector,
- *   which bypasses rankRoutes. Recording it (rather than omitting) keeps the
- *   probe matrix complete and the catalog↔routing coherence check honest, while
- *   `default: false` stops rankRoutes from ever sorting it into the auto-pick.
  */
 
 /**
@@ -89,24 +82,18 @@ export function tierOf(providerId, route) {
  */
 export const ROUTES = {
 	// --- served by more than one backend: the reason this file exists ---
-	// REVERSED for `deepseek-v4-pro` (issue #19): the bare id now routes to the
-	// NATIVE DeepSeek backend, not the Qwen plan. The plan still SERVES it — the
-	// 200 probe is RECORDED so the catalog↔routing coherence check stays honest
-	// and the probe matrix stays complete — but `default: false` stops rankRoutes
-	// from ever sorting the qwen route into the auto-pick. It is reachable only
-	// via the `qwen:` selector (which bypasses rankRoutes), and still appears on
-	// Qwen's discovery card as a foreign id under the lens.
-	//
-	// Why the default flipped: the plan gateway injects a +79-token preamble, so
-	// the two routes are behaviourally non-interchangeable, and the bare id is
-	// the one /model sets — defaulting it to the plan silently reroutes a user
-	// who tuned a prompt against native weights. glm-5.2 (below) is UNAFFECTED:
-	// it ties at tier 2 on both backends and the native tiebreak wins, so its
-	// bare id already means native. deepseek-v4-pro does NOT tie — its tiers
-	// differ (plan 2 vs credits 3) — which is exactly why only it needed the
-	// `default: false` flag.
+	// `deepseek-v4-pro` (issue #19): the NATIVE backend (deepseek) sorts FIRST
+	// even though the Qwen plan is the cheaper tier (2 < 3), because rankRoutes
+	// ranks NATIVE above tier. The plan gateway injects a +79-token preamble, so
+	// the plan and native routes are behaviourally non-interchangeable, and the
+	// bare id is the one /model sets — defaulting it to the plan silently
+	// rerouted a user who had tuned a prompt against native weights. The plan
+	// route stays 200 here (the catalog lists it, the probe is real, and it is
+	// the route a plan-holder WITHOUT a native DeepSeek key lands on — see the
+	// "native-first, then cheapest" sort in rankRoutes). glm-5.2 is unaffected:
+	// it already resolved native via the tiebreak (both backends tier 2).
 	"deepseek-v4-pro": [
-		{ provider: "qwen", status: 200, default: false },
+		{ provider: "qwen", status: 200 },
 		{ provider: "deepseek", status: 200 },
 		{ provider: "openrouter", status: 200 },
 	],
@@ -156,11 +143,26 @@ export const ROUTES = {
 };
 
 /**
- * Usable backends for a model, cheapest first.
+ * Usable backends for a model, in routing preference order.
  *
- * Ties break toward the NATIVE provider — the one whose id prefixes the model
- * id. That reproduces "a native plan outranks a resold plan" (`glm-5.2` stays
- * on Z.ai) as a consequence of the ordering rather than a special case.
+ * Sort key, in precedence: (1) NATIVE provider first, (2) then cheapest tier,
+ * (3) then declaration order. The native override is the issue-#19 rule:
+ * when a model is reachable through both its own vendor's backend AND a
+ * resold one, the native route wins EVEN IF the resold route is the cheaper
+ * tier, because a resold gateway may inject a preamble (`deepseek-v4-pro` on
+ * the Qwen plan measures +79 input tokens) that makes the routes
+ * behaviourally non-interchangeable — and the bare id is the one `/model`
+ * sets, so a user who tuned against native weights must not be silently
+ * rerouted. Behavioural predictability beats marginal cost.
+ *
+ * This is a deliberate STRENGTHENING of the pre-#19 rule, which only broke
+ * tier TIES toward native. Promoting native above tier flips exactly one id
+ * (`deepseek-v4-pro`: native deepseek tier 3 now beats plan qwen tier 2);
+ * every other multi-route id already resolved native (`glm-5.2` tied at
+ * tier 2 and the tiebreak won; `deepseek-v4-flash` and `glm-5.1/5` are native
+ * by default since the plan 403s them). When NATIVE IS NOT REGISTERED (a
+ * plan-holder without a DeepSeek key), `resolve()` skips the deepseek route
+ * and falls to the next-ranked one — qwen — so the plan stays reachable.
  *
  * `Object.hasOwn` rather than a bare lookup: a vendor id of `__proto__` or
  * `constructor` would otherwise inherit from Object.prototype and hand back a
@@ -171,20 +173,14 @@ export const ROUTES = {
  */
 export function rankRoutes(model) {
 	if (typeof model !== "string" || !Object.hasOwn(ROUTES, model)) return [];
-	return (
-		ROUTES[model]
-			// `default: false` routes are probed-and-recorded but excluded from the
-			// auto-pick — reachable only via the `<provider>:` selector. See the
-			// deepseek-v4-pro qwen route (issue #19): the plan serves it, but the
-			// bare id must resolve native, so it never sorts into the default ranking.
-			.filter((r) => r.status === 200 && r.default !== false)
-			.map((r, i) => ({ route: r, i, native: model.startsWith(r.provider) }))
-			.sort((a, b) => {
-				const byTier = tierOf(a.route.provider, a.route) - tierOf(b.route.provider, b.route);
-				if (byTier !== 0) return byTier;
-				if (a.native !== b.native) return a.native ? -1 : 1;
-				return a.i - b.i; // stable: declaration order
-			})
-			.map((x) => x.route)
-	);
+	return ROUTES[model]
+		.filter((r) => r.status === 200)
+		.map((r, i) => ({ route: r, i, native: model.startsWith(r.provider) }))
+		.sort((a, b) => {
+			if (a.native !== b.native) return a.native ? -1 : 1; // native wins outright (issue #19)
+			const byTier = tierOf(a.route.provider, a.route) - tierOf(b.route.provider, b.route);
+			if (byTier !== 0) return byTier;
+			return a.i - b.i; // stable: declaration order
+		})
+		.map((x) => x.route);
 }

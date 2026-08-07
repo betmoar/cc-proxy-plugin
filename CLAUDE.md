@@ -376,21 +376,27 @@ tests in `providers.test.js` + `router.test.js`. Never a router/server change.
 
    So the plan resells exactly one GLM (5.2) and two DeepSeek models.
 
-   **REVERSED 0.6.1 (issue #19) for `deepseek-v4-pro` — the bare id now routes
-   NATIVE, not to the plan.** The "plan before credits" policy below shipped in
-   0.5.1 and is now overturned for this one id: the plan gateway injects a
-   +79-token preamble, so the plan and native routes are NOT interchangeable,
-   and the bare id is the one `/model` sets — defaulting it to the plan
-   silently rerouted users who had tuned prompts against native weights. The
-   fix is `default: false` on the qwen route in `ROUTES` (src/routes.js): the
-   200 probe stays RECORDED (so the catalog-coherence coupling holds and the
-   probe matrix stays complete), but `rankRoutes` never sorts it into the
-   auto-pick. `QWEN_PLAN_RESELLS` (src/providers.js) is emptied — its predicate
-   no longer claims the bare id; the plan route is reachable only via the
-   `qwen:` selector. `glm-5.2` is UNAFFECTED (a native plan outranks a resold
-   one — it ties at tier 2 and the native tiebreak already won). Everything
-   below — the probe matrix, the tier vocabulary, the cost rank — remains the
-   reference; only the default-pick policy for one id changed.
+   **REVERSED 0.6.1 (issue #19) for `deepseek-v4-pro` — NATIVE wins over the
+   plan WHEN NATIVE IS REGISTERED.** The "plan before credits" policy below
+   shipped in 0.5.1 and is overturned for this one id: the plan gateway injects
+   a +79-token preamble, so the plan and native routes are NOT interchangeable,
+   and the bare id is the one `/model` sets — defaulting it to the plan silently
+   rerouted users who had tuned prompts against native weights. The fix is a
+   STRENGTHENING of `rankRoutes` (src/routes.js): the NATIVE provider now sorts
+   ABOVE tier, not just as a tier tiebreak. So for `deepseek-v4-pro` (native
+   deepseek tier 3 vs plan qwen tier 2) native wins; for every other multi-route
+   id nothing changes (`glm-5.2` already resolved native via the tiebreak). The
+   plan route is NOT removed — a plan-holder WITHOUT a native DeepSeek key still
+   lands on it (the native route isn't registered, so `resolve` skips to the
+   next-ranked qwen route), and `qwen:` always reaches it. `QWEN_PLAN_RESELLS`
+   stays populated: the predicate is the capability/last-resort router, and
+   claiming the id is the honest "the plan serves this" statement — preference
+   (native-first) lives in rankRoutes, not the predicate. A first attempt used
+   a `default: false` route flag to exclude the plan from the auto-pick; review
+   REFUTED it because a plan-only user then lost the model entirely (the flag
+   was unconditional; native-first is registration-aware). Everything below —
+   the probe matrix, the tier vocabulary, the cost rank — remains the reference;
+   only the native-vs-tier precedence for one id changed.
 
    **Partially DONE in 0.5.1 — "plan before credits" is the DEFAULT now.**
    `QWEN_PLAN_RESELLS` (`src/providers.js`) routes bare `deepseek-v4-pro` to the
