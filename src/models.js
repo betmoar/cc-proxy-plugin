@@ -299,7 +299,13 @@ export function parseOpenRouterModels(str) {
  * @returns {string | null}
  */
 export function coerceCreated(v) {
-	if (typeof v === "string") return v;
+	// The string branch is validated, not trusted: the field promises ISO-8601,
+	// and a vendor sending "n/a" or "unknown" would otherwise put that straight
+	// on the wire. Parseable strings are passed through VERBATIM rather than
+	// re-serialized — round-tripping through Date would silently rewrite a
+	// vendor's offset ("+02:00" -> "Z") and drop sub-second precision, which is
+	// a change we have no reason to make to a value that is already valid.
+	if (typeof v === "string") return Number.isNaN(Date.parse(v)) ? null : v;
 	if (typeof v !== "number" || !Number.isFinite(v) || v <= 0) return null;
 	const ms = v >= 1e12 ? v : v * 1000;
 	const d = new Date(ms);

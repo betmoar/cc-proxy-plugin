@@ -612,13 +612,26 @@ tests in `providers.test.js` + `router.test.js`. Never a router/server change.
     missing"). What remains open is everything only a real backend can produce:
     a vendor renaming an id, a leg timing out, a catalog shape change. Those
     still surface only when a human regenerates and looks.
-14. **`coerceCreated()` does not validate its string branch.** A string is
-    passed through verbatim, so `"junk"` reaches the wire as
-    `created_at: "junk"` where the schema promises ISO-8601. Every current
-    backend sends either ISO or a unix number, so this is latent, not live.
-    Cheap fix (`Number.isNaN(Date.parse(v)) ? null : v`); deliberately not done
-    in the route-selection PR because it was outside the reviewed criteria and
-    the behavior predates that branch.
+14. ~~**`coerceCreated()` does not validate its string branch**~~ — **DONE**
+    (Copilot review on PR #18 raised it independently the same day, which is a
+    fair signal it was not worth deferring). Unparseable strings now null;
+    parseable ones pass through VERBATIM rather than round-tripping through
+    `Date`, which would silently rewrite a vendor's offset (`+02:00` → `Z`) and
+    drop sub-second precision on a value that is already valid.
+15. **`handleProxy()` is not exported, so its body handling cannot be unit
+    tested.** Surfaced by the same review: it used to write
+    `stripped.body.model = upstreamModel`, an in-place edit of the inbound body
+    (`stripAssistantThinking` returns the caller's own object when it strips
+    nothing). Fixed by building an outbound object — but the fix is **not
+    directly locked**, and the reason is worth keeping: every observable is
+    identical under the defect, because `inboundModel` is captured before the
+    rewrite. An end-to-end test asserting the log line and the upstream body
+    PASSES against the in-place write (verified by mutation, then deleted rather
+    than left in place looking like a guard).
+    What is locked is the contract underneath: `test/sanitize.test.js` "returns
+    the SAME object when nothing was stripped" (mutation-verified — returning a
+    copy fails 2 tests). Exporting `handleProxy` for a direct test is the real
+    fix; weigh that against widening the module's surface.
 
 ## Operator
 

@@ -142,6 +142,15 @@ describe("models.js pure helpers", () => {
 		assert.equal(coerceCreated(Number.NaN), null);
 		assert.equal(coerceCreated(Number.POSITIVE_INFINITY), null);
 		assert.equal(coerceCreated(1e18), null, "out-of-range ms must not emit Invalid Date");
+		// The string branch is VALIDATED, not trusted (Copilot review, PR #18):
+		// the field promises ISO-8601, so a vendor sending prose must not put it
+		// on the wire.
+		assert.equal(coerceCreated("junk"), null, "an unparseable string must null");
+		assert.equal(coerceCreated("n/a"), null);
+		assert.equal(coerceCreated(""), null);
+		// A parseable string passes through VERBATIM — no round-trip through
+		// Date, which would rewrite the vendor's offset and drop precision.
+		assert.equal(coerceCreated("2026-07-28T12:34:56.789+02:00"), "2026-07-28T12:34:56.789+02:00");
 	});
 
 	it("CONTEXT_WINDOW holds integer token counts, never display strings", () => {
