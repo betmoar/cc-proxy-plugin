@@ -2,7 +2,7 @@
   "name": "cc-proxy-plugin",
   "private": true,
   "type": "module",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "GLM, DeepSeek, OpenRouter, and Qwen proxy for Claude Code — stateless local router with manual /model switching and per-provider auth.",
   "license": "MIT",
   "packageManager": "pnpm@11.3.0",
