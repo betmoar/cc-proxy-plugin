@@ -2,7 +2,7 @@
 
 All notable changes to cc-proxy are recorded here. Versions follow [semver](https://semver.org/); `package.json` is the single source of truth and propagates to `.claude-plugin/plugin.json` via `scripts/sync-version.mjs`.
 
-## [Unreleased]
+## [0.6.0] — 2026-08-07
 
 ### Added
 - **Provider-namespaced model ids: `<provider>:<model>`.** The bare id routes to the **cheapest** backend serving it; every other route stays reachable by prefixing the backend — `deepseek:deepseek-v4-pro` reaches DeepSeek's own endpoint, `qwen:glm-5.2` the plan's copy. This closes a gap 0.5.1 opened: "plan before credits" moved bare `deepseek-v4-pro` to the Qwen Token Plan, whose gateway injects a preamble (**+79 input tokens**, measured on the same 9-word body), and no spelling was left that reached native DeepSeek. The selector is cc-proxy's LOCAL lens — no backend has heard of it — so it is stripped before forwarding and the backend only ever sees its own id. **Colon only.** `/` was left to OpenRouter untouched: probing showed the bare id already routes cheapest and the slash form already routes to the reseller (`qwen3.7-max` → plan, `qwen/qwen3.7-max` → OpenRouter), so a slash selector buys nothing in either direction — and rewriting OpenRouter's `includes("/")` predicate into an allowlist would have been the price. `:` was live-verified through Claude Code's `/model` picker on 2026-08-06.
