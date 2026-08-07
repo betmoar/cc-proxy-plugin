@@ -71,16 +71,55 @@ Routing decisions land in `~/.claude/cc-proxy/cc-proxy.log` (`PROXY_DEBUG=1` for
 ## Model discovery
 
 `GET http://127.0.0.1:4000/v1/models` returns a best-effort, Anthropic-format
-list of reachable models: GLM and DeepSeek are fetched live, Claude, OpenRouter, and
-Qwen come from curated lists (Qwen exposes no `/models` endpoint). If a live leg fails,
-the response is still `200` and names the failed provider in a non-standard `_errors`
-array. Set `OPENROUTER_MODELS` to override which OpenRouter ids appear.
+list of reachable models: GLM, DeepSeek, Qwen, and OpenRouter are fetched live;
+only Claude is a curated list. Each live leg falls back to a curated list if the
+fetch fails, so the response is still `200` and names the failed provider in a
+non-standard `_errors` array. Set `OPENROUTER_MODELS` to pin the OpenRouter ids
+explicitly and skip its live fetch.
+
+Entries a backend serves but this proxy cannot use — multimodal ids wanting a
+different request schema, `:batch` variants, `~latest` aliases — are published
+with `usable: false` rather than dropped, so a consumer can show them greyed out
+instead of wondering where they went. The field is **absent** on usable entries;
+check with `entry.usable !== false`.
 
 Entries whose id has a curated context window also carry a non-standard
 `context_window` — an **integer token count** (`1000000`, not `"1M"`). ids
 without a curated window (the OpenRouter-prefixed `vendor/model` ids, and
 `claude-*`) **omit the field entirely** rather than sending `null`, so a
 consumer tells "unknown" from "known" with `"context_window" in entry`.
+
+Every entry also carries `provider` (which backend serves it), `tier`, and
+`grade`. **`tier` and `grade` are different axes and must not be read off one
+another:** `tier` is what the route COSTS (`1` Anthropic/OAuth, `2` prepaid plan,
+`3` metered credits, `4` reseller), `grade` is what the model can DO
+(`Flagship` / `Strong` / `Specialist` / `Economy`, unknown ids default
+`Specialist`). A resold Flagship is tier 4 and Flagship; a cheap fast model is
+tier 2 and Economy.
+
+## Choosing a route
+
+The **bare id always routes to the cheapest backend**. Every other route stays
+selectable under a `<provider>:<model>` prefix:
+
+```
+/model deepseek-v4-pro           # cheapest route (prepaid plan capacity)
+/model deepseek:deepseek-v4-pro  # DeepSeek's own endpoint (metered credits)
+/model deepseek/deepseek-v4-pro  # via OpenRouter (a real OpenRouter id, unchanged)
+```
+
+The prefix is local to cc-proxy — it is stripped before the request is
+forwarded, so the backend only ever sees its own id. Note the routes are not
+byte-identical: a plan gateway injects a preamble (measured at +79 input tokens
+on `deepseek-v4-pro`), which is precisely why the choice is explicit rather than
+silent. `claude-haiku-*` ignores any prefix and always goes to Anthropic.
+
+In the discovery list, **which spelling appears bare is decided by namespace
+ownership, not by cost**: each backend lists ids in its own namespace bare and
+every foreign id it serves under the `<provider>:` lens. So `deepseek-v4-pro` is
+bare under DeepSeek and `qwen:deepseek-v4-pro` under the plan — even though the
+plan is the cheaper route the bare id resolves to. Listing and routing are
+deliberately independent.
 
 ## Commands
 
@@ -156,7 +195,7 @@ The statusline runs as its own subprocess and only inherits `settings.json`'s `e
 | `OPENROUTER_API_KEY` | — | Enable OpenRouter (slash-namespaced models; lives in `~/.env`) |
 | `DEEPSEEK_API_KEY` | — | Enable DeepSeek (bare `deepseek-*` models; lives in `~/.env`) |
 | `DASHSCOPE_API_KEY` | — | Enable Qwen (bare `qwen`-prefixed models, Token Plan skin; lives in `~/.env`) |
-| `OPENROUTER_MODELS` | curated | Override the OpenRouter allowlist in `GET /v1/models` (comma-separated ids); discovery only |
+| `OPENROUTER_MODELS` | live | Pin the OpenRouter ids in `GET /v1/models` (comma-separated); set = skip the live fetch, unset = fetch live with a curated fallback. Discovery only |
 | `PROXY_PATH` | auto | Legacy override for the proxy entry point; the plugin tree's own `bin/cc-proxy.js` wins when present |
 | `PROXY_PORT` | `4000` | Proxy listen port |
 | `PROXY_HOST` | `127.0.0.1` | Interface the proxy binds to (loopback by default) |

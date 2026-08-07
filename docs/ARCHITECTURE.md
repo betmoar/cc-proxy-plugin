@@ -87,13 +87,18 @@ The second active normalization, same spirit as overflow: GLM's `1302` request-r
 ### Model discovery (`/v1/models`)
 
 `GET /v1/models` synthesizes a merged model list rather than forwarding. It lives
-outside the router because it aggregates across backends: GLM and DeepSeek are
-fetched live, while Claude, OpenRouter, and Qwen come from curated static lists
-(Qwen's host exposes no `/models` route — it 404s). The discovery list advertises
+outside the router because it aggregates across backends: GLM, DeepSeek, Qwen,
+and OpenRouter are fetched live, while Claude is a curated static list. Each live
+leg keeps a curated list as its offline fallback. Qwen's catalog is on the
+OpenAI-compatible path (`/compatible-mode/v1/models`), not the Anthropic skin the
+proxy forwards to (`/apps/anthropic/v1/models`, which 404s "Not support") — that
+asymmetry is why this leg was static for so long. The discovery list advertises
 only generally-reachable models (Glasswing-gated and region-blocked ids are
-omitted). Best-effort by design: a failed live leg yields an `_errors` entry, not
-a failed response, keeping the endpoint stateless (invariant 2) and the fan-out
-non-blocking.
+omitted); ids a backend serves that this proxy cannot use (multimodal, `:batch`,
+`~latest` aliases) are published with `usable: false` rather than dropped, and
+the field is absent when the entry is usable. Best-effort by design: a failed
+live leg yields an `_errors` entry, not a failed response, keeping the endpoint
+stateless (invariant 2) and the fan-out non-blocking.
 
 Each entry carries a non-standard `context_window` when its id has a curated
 window (`src/models.js` `CONTEXT_WINDOW`, attached uniformly by
@@ -104,6 +109,46 @@ distinguishable from "known" via `"context_window" in entry`. This is a
 published contract with a named downstream consumer (cc-reload budgets a
 session against it), which is why the table lives in `src/` rather than in the
 display layer — see CLAUDE.md "Reversed decisions".
+
+Entries also carry `provider`, `tier` (cost, from `src/routes.js` `tierOf()`),
+and `grade` (capability, from `src/models.js` `MODEL_GRADES`). Two fields
+because they are two axes: a resold model is expensive to reach and just as
+capable as its native twin. Collapsing them would force one of the two claims
+to be false.
+
+## Route selection
+
+A model id does not name a backend. `deepseek-v4-pro` is served by three of
+them at three prices; `glm-5.2` by two. `src/routes.js` records the probed
+matrix (`ROUTES` — complete, including the 403/400 rows, so a known-unavailable
+route is documented rather than merely absent) and ranks the usable ones by
+cost: prepaid plan capacity is sunk, metered credits are marginal spend, an
+aggregator is last. Ties break toward the native provider, which is how "a
+native plan outranks a resold plan" (`glm-5.2` stays on Z.ai) falls out of the
+ordering instead of needing a special case.
+
+The table is deliberately **not authoritative**: an id absent from it falls
+through to the provider `match()` predicates and still routes. Vendor ids
+rename, and a table that could strand a model on rename would be worse than no
+table.
+
+To name a route explicitly, `<provider>:<model>` — a **local lens**. Only
+`src/router.js` interprets it; `handleProxy` rewrites `body.model` to the bare
+id before forwarding, so no backend ever sees cc-proxy's spelling. Colon only:
+`/` belongs to OpenRouter's `includes("/")` predicate. A slash selector was
+considered and dropped because it buys nothing — the bare id already resolves to
+the cheapest route and the slash form already resolves to the most expensive one.
+
+Two ordering constraints in `resolve()`, both load-bearing:
+
+1. The selector is parsed **first**, so nothing resolves by coincidence (before
+   the explicit parse, `qwen:qwen3.7-max` worked only because it happened to
+   satisfy `startsWith("qwen")`, while `glm:glm-5.2` silently fell to the
+   default backend).
+2. The `claude-haiku-*` pin tests the **stripped tail** and outranks the
+   selector. Pinning on the raw id would let `glm:claude-haiku-…` skip it, and
+   the strip would then deliver the bare haiku id to a third party — invariant 4
+   violated and paid quota burned.
 
 ### Registering models in `/model`
 
@@ -127,7 +172,7 @@ cc-proxy-plugin/                    ← the plugin IS the repo root; the marketp
 │   ├── proxy.js                    upstream forwarding (transparent pipe)
 │   ├── server.js                   HTTP server, overflow conversion, /_status
 │   ├── sanitize.js                 strips thinking blocks from history
-│   └── models.js                   /v1/models discovery: fans out to GLM + DeepSeek (live) + Claude/OpenRouter/Qwen (static), merges best-effort
+│   └── models.js                   /v1/models discovery: fans out to GLM + DeepSeek + Qwen + OpenRouter (live, curated fallback) + Claude (static), merges best-effort
 ├── hooks/                          SessionStart proxy auto-start (proxy-lifecycle.js)
 ├── scripts/statusline.js           quota / credits / proxy-down indicator
 ├── scripts/status.js               /cc-proxy:status report builder

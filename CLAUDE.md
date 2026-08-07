@@ -21,8 +21,14 @@ Each is locked by tests; the test names tell you what you broke.
 
 1. **Transparent pipe.** The proxy rewrites auth/headers only. Full inbound
    path *including the query string* reaches the upstream; bodies are forwarded
-   byte-for-byte (except the thinking-strip, below). No prompt inspection, no
-   rewriting, no retry/replay. One deliberate header exception: hop-by-hop
+   byte-for-byte (except the thinking-strip and the selector-strip, below). No
+   prompt inspection, no rewriting, no retry/replay. **Second body exception:**
+   a `<provider>:` selector is cc-proxy's LOCAL lens — no backend has heard of
+   it — so `handleProxy` rewrites `body.model` to the bare id and nothing else.
+   The rewrite is decided before the stream/non-stream branch (the streaming
+   path never parses the body) and is gated on `upstreamModel !== body.model`,
+   so an unprefixed request still reuses the original buffer verbatim. →
+   `test/server.test.js` "provider selector strip…". One deliberate header exception: hop-by-hop
    headers (RFC 9110 §7.6.1 — above all `transfer-encoding`) are dropped,
    because the proxy always sends a buffered body with an exact
    `content-length`, and forwarding CL+TE together trips upstream
@@ -59,12 +65,48 @@ Each is locked by tests; the test names tell you what you broke.
 | 2 | `src/providers.js` `applyAuth()` / `buildUpstreamHeaders()` | credential leak, or auth failure everywhere |
 | 3 | `hooks/proxy-lifecycle.js` `ensureProxyRunning()` | proxy never starts → all sessions `ECONNREFUSED` |
 | 4 | `src/server.js` `forwardBuffered()` | GLM overflow becomes silent empty turns again |
-| 5 | `src/router.js` `resolve()` | wrong backend / haiku traffic burns GLM quota |
+| 5 | `src/router.js` `resolve()` + `parseModelSelector()` | wrong backend / haiku traffic burns GLM quota. The haiku pin must test the STRIPPED tail — pinning on the raw id lets `glm:claude-haiku-…` skip it |
+| 5b | `src/routes.js` `rankRoutes()` | every shared id silently takes the expensive route |
 | 6 | `.claude-plugin/plugin.json` `version` | users silently never receive updates (cache key) |
 | 7 | `skills/setup/SKILL.md` | corrupts the user's `~/.claude/settings.json` |
 | 8 | `src/sanitize.js` | mid-session backend switch 400s ("Invalid signature in thinking block") |
 
 ## Couplings — if you touch X, you must also update Y
+
+- **A catalog says what a backend SERVES; `ROUTES` says who serves it CHEAPEST;
+  namespace ownership decides the SPELLING.** Three questions, three places —
+  keep them separate. A leg's static list is the offline mirror of that
+  backend's live catalog, so it legitimately includes FOREIGN ids: the Qwen plan
+  really does serve `glm-5.2` and `deepseek-v4-pro`, and omitting them would
+  make the fallback publish a different list than the live fetch. That is not a
+  restatement of the route table — the two answer different questions.
+  What must hold: a foreign id in a catalog has a `200` `ROUTES` entry naming
+  that backend, or the catalog claims a route nothing has ever probed.
+  → `test/routes.test.js` "a catalog may list a foreign id it serves — the lens
+  keeps it unambiguous", plus its looser sibling "every id that a static catalog
+  publishes has a route or a predicate".
+  Display then follows **ownership, not cost** (`ownsId` in `src/models.js`):
+  a backend publishes ids in its own namespace bare and everything else under
+  the `<provider>:` lens, so `deepseek-v4-pro` stays bare on DeepSeek's card and
+  appears as `qwen:deepseek-v4-pro` on the plan's. Routing is still cost-ranked
+  and independent of that — the bare id resolves to the cheapest route, which
+  for `deepseek-v4-pro` is the plan, not the vendor whose namespace it is.
+  **Reversed 7b4361c.** The prior rule was the opposite — catalogs listed only
+  their own vendor's ids, `collectModels()` derived the winner, and a foreign
+  entry was forbidden (locked by a now-deleted test "no static catalog restates
+  a route it does not own"). That held while catalogs were hand-curated. Once
+  the Qwen and OpenRouter legs became LIVE fetches, a catalog stopped being a
+  curated opinion and became a mirror of someone else's response, which the
+  fallback must match. If you make a leg static again, this reverses back.
+- **Capability grade lives in `src/models.js` only.** `MODEL_GRADES` (+
+  `gradeOf`) is published on `/v1/models` as `grade`;
+  `scripts/render-models.js` re-exports it as `MODEL_TIERS` and must never
+  reintroduce a local copy. A new model with no grade silently ships
+  `Specialist`.
+- **`grade` (capability) and `tier` (cost) are separate fields on purpose.**
+  `tier` comes from `src/routes.js` `tierOf()`, `grade` from `MODEL_GRADES`.
+  They do not correlate — tier 4 + Flagship and tier 2 + Economy are both
+  normal. Never derive one from the other or collapse them into one field.
 
 - **Routing log format** `[<iso>] <model> -> <provider> <path>` (`src/server.js`) is
   **parsed** by `scripts/status.js` `parseRoutingLines()`. Change one → both + tests.
@@ -271,8 +313,34 @@ tests in `providers.test.js` + `router.test.js`. Never a router/server change.
    `docs/ARCHITECTURE.md` (last section); only matters past ~128 concurrently
    stalled upstream calls to one origin.
 7. **Windows** — untested end to end (detached spawn, log paths).
-8. **Explicit provider-prefix ids (`<provider>:<model>`)** — a way to say "this
-   model, *that* backend" when one model is reachable through several. Motive is
+8. ~~**Explicit provider-prefix ids (`<provider>:<model>`)**~~ — **DONE
+   (feat/route-selection).** Shipped as a COLON-ONLY selector (`src/router.js`
+   `parseModelSelector`), with the cost rank in `src/routes.js` (`ROUTES`,
+   `rankRoutes`, `tierOf`). Spec: `docs/specs/route-selection.md`. Keep reading
+   the item — the probe matrix and the billing/tier vocabulary below are still
+   the reference, and item 9 builds on them.
+
+   **The `/` trap dissolved rather than being solved.** The worry was that
+   OpenRouter's `includes("/")` claims the whole slash namespace, so
+   `qwen/deepseek-v4-pro` could never mean the plan. True — and irrelevant, once
+   probed: the BARE id already routes to the cheapest backend and the slash form
+   already routes to the most expensive one (`qwen3.7-max` → plan,
+   `qwen/qwen3.7-max` → OpenRouter). A slash selector therefore buys nothing in
+   either direction, so `/` was left to OpenRouter untouched and the collision-
+   lock tests (`test/router.test.js:65,77,179`) never needed changing.
+   `:` was live-verified through Claude Code's `/model` picker on 2026-08-06 —
+   it reaches the proxy intact.
+
+   **What the lens cost, and where the danger was.** The selector must be
+   stripped before forwarding (a backend 400s on our local spelling), and that
+   strip is what nearly broke invariant 4: the haiku pin tested the RAW model
+   id, so `glm:claude-haiku-…` skipped the pin AND arrived upstream as the bare
+   haiku id — internal ops billed to a third party. The pin now tests the
+   STRIPPED TAIL and discards any selector. Caught by an adversarial review, not
+   by the original design; both the unit and end-to-end guards were
+   mutation-tested against a reintroduction of the defect.
+
+   Original scoping notes follow. Motive is
    billing, not availability: a model reached through a plan is already paid for
    (sunk capacity), while the same model on a credit-billed backend costs real
    money per call — see the billing table below, and note it does NOT track
@@ -432,15 +500,36 @@ tests in `providers.test.js` + `router.test.js`. Never a router/server change.
    plugin installable alone. A tier field on the discovery response respects the
    arrow; a tiers.env read does not.
 
-   **The judgment already exists**: `MODEL_TIERS` in `scripts/render-models.js`
-   (Flagship / Strong / Specialist / Economy, unknown ids default Specialist).
-   Shipping it means moving that map from `scripts/` into `src/models.js` — a
-   real decision, because today the header of that file says the tier is
-   deliberately display-layer judgment, NOT src/. Moving it makes a curated
-   opinion part of the API surface: every new model then needs a tier before
-   discovery is correct, and a wrong one silently mis-tiers a dispatch. The
-   existing `test/render-models.test.js` coverage assertion (every curated
-   discovery id has a tier) becomes load-bearing rather than cosmetic.
+   **MECHANICALLY DONE (feat/route-selection); the grades themselves are not.**
+   The map moved from `scripts/render-models.js` to `src/models.js` as
+   `MODEL_GRADES` (+ `gradeOf`, `DEFAULT_GRADE`), and every `/v1/models` entry
+   now carries **`grade`** (capability) alongside **`tier`** (cost, 1–4 from
+   `src/routes.js`). `render-models.js` re-exports `MODEL_TIERS = MODEL_GRADES`
+   so the two cannot drift. That was the reversal this paragraph warned about:
+   a curated opinion is now API surface, so **every new model needs a grade or
+   discovery silently publishes `Specialist`**.
+
+   **The live catalogs changed the SCALE of that, not just the principle.**
+   Grading was tractable while the catalog was ~27 hand-curated ids. Discovery
+   now publishes ~320 usable models, almost all of them OpenRouter's, and the
+   curated table covers a couple of dozen — so the overwhelming majority of the
+   response ships the `Specialist` default, which reads as a claim and is really
+   an absence. Measured 2026-08-07 against the live proxy: of 320 usable
+   entries, **299 are `Specialist`** (7 Flagship, 9 Strong, 5 Economy). Two consequences to decide on before item 9 is called done:
+   (a) a consumer cannot distinguish "graded Specialist" from "never graded",
+   which argues for OMITTING `grade` when there is no entry, exactly as
+   `context_window` already omits rather than sending `null`;
+   (b) grading ~320 models by hand is not going to happen, so the eval harness
+   below is now a prerequisite rather than a refinement — or the field is
+   honestly scoped to the ids someone has actually assessed.
+
+   TWO FIELDS, TWO AXES, NEVER READ ONE OFF THE OTHER: `deepseek/deepseek-v4-pro`
+   is tier 4 (expensive, resold) and Flagship (same weights as native); a cheap
+   fast model can be tier 2 and Economy. Collapsing them would make one a lie.
+
+   **What remains open is the part that actually needed evals** — the grades are
+   still one person's read of vendor marketing, now published where another tool
+   dispatches on them. Everything under "Grades need evals" below still stands.
 
    **The two tier vocabularies are not the same axis** — this is the part to
    think through before building. cc-proxy's are *capability grades* (how strong
@@ -499,3 +588,51 @@ tests in `providers.test.js` + `router.test.js`. Never a router/server change.
     skew by up to the round-trip time — 60s is safe, 5s would false-positive on
     a slow network. Pure insurance while the clock is correct, which is exactly
     when it is cheap to write.
+12. **`ROUTES` is hand-probed and silently rots.** Every entry in
+    `src/routes.js` is a status a host returned on one day. Nothing offline can
+    tell you it still holds, and the two failure modes differ sharply:
+    - an id that starts **403-ing** on a plan degrades safely — `rankRoutes()`
+      skips it and the predicate fallback in `providers.js` still routes the
+      request, just to a costlier backend and without saying so;
+    - an id that is **renamed or withdrawn** drops out of discovery entirely,
+      and because a catalog now mirrors a live response, the offline fallback
+      keeps advertising it until someone notices.
+    Re-probe before each release (`POST /v1/messages`, 1 token, per cell). The
+    matrix in item 8 is the reference shape. There is no test that can catch
+    this — that is the point of writing it down.
+13. **`docs/models.html` regressions are invisible to CI, and one already got
+    through.** The artifact is generated against a LIVE proxy, so the gate can
+    only ever compare a committed file to the static catalog. An adversarial
+    review proved the consequence on 2026-08-07: reintroducing the renderer's
+    provider-attribution defect left **all 17 artifact tests green**, because
+    they read the committed HTML rather than running the renderer.
+    Partly closed — `test/render-models.test.js` now drives
+    `scripts/render-models.js` as a subprocess against a stub `/_status` +
+    `/v1/models` (mutation-verified: the defect fails with "DeepSeek card
+    missing"). What remains open is everything only a real backend can produce:
+    a vendor renaming an id, a leg timing out, a catalog shape change. Those
+    still surface only when a human regenerates and looks.
+14. ~~**`coerceCreated()` does not validate its string branch**~~ — **DONE**
+    (Copilot review on PR #18 raised it independently the same day, which is a
+    fair signal it was not worth deferring). Unparseable strings now null;
+    parseable ones pass through VERBATIM rather than round-tripping through
+    `Date`, which would silently rewrite a vendor's offset (`+02:00` → `Z`) and
+    drop sub-second precision on a value that is already valid.
+15. **`handleProxy()` is not exported, so its body handling cannot be unit
+    tested.** Surfaced by the same review: it used to write
+    `stripped.body.model = upstreamModel`, an in-place edit of the inbound body
+    (`stripAssistantThinking` returns the caller's own object when it strips
+    nothing). Fixed by building an outbound object — but the fix is **not
+    directly locked**, and the reason is worth keeping: every observable is
+    identical under the defect, because `inboundModel` is captured before the
+    rewrite. An end-to-end test asserting the log line and the upstream body
+    PASSES against the in-place write (verified by mutation, then deleted rather
+    than left in place looking like a guard).
+    What is locked is the contract underneath: `test/sanitize.test.js` "returns
+    the SAME object when nothing was stripped" (mutation-verified — returning a
+    copy fails 2 tests). Exporting `handleProxy` for a direct test is the real
+    fix; weigh that against widening the module's surface.
+
+## Operator
+
+@OPERATOR.md — it is this session's operating charter.

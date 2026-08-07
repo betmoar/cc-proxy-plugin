@@ -1,10 +1,82 @@
 // @ts-check
 
 import { providerById } from "./providers.js";
+import { tierOf } from "./routes.js";
 
 /**
- * @typedef {{ type: "model", id: string, display_name: string, created_at: string | null, context_window?: number }} ModelEntry
+ * @typedef {{ type: "model", id: string, display_name: string, created_at: string | null, context_window?: number, provider?: string, tier?: number, grade?: string, usable?: boolean }} ModelEntry
  */
+
+/**
+ * CAPABILITY grade per model id — how strong the model is. Promoted here from
+ * `scripts/render-models.js` (2026-08-06) for the same reason CONTEXT_WINDOW
+ * was: a second consumer needed it programmatically. cc-operator dispatches
+ * work by model strength and was otherwise left guessing whenever an id it had
+ * never seen appeared in the catalog.
+ *
+ * DELIBERATELY A DIFFERENT AXIS FROM `tier`. `tier` is what a route COSTS
+ * (1 oauth-plan … 4 reseller); `grade` is what the model can DO. They are not
+ * correlated and must never be read off one another: `deepseek/deepseek-v4-pro`
+ * is tier 4 (expensive, resold) and Flagship (same weights as native), while a
+ * cheap fast model can be tier 2 and Economy. Publishing them as one field
+ * would make one of those a lie.
+ *
+ * Grade attaches to the MODEL; tier attaches to the (id, backend) pair. That is
+ * why the dated plan build below grades as its bare sibling.
+ *
+ * Consumers own their own role mapping (JUDGMENT/IMPLEMENT/MECHANICAL/RECON is
+ * cc-operator's vocabulary, not ours) — this repo publishes capability, never
+ * roles, or it starts encoding another tool's policy. Note also that a bound id
+ * need not appear in discovery at all: `claude-haiku-*` is pinned by invariant
+ * 4 and deliberately unlisted, so a lookup must tolerate a miss.
+ *
+ * @type {Record<string, "Flagship" | "Strong" | "Specialist" | "Economy">}
+ */
+export const MODEL_GRADES = {
+	// GLM
+	"glm-5.2": "Flagship",
+	"glm-5.1": "Strong",
+	"glm-5": "Strong",
+	"glm-5-turbo": "Specialist",
+	"glm-4.7": "Economy",
+	"glm-4.6": "Economy",
+	"glm-4.5": "Economy",
+	"glm-4.5-air": "Economy",
+	// DeepSeek (native)
+	"deepseek-v4-pro": "Flagship",
+	"deepseek-v4-flash": "Strong",
+	// OpenRouter (curated allowlist)
+	"deepseek/deepseek-v4-pro": "Flagship",
+	"deepseek/deepseek-v4-flash": "Strong",
+	"tencent/hy3": "Specialist",
+	"moonshotai/kimi-k2.7-code": "Specialist",
+	"moonshotai/kimi-k3": "Specialist",
+	"qwen/qwen3.7-max": "Strong",
+	// Qwen (curated, DashScope)
+	"qwen3.8-max": "Strong",
+	"qwen3.7-max": "Strong",
+	"qwen3.7-plus": "Specialist",
+	"qwen3.6-flash": "Economy",
+	// Plan-served DeepSeek build — graded as its bare sibling deepseek-v4-flash,
+	// which it is a dated snapshot of. Capability, not cost: reaching it through
+	// the plan is cheaper, but that is the tier's business, not the grade's.
+	"deepseek-v4-flash-0731": "Strong",
+	// Claude (curated, OAuth)
+	"claude-fable-5": "Flagship",
+	"claude-opus-5": "Flagship",
+	"claude-sonnet-5": "Strong",
+};
+
+/** Grade of a model id; unknown ids are Specialist (a shape, not a rung). */
+export const DEFAULT_GRADE = "Specialist";
+
+/**
+ * @param {string} id
+ * @returns {string}
+ */
+export function gradeOf(id) {
+	return Object.hasOwn(MODEL_GRADES, id) ? MODEL_GRADES[id] : DEFAULT_GRADE;
+}
 
 /**
  * Curated context windows (integer token counts), keyed by the bare discovery
@@ -38,10 +110,15 @@ import { providerById } from "./providers.js";
  * answer until someone verifies the aggregator's window per id. (Absent, of
  * course, means the consumer needs its own fallback — that cost is accepted.)
  *
- * Sources (2026-08-04), re-verify before each release touching the model:
+ * Sources (2026-08-04), re-verify before each release touching the model —
+ * full vendor doc index in docs/OPERATIONS.md "Vendor documentation":
  *   GLM:      docs.z.ai/guides/llm/glm-*.md  (4.5=128K; 4.6/4.7/5/5-Turbo/5.1=200K; 5.2=1M)
- *   DeepSeek: api-docs.deepseek.com/quick_start/pricing (1M)
- *   Qwen:     Alibaba Model Studio (1M, incl. 3.8-max-preview)
+ *             overview: https://docs.z.ai/devpack/overview
+ *   DeepSeek: https://api-docs.deepseek.com  (quick_start/pricing → 1M)
+ *   Qwen:     https://docs.qwencloud.com/token-plan/personal/token-plan-personal-overview
+ *             (1M. `qwen3.8-max-preview` is NOT published: it is a pure alias
+ *             onto qwen3.8-max — same weights, production billing — so listing
+ *             it would be a second name for a model already in the catalog.)
  * GLM/DeepSeek are pinned to the docs verbatim; the Qwen numbers come from a
  * vendor summary (all Qwen 3.x models share a 1M window) — re-verify any of
  * these before a release touching the model, exactly like DEEPSEEK_PRICING.
@@ -61,7 +138,6 @@ export const CONTEXT_WINDOW = {
 	"deepseek-v4-flash": 1000000,
 	// Qwen (Alibaba Cloud Model Studio)
 	"qwen3.8-max": 1000000,
-	"qwen3.8-max-preview": 1000000,
 	"qwen3.7-max": 1000000,
 	"qwen3.7-plus": 1000000,
 	"qwen3.6-flash": 1000000,
@@ -101,14 +177,23 @@ export const DEFAULT_CLAUDE_MODELS = [
 	{ type: "model", id: "claude-sonnet-5", display_name: "Claude Sonnet 5", created_at: null },
 ];
 
-/** Qwen (QwenCloud Token Plan) ids as Anthropic-skin compatible. Static — Qwen
- * exposes no /v1/models route (the docs say to ignore it; it 404s), so these are
- * curated like the Claude list. ids are bare (`qwen3.7-max`), matching the `qwen`
- * prefix the provider's match() keys on.
+/** Qwen (QwenCloud Token Plan) ids. OFFLINE FALLBACK ONLY as of 2026-08-06 —
+ * `fetchQwenModels()` pulls the live catalog and wins whenever it is reachable.
  *
- * `qwen3.8-max-preview` is Token-Plan-exclusive and the cheapest way to reach the
- * 3.8 tier: `qwen3.8-max` is 50% off 22:00–08:00 UTC+8, and the preview stacks a
- * promotional rate on top of that night discount.
+ * THE "NO CATALOG ENDPOINT" CLAIM WAS WRONG, and cost this list years of hand
+ * curation: the Anthropic-skin path (`/apps/anthropic/v1/models`) does 404
+ * `"Not support"`, but the OpenAI-compatible path on the same host
+ * (`/compatible-mode/v1/models`) returns 200 with 11 ids. Probing one path and
+ * concluding "no endpoint exists" is the mistake to avoid repeating with the
+ * next backend.
+ *
+ * ids are bare (`qwen3.7-max`), matching the `qwen` prefix the provider's
+ * match() keys on; the plan also serves foreign ids (glm-5.2, deepseek-*) which
+ * discovery publishes under the `qwen:` lens.
+ *
+ * `qwen3.8-max-preview` is NOT listed: it is an alias onto `qwen3.8-max` (same
+ * weights, production billing), so it would be a second name for a model
+ * already here. It stays callable — a user who types it still routes fine.
  *
  * Curated EMPIRICALLY, not from the docs: all five returned HTTP 200 against the
  * Token Plan host on 2026-08-04. QwenCloud's published model table is aspirational
@@ -127,24 +212,30 @@ export const DEFAULT_CLAUDE_MODELS = [
  * and listing them under Qwen would put the same id in the catalog twice with
  * no way to say which one a caller means (backlog item 8). */
 export const DEFAULT_QWEN_MODELS = [
+	// OFFLINE FALLBACK ONLY — used when the live fetch fails, so a flaky network
+	// degrades to the previous behaviour instead of an empty leg. Mirrors what
+	// `/compatible-mode/v1/models` returned on 2026-08-06; the live list wins
+	// whenever it is reachable, so this does not need to be exhaustive.
+	//
+	// `qwen3.8-max-preview` is deliberately absent: it is a pure ALIAS onto
+	// qwen3.8-max (same weights, production billing), so publishing it would be a
+	// second name for a model already listed.
+	//
+	// Foreign ids (glm-5.2, deepseek-*) are here because the plan genuinely
+	// serves them; discovery publishes those under the `qwen:` lens since this
+	// backend does not own that namespace. `deepseek-v4-flash` is absent — 403.
 	{ type: "model", id: "qwen3.8-max", display_name: "Qwen3.8 Max", created_at: null },
-	{
-		type: "model",
-		id: "qwen3.8-max-preview",
-		display_name: "Qwen3.8 Max Preview",
-		created_at: null,
-	},
 	{ type: "model", id: "qwen3.7-max", display_name: "Qwen3.7 Max", created_at: null },
 	{ type: "model", id: "qwen3.7-plus", display_name: "Qwen3.7 Plus", created_at: null },
 	{ type: "model", id: "qwen3.6-flash", display_name: "Qwen3.6 Flash", created_at: null },
-	// Plan-only DeepSeek build (see the note above). Named for its origin vendor
-	// so the id stays copy-pasteable into /model, which is what a caller types.
 	{
 		type: "model",
 		id: "deepseek-v4-flash-0731",
-		display_name: "DeepSeek V4 Flash (0731, Qwen plan)",
+		display_name: "DeepSeek V4 Flash (0731)",
 		created_at: null,
 	},
+	{ type: "model", id: "deepseek-v4-pro", display_name: "DeepSeek V4 Pro", created_at: null },
+	{ type: "model", id: "glm-5.2", display_name: "GLM-5.2", created_at: null },
 ];
 
 /** OpenRouter ids as Anthropic-skin compatible (HTTP 200 + message shape at POST
@@ -192,13 +283,33 @@ export function parseOpenRouterModels(str) {
 
 /**
  * Coerce an upstream created value to the Anthropic schema (ISO string or null).
- * A numeric (OpenAI-style Unix) timestamp is dropped to null rather than emitted
- * as a non-ISO value.
+ *
+ * A numeric (OpenAI-style Unix) timestamp is CONVERTED, not dropped. It used to
+ * return null here, on the reasoning that a non-ISO value must never reach the
+ * wire — correct, but converting honors that better than discarding does, and
+ * discarding cost real information: OpenRouter sends `created` as unix seconds
+ * for all ~400 of its models, so the old rule nulled the date on 372 of the 396
+ * published entries and made "sort by newest" impossible for any consumer.
+ *
+ * Seconds vs milliseconds is decided by magnitude: a seconds-epoch past ~2001 is
+ * >1e9, and the same number read as ms is 1970. Anything at or above 1e12 is
+ * therefore already ms. Non-finite, negative, and out-of-range values still go
+ * to null rather than emitting `Invalid Date`.
  * @param {unknown} v
  * @returns {string | null}
  */
 export function coerceCreated(v) {
-	return typeof v === "string" ? v : null;
+	// The string branch is validated, not trusted: the field promises ISO-8601,
+	// and a vendor sending "n/a" or "unknown" would otherwise put that straight
+	// on the wire. Parseable strings are passed through VERBATIM rather than
+	// re-serialized — round-tripping through Date would silently rewrite a
+	// vendor's offset ("+02:00" -> "Z") and drop sub-second precision, which is
+	// a change we have no reason to make to a value that is already valid.
+	if (typeof v === "string") return Number.isNaN(Date.parse(v)) ? null : v;
+	if (typeof v !== "number" || !Number.isFinite(v) || v <= 0) return null;
+	const ms = v >= 1e12 ? v : v * 1000;
+	const d = new Date(ms);
+	return Number.isNaN(d.getTime()) ? null : d.toISOString();
 }
 
 /**
@@ -245,6 +356,159 @@ async function fetchGlmModels(glm, timeoutMs) {
 		// Log the real cause — see fetchDeepSeekModels for why the proxy log must
 		// carry err.message even though the API response stays a pinned string.
 		console.error(`[models] glm fetch failed: ${err?.message || err}`);
+		return { error: "fetch failed" };
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+/**
+ * Ids the plan serves on the Messages endpoint but that a Claude Code session
+ * cannot actually use: they resolve (so they are NOT "model not exist") and then
+ * fail on BODY SHAPE — `"Input should be a valid list: input.messages.0"`,
+ * `"url error"` — because they want an image/audio request schema. Invariant 5
+ * keeps a translation layer out, so they stay unusable here.
+ *
+ * Published anyway, flagged: dropping them would make discovery lie about what
+ * the plan includes, while listing them silently would hand `/model` four
+ * options that cannot complete a turn. `usable: false` says both things at once.
+ *
+ * Matched by prefix, not by an id list, so a new `wan2.8-*` or audio build is
+ * flagged without an edit — the modality is the vendor's naming convention, and
+ * getting it wrong fails safe (a flagged text model is visible and reported; an
+ * unflagged multimodal one is a trap).
+ */
+const UNUSABLE_MODALITY = [
+	// Qwen plan: image / audio / realtime builds.
+	/^wan\d/,
+	/-audio-/,
+	/-image/,
+	/-tts/,
+	/-realtime/,
+	// OpenRouter structural variants — not chat models a session can select:
+	//   `:batch`  async batch endpoint, not /v1/messages
+	//   `~…`      a moving alias, not a pinned model
+	//   `openrouter/auto*`  the router's own meta-model
+	/:batch$/,
+	/^~/,
+	/^openrouter\/auto/,
+];
+
+/** @param {string} id */
+function isUsableHere(id) {
+	return !UNUSABLE_MODALITY.some((re) => re.test(id));
+}
+
+/**
+ * Fetch the Qwen Token Plan's live catalog.
+ *
+ * The endpoint is on the OPENAI-COMPATIBLE path, not the Anthropic skin the
+ * proxy forwards to: `/compatible-mode/v1/models` (200, 11 ids) while
+ * `/apps/anthropic/v1/models` returns 404 `"Not support"`. That asymmetry is why
+ * this list was hardcoded for so long — probing only the skin path says "no
+ * catalog exists", which is what an earlier comment in this file claimed and
+ * what a 2026-08-06 probe disproved.
+ *
+ * The plan host serves several vendors (glm-5.2, deepseek-v4-pro), so the
+ * returned ids are NOT all qwen-branded; discovery publishes the foreign ones
+ * under the `qwen:` lens (see ownsId in collectModels).
+ *
+ * @param {import("./providers.js").Provider} qwen
+ * @param {number} timeoutMs
+ * @returns {Promise<{ entries?: ModelEntry[], error?: string }>}
+ */
+async function fetchQwenModels(qwen, timeoutMs) {
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), timeoutMs);
+	try {
+		// Swap the Anthropic-skin suffix for the compatible-mode one; the provider's
+		// baseUrl is what the forwarding path uses and must not change.
+		const root = qwen.baseUrl.replace(/\/apps\/anthropic$/, "");
+		const res = await fetch(`${root}/compatible-mode/v1/models`, {
+			headers: { authorization: `Bearer ${qwen.apiKey}` },
+			signal: controller.signal,
+		});
+		if (res.status < 200 || res.status >= 300) return { error: `HTTP ${res.status}` };
+		let body;
+		try {
+			body = await res.json();
+		} catch {
+			return { error: "invalid response shape" };
+		}
+		if (!body || !Array.isArray(body.data)) return { error: "invalid response shape" };
+		const entries = body.data
+			.map((e) => {
+				const base = coerceEntry(e);
+				if (!base) return null;
+				return isUsableHere(base.id) ? base : { ...base, usable: false };
+			})
+			.filter(Boolean);
+		return { entries };
+	} catch (err) {
+		if (err && err.name === "AbortError") return { error: "timeout" };
+		console.error(`[models] qwen fetch failed: ${err?.message || err}`);
+		return { error: "fetch failed" };
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+/**
+ * Fetch OpenRouter's live catalog. PUBLIC — no auth — so this works even before
+ * a key is configured; the leg is still gated on the provider being registered,
+ * because an unregistered backend must not appear in discovery.
+ *
+ * Replaces a hand-curated six-id allowlist. The aggregator serves ~400 models
+ * and hardcoding a fraction of them made the list wrong the day it was written;
+ * `OPENROUTER_MODELS` remains as an explicit override, and DEFAULT_OPENROUTER_MODELS
+ * remains as the offline fallback when this fetch fails.
+ *
+ * `context_length` is OpenRouter's own per-deployment number, which is exactly
+ * what CONTEXT_WINDOW deliberately refuses to guess for a `vendor/model` id (an
+ * aggregator may serve a truncated window). Taking it from the vendor here is
+ * the measurement that comment asks for, so these entries carry a real
+ * `context_window` while the curated table stays silent about them.
+ *
+ * @param {import("./providers.js").Provider} openrouter
+ * @param {number} timeoutMs
+ * @returns {Promise<{ entries?: ModelEntry[], error?: string }>}
+ */
+async function fetchOpenRouterModels(openrouter, timeoutMs) {
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), timeoutMs);
+	try {
+		const res = await fetch(`${openrouter.baseUrl}/v1/models`, { signal: controller.signal });
+		if (res.status < 200 || res.status >= 300) return { error: `HTTP ${res.status}` };
+		let body;
+		try {
+			body = await res.json();
+		} catch {
+			return { error: "invalid response shape" };
+		}
+		if (!body || !Array.isArray(body.data)) return { error: "invalid response shape" };
+		const entries = body.data
+			.map((e) => {
+				const base = coerceEntry({ ...e, display_name: e.name });
+				if (!base) return null;
+				// Vendor-reported window wins over the curated table for these ids —
+				// see the note above. Guard the type: a malformed value must omit the
+				// field rather than publish a string or NaN.
+				const withWindow =
+					Number.isFinite(e.context_length) && e.context_length > 0
+						? { ...base, context_window: Math.trunc(e.context_length) }
+						: base;
+				return isUsableHere(base.id) ? withWindow : { ...withWindow, usable: false };
+			})
+			// Anthropic's own models are dropped, not flagged: reaching Claude
+			// through a reseller means paying per token for what the session's OAuth
+			// plan already covers, and it would sit in `/model` looking like the
+			// obvious pick. Invariants 3 and 4 exist to keep Claude traffic on the
+			// Claude route; publishing an aggregator's copy invites the opposite.
+			.filter((m) => m && !m.id.startsWith("anthropic/"));
+		return { entries };
+	} catch (err) {
+		if (err && err.name === "AbortError") return { error: "timeout" };
+		console.error(`[models] openrouter fetch failed: ${err?.message || err}`);
 		return { error: "fetch failed" };
 	} finally {
 		clearTimeout(timer);
@@ -337,17 +601,36 @@ export async function collectModels(config) {
 		}));
 	}
 	if (openrouter) {
-		legs.push(async () => ({ provider: "openrouter", entries: config.openRouterModels }));
+		legs.push(async () => {
+			// An explicit OPENROUTER_MODELS override skips the fetch entirely — the
+			// user asked for a specific set, so the vendor's full list is not wanted.
+			// Otherwise fetch live and fall back to the static list on failure, so a
+			// flaky network degrades to the old behaviour instead of an empty leg.
+			if (config.openRouterModelsExplicit) {
+				return { provider: "openrouter", entries: config.openRouterModels };
+			}
+			const live = await fetchOpenRouterModels(openrouter, config.modelsTimeoutMs);
+			return live.entries
+				? { provider: "openrouter", entries: live.entries }
+				: { provider: "openrouter", entries: config.openRouterModels };
+		});
 	}
-	// Qwen has no live /models endpoint — static curated list, emitted only when the
+	// Qwen fetches live from the COMPATIBLE-MODE path (the Anthropic skin 404s a
+	// models route), falling back to the static list. Emitted only when the
 	// provider is registered (key set), like the Claude leg below.
 	if (qwen) {
-		legs.push(async () => ({ provider: "qwen", entries: config.qwenModels }));
+		legs.push(async () => {
+			const live = await fetchQwenModels(qwen, config.modelsTimeoutMs);
+			return live.entries
+				? { provider: "qwen", entries: live.entries }
+				: { provider: "qwen", entries: config.qwenModels };
+		});
 	}
 	legs.push(async () => ({ provider: "claude", entries: config.claudeModels }));
 
 	const settled = await Promise.allSettled(legs.map((leg) => leg()));
 
+	/** @type {ModelEntry[]} */
 	const data = [];
 	const seen = new Set();
 	const _errors = [];
@@ -359,10 +642,86 @@ export async function collectModels(config) {
 			continue;
 		}
 		for (const entry of r.entries || []) {
-			if (seen.has(entry.id)) continue;
-			seen.add(entry.id);
-			data.push(withContextWindow(entry));
+			// NAMESPACE OWNERSHIP decides the spelling — not who wins the route.
+			// A backend lists its own vendor's models bare, and anything foreign it
+			// also serves under the `<provider>:<id>` lens. So `deepseek-v4-pro`
+			// stays bare on DeepSeek's card and appears as `qwen:deepseek-v4-pro`
+			// on the plan's, whichever of the two is cheaper.
+			//
+			// Display and routing are deliberately SEPARATE questions. An earlier
+			// pass let the cost ranking pick the bare spelling, which re-homed
+			// DeepSeek's own model onto Qwen's card and left DeepSeek showing a
+			// prefixed id for a model it owns — backwards, and it also prefixed
+			// nothing for plan-only ids like `deepseek-v4-flash-0731` (no rival
+			// route, so no "dedup hit" — yet it is still a foreign id on that card).
+			// Ownership is a property of the id, needs no cost model, and answers
+			// both cases the same way.
+			//
+			// `/model <bare id>` still routes to the CHEAPEST backend (rankRoutes);
+			// the prefix is how you name a specific one. The two only look linked
+			// when the owner also happens to win.
+			push(
+				entry,
+				ownsId(r.provider, entry.id) ? entry.id : `${r.provider}:${entry.id}`,
+				r.provider,
+			);
 		}
 	}
+
+	// No second pass. Under ownership every leg publishes the ids it actually
+	// serves, bare or prefixed, so nothing can fall between two backends — which
+	// is what the cost-ranked spelling made possible (each leg holding an id saw
+	// itself as the loser and emitted only the alias, so the bare form vanished).
 	return { data, _errors };
+
+	/**
+	 * Does this backend own the id's namespace? True when the id starts with the
+	 * provider's own name, which is what makes a row bare rather than prefixed.
+	 *
+	 * `claude` is special-cased: Anthropic's ids are `claude-*`, so the plain
+	 * prefix test happens to work — but state it, because the `openrouter` leg
+	 * owns NO namespace of its own (its ids are `vendor/model`) and must fall
+	 * through to the aggregator rule below rather than prefixing all 399 of them.
+	 *
+	 * @param {string} provider
+	 * @param {string} id
+	 * @returns {boolean}
+	 */
+	function ownsId(provider, id) {
+		// An aggregator's ids are already vendor-namespaced (`deepseek/…`), which
+		// IS the disambiguation — prefixing them again would read
+		// `openrouter:deepseek/deepseek-v4-pro` for every row.
+		if (id.includes("/")) return true;
+		return id.startsWith(provider);
+	}
+
+	/**
+	 * Append, or — when a provider's rows are no longer contiguous — slot in with
+	 * that provider's other rows. Consumers group by provider (list-models.js
+	 * prints a blank line whenever it changes), so a stray row would open a
+	 * second, one-model group for a backend already listed above.
+	 * @param {ModelEntry} entry
+	 * @param {string} id
+	 * @param {string} provider
+	 */
+	function push(entry, id, provider) {
+		if (seen.has(id)) return;
+		seen.add(id);
+		// Scan back to just after this provider's last row. If it has none yet
+		// (a new group), the scan runs to 0 — so fall back to appending, which is
+		// what the in-order leg loop wants.
+		let at = data.length;
+		while (at > 0 && data[at - 1].provider !== provider) at--;
+		if (at === 0) at = data.length;
+		data.splice(at, 0, {
+			// Window is looked up on the BARE id, then the (possibly prefixed) id is
+			// applied — the curated table is keyed by vendor id, and an alias is the
+			// same model reached another way, so it has the same window.
+			...withContextWindow(entry),
+			id,
+			provider,
+			tier: tierOf(provider),
+			grade: gradeOf(entry.id),
+		});
+	}
 }

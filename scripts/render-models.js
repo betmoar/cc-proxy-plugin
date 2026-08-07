@@ -12,19 +12,23 @@
 // predicate restated here. Providers are filtered to the set / _status reports
 // registered (registeredProviders()).
 //
-// The ONLY curated data is the intelligence tier (MODEL_TIERS): display-layer
-// judgment, deliberately NOT in src/. Keys are the model ids as /v1/models
-// returns them. Unknown ids fall back to "Specialist" so a future model still
-// renders a tier. Pinned by test/render-models.test.js so a silent drop (the
-// opus-4-8 class of bug) is caught at the test gate.
+// NOTHING is curated here any more. The intelligence tier now lives in
+// src/models.js as MODEL_GRADES and is published on /v1/models as `grade`;
+// MODEL_TIERS below is a re-export so this layer keeps its vocabulary while
+// drift stays impossible. That followed CONTEXT_WINDOW's move in 0.5.1, for the
+// same reason: a second consumer (cc-operator, dispatching by model strength)
+// needed it programmatically, and the alternative was the same curated table in
+// two repos. The caveat that reversal carried still stands — a published grade
+// is API surface, so a new model with no entry silently ships "Specialist", and
+// the grades themselves still want evals (CLAUDE.md backlog item 9).
 //
-// CONTEXT_WINDOW used to sit beside it under the same rule; as of 0.5.1 it is
-// in src/models.js and published on /v1/models, because a second consumer
-// (cc-reload) needed the number. Do NOT read that reversal as precedent for
-// moving MODEL_TIERS too — see CLAUDE.md backlog item 9: publishing a tier
-// makes a curated opinion part of the API surface and wants evals first.
+// Lookup keys are VENDOR ids. A `<provider>:` route alias is stripped before the
+// lookup (tierFor) — it is the same model reached another way. Pinned by
+// test/render-models.test.js so a silent drop (the opus-4-8 class of bug) is
+// caught at the test gate.
 
 import { loadEnv } from "../src/env.js";
+import { DEFAULT_GRADE, MODEL_GRADES } from "../src/models.js";
 import { buildProviders } from "../src/providers.js";
 import { CONTEXT_WINDOW, DISPLAY, attribute, registeredProviders } from "./list-models.js";
 
@@ -34,56 +38,55 @@ loadEnv();
 const PORT = Number(process.env.PROXY_PORT || 4000);
 const FETCH_TIMEOUT_MS = 3000;
 
-/** Intelligence tier per model id — display-layer judgment, curated here and
- * not in src/ (see the header note on the 0.5.1 CONTEXT_WINDOW reversal).
- * A model absent from this map renders the default "Specialist".
+/** Max rows drawn per provider card. OpenRouter alone publishes ~370 models, so
+ * an uncapped page is thousands of lines of scroll in which the four small,
+ * interesting cards are invisible. Cards under the cap are untouched — today
+ * that is every leg except OpenRouter.
+ *
+ * `MODELS_HTML_LIMIT=0` renders everything (the old behavior). Deliberately NOT
+ * in `.env.example` / the README env table: it is a knob for regenerating this
+ * one artifact, not proxy configuration, and adding it there would oblige the
+ * coupling test's three-file documentation contract. */
+const ROW_LIMIT = (() => {
+	const raw = process.env.MODELS_HTML_LIMIT;
+	if (raw === undefined || raw === "") return 20;
+	const n = Number(raw);
+	// Junk falls back to the default rather than rendering 0 or NaN rows — a
+	// typo'd env var must not silently empty the page.
+	return Number.isInteger(n) && n >= 0 ? n : 20;
+})();
+
+/**
+ * Intelligence tier per model id. NO LONGER CURATED HERE — the table moved to
+ * `src/models.js` as MODEL_GRADES (2026-08-06) when a second consumer needed it
+ * programmatically, exactly as CONTEXT_WINDOW moved in 0.5.1. This re-export
+ * keeps the display layer's vocabulary while making drift impossible.
+ *
+ * Do not reintroduce a local copy: "the same curated data in two places" is the
+ * failure `test/couplings.test.js` exists to catch.
  * @type {Record<string, "Flagship" | "Strong" | "Specialist" | "Economy">}
  */
-export const MODEL_TIERS = {
-	// GLM
-	"glm-5.2": "Flagship",
-	"glm-5.1": "Strong",
-	"glm-5": "Strong",
-	"glm-5-turbo": "Specialist",
-	"glm-4.7": "Economy",
-	"glm-4.6": "Economy",
-	"glm-4.5": "Economy",
-	"glm-4.5-air": "Economy",
-	// DeepSeek (native)
-	"deepseek-v4-pro": "Flagship",
-	"deepseek-v4-flash": "Strong",
-	// OpenRouter (curated allowlist)
-	"deepseek/deepseek-v4-pro": "Flagship",
-	"deepseek/deepseek-v4-flash": "Strong",
-	"tencent/hy3": "Specialist",
-	"moonshotai/kimi-k2.7-code": "Specialist",
-	"moonshotai/kimi-k3": "Specialist",
-	"qwen/qwen3.7-max": "Strong",
-	// Qwen (curated, DashScope)
-	"qwen3.8-max": "Strong",
-	"qwen3.8-max-preview": "Strong",
-	"qwen3.7-max": "Strong",
-	"qwen3.7-plus": "Specialist",
-	"qwen3.6-flash": "Economy",
-	// Plan-served DeepSeek build — graded as its bare sibling deepseek-v4-flash,
-	// which it is a dated snapshot of. Capability, not cost: reaching it through
-	// the plan is cheaper, but the tier grades the model (CLAUDE.md item 8/9).
-	"deepseek-v4-flash-0731": "Strong",
-	// Claude (curated, OAuth)
-	"claude-fable-5": "Flagship",
-	"claude-opus-5": "Flagship",
-	"claude-sonnet-5": "Strong",
-};
+export const MODEL_TIERS = MODEL_GRADES;
 
-const DEFAULT_TIER = "Specialist";
+const DEFAULT_TIER = DEFAULT_GRADE;
 
 /** The rank of a tier, for ordering rows Flagship → Economy. Unknown ranks below Economy. */
 const TIER_ORDER = { Flagship: 0, Strong: 1, Specialist: 2, Economy: 3 };
 const tierRank = (t) => TIER_ORDER[t] ?? 99;
-const tierFor = (id) => MODEL_TIERS[id] ?? DEFAULT_TIER;
+// Strips a `<provider>:` route selector before the lookup: the grade table is
+// keyed on VENDOR ids, and an alias is the same model reached another way — so
+// `deepseek:deepseek-v4-pro` must grade Flagship like its bare form, not fall to
+// the Specialist default. (Not `/`: an OpenRouter `vendor/model` id is its own
+// key, deliberately — see CONTEXT_WINDOW's "keyed on the EXACT id" note.)
+const tierFor = (id) =>
+	MODEL_TIERS[id] ?? MODEL_TIERS[id.slice(id.indexOf(":") + 1)] ?? DEFAULT_TIER;
 
-/** Which provider legs pull their list live vs. ship a curated static list. */
-const LIVE_LEGS = new Set(["glm", "deepseek"]);
+/** Which provider legs pull their list live vs. ship a curated static list.
+ * As of 2026-08-06 only Claude is static: it has no discoverable catalog
+ * endpoint (OAuth, and invariant 4 deliberately hides claude-haiku-*). Qwen
+ * joined the live set once the compatible-mode path was found — the Anthropic
+ * skin 404s a models route, which is why it looked static for so long. */
+const LIVE_LEGS = new Set(["glm", "deepseek", "openrouter", "qwen"]);
 
 /** Third-party ids the Qwen Token Plan also serves, but which keep routing to
  * their NATIVE backend — the bare id can't say which account pays, so moving
@@ -165,7 +168,7 @@ async function fetchJson(url) {
  * @param {Map<string, { models: any[], live: boolean }>} acc
  */
 export function groupByProvider(rows) {
-	/** @type {Map<string, { live: boolean, models: Array<{ id: string, dup?: boolean, plan?: boolean, tier: string }> }>} */
+	/** @type {Map<string, { live: boolean, total?: number, isDefault?: boolean, models: Array<{ id: string, dup?: boolean, plan?: boolean, tier: string, created?: string | null }> }>} */
 	const acc = new Map();
 	// Native ids (non-openrouter) — an OpenRouter row whose bare form is reachable
 	// natively gets an "also native" tag (it's the same model, two ways).
@@ -180,15 +183,39 @@ export function groupByProvider(rows) {
 		// `glm-5.2` render only under DeepSeek/GLM, so the Qwen card looks like 6
 		// models when the entitlement is 8.
 		const plan = r.provider !== "qwen" && QWEN_PLAN_ALSO.has(r.id);
-		acc.get(r.provider).models.push({ id: r.id, dup, plan, tier: tierFor(r.id) });
+		acc.get(r.provider).models.push({
+			id: r.id,
+			dup,
+			plan,
+			tier: tierFor(r.id),
+			created: r.created_at || null,
+		});
 	}
-	// Tier first, then id DESCENDING within a tier — newer/higher version numbers
-	// on top, which is the order a reader scanning for "the good one" expects.
-	// A plain localeCompare would put glm-5 above glm-5.1; numeric collation
-	// orders the version segments as numbers.
+	// Grade first, then NEWEST within a grade, then id descending as the final
+	// tie-break. Grade leads deliberately: sorting by date alone lets a fresh
+	// Economy model push a Flagship off a capped card, and the reader scanning
+	// for "the good one" wants capability first. Date only orders WITHIN a grade,
+	// where every candidate is equally strong and recency is the useful signal.
+	//
+	// A missing date sorts last in its grade rather than first — most curated
+	// entries carry created_at: null, and treating "unknown" as "brand new" would
+	// hand them the top of every card.
 	const byId = new Intl.Collator("en", { numeric: true }).compare;
+	const byDate = (a, b) => {
+		if (a.created === b.created) return 0;
+		if (!a.created) return 1;
+		if (!b.created) return -1;
+		return a.created < b.created ? 1 : -1;
+	};
 	for (const p of acc.values()) {
-		p.models.sort((a, b) => tierRank(a.tier) - tierRank(b.tier) || byId(b.id, a.id));
+		p.models.sort(
+			(a, b) => tierRank(a.tier) - tierRank(b.tier) || byDate(a, b) || byId(b.id, a.id),
+		);
+		// Cap AFTER sorting, so what survives is the strongest-and-newest slice
+		// rather than an arbitrary prefix. `total` is kept so the card can say how
+		// many it is hiding — a truncated list that does not admit it is a lie.
+		p.total = p.models.length;
+		if (ROW_LIMIT > 0 && p.models.length > ROW_LIMIT) p.models = p.models.slice(0, ROW_LIMIT);
 	}
 	return acc;
 }
@@ -222,10 +249,20 @@ function providerCard([pid, group]) {
 	const dflt = group.isDefault ? `<span class="tag dflt">default</span>` : "";
 	const src = meta.source || "native";
 	const bill = meta.billing || "credits";
+	// A capped card states BOTH numbers. "20 models" on a leg serving 372 would
+	// be a false claim about the backend's scope, and the hidden ones are exactly
+	// what a reader would go looking for.
+	const total = group.total ?? group.models.length;
+	const shown = group.models.length;
+	const capped = total > shown;
+	const count = capped ? `${shown} of ${total} models` : `${total} model${total === 1 ? "" : "s"}`;
+	const more = capped
+		? `<div class="more">${total - shown} more — strongest and newest shown · <code>MODELS_HTML_LIMIT=0 pnpm models:html</code> for all</div>`
+		: "";
 	return `<section class="card" style="--c:${meta.color}">
   <div class="prow"><span class="mono">${esc(meta.glyph)}</span><h2>${esc(name)}</h2>${dflt}${tag}</div>
-  <p class="leg"><span class="axis src-${src}" data-axis="src">${src}</span><span class="axis bill-${bill}" data-axis="bill">${bill}</span>${group.live ? "live list" : "curated list"} · ${group.models.length} model${group.models.length === 1 ? "" : "s"}</p>
-  <div class="models">${rows}</div>
+  <p class="leg"><span class="axis src-${src}" data-axis="src">${src}</span><span class="axis bill-${bill}" data-axis="bill">${bill}</span>${group.live ? "live list" : "curated list"} · ${count}</p>
+  <div class="models">${rows}</div>${more}
 </section>`;
 }
 
@@ -416,6 +453,10 @@ function renderHtml({ rows, defaultBackend, errors, providerIds }) {
      mid-token — deepseek/deepseek-v4-pro must not split as "deepsee|k-v4-pro". */
   .mname { font-size:13px; line-height:1.35; color:var(--ink); font-family:var(--mono); overflow-wrap:anywhere; word-break:normal; min-width:0; }
   .dup { color:var(--muted); font-size:11px; font-style:italic; white-space:nowrap; align-self:center; margin-left:6px; }
+  /* The truncation notice. Muted and un-bordered so it reads as a footnote to
+     the list rather than another model row. */
+  .more { margin-top:10px; color:var(--muted); font-size:11.5px; line-height:1.6; }
+  .more code { font-family:var(--mono); font-size:10.5px; color:var(--ink-2); }
   .tier { display:flex; align-items:center; gap:7px; margin-left:auto; margin-top:3px; flex:0 0 auto; }
   .win { font-family:var(--mono); font-size:10.5px; color:var(--muted); width:3em; text-align:right; }
   .tdots { display:flex; gap:3px; }
@@ -543,9 +584,26 @@ async function main() {
 	);
 	const providerSet = new Set(providers.map((p) => p.id));
 
+	// The provider comes from the PUBLISHED `provider` field, not from re-deriving
+	// it through the router. Those are different questions and they disagree: the
+	// API publishes `deepseek-v4-pro` (provider deepseek, its owning namespace)
+	// AND `qwen:deepseek-v4-pro` (provider qwen, the plan that also serves it),
+	// while attribute() resolves BOTH to the cheapest route — so the bare id used
+	// to land on the Qwen card next to its own alias, and DeepSeek's card lost the
+	// model it owns. attribute() is kept only as a fallback for an entry from a
+	// proxy too old to publish the field.
+	//
+	// Unusable entries (multimodal ids wanting another request schema, `:batch`
+	// variants, `~latest` aliases) are dropped: this page is a menu of what you
+	// can select, and they cannot be selected.
 	const rows = (models.data || [])
-		.filter((m) => providerSet.has(attribute(m.id, providers)))
-		.map((m) => ({ id: m.id, provider: attribute(m.id, providers) }));
+		.filter((m) => m.usable !== false)
+		.map((m) => ({
+			id: m.id,
+			provider: m.provider || attribute(m.id, providers),
+			created_at: m.created_at ?? null,
+		}))
+		.filter((r) => providerSet.has(r.provider));
 
 	process.stdout.write(
 		renderHtml({

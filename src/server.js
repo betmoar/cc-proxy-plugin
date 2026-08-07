@@ -175,14 +175,40 @@ function forwardBuffered(clientReq, clientRes, provider, outboundBuffer, inbound
 }
 
 function handleProxy(req, res, body, bodyBuffer, config) {
-	const provider = resolve(body.model, config);
+	const { provider, upstreamModel } = resolve(body.model, config);
 	const inboundModel = body.model || "unknown";
 
 	const stripped = stripAssistantThinking(body);
 	if (stripped.modified) debug("  stripped thinking blocks from assistant history");
-	const outboundBuffer = stripped.modified
-		? Buffer.from(JSON.stringify(stripped.body))
-		: bodyBuffer;
+
+	// The `<provider>:` selector is cc-proxy's LOCAL lens — no backend has ever
+	// heard of it, so it is stripped here and the bare vendor id goes upstream.
+	// This is the second deliberate exception to the byte-for-byte body rule
+	// (invariant 1), alongside the thinking-strip above; it changes `model` and
+	// nothing else. Decided here, before the stream/non-stream branch, because
+	// the streaming path never parses the body itself.
+	//
+	// Build an OUTBOUND object rather than assigning into `stripped.body`:
+	// stripAssistantThinking() returns the caller's own object when it changed
+	// nothing (sanitize.js), so `stripped.body === body` in the common case and
+	// an in-place write would edit the inbound body under everything that reads
+	// it afterwards. Nothing does today — `inboundModel` is captured above and
+	// the body is parsed fresh per request — but the failure it invites is
+	// quiet: move that capture below this line and the routing log starts
+	// reporting the UPSTREAM id as the inbound one, which is the line
+	// scripts/status.js parses.
+	//
+	// NOT DIRECTLY TESTED, and worth knowing why: handleProxy is not exported,
+	// and every observable — the log line, the upstream body — looks identical
+	// under the in-place write, precisely BECAUSE inboundModel is captured
+	// first. An end-to-end test asserting those passes against the defect
+	// (verified). What IS locked is the aliasing contract this depends on:
+	// test/sanitize.test.js "returns the SAME object when nothing was stripped".
+	// Break that and these lines silently start copying instead of aliasing.
+	const rewritten = typeof upstreamModel === "string" && upstreamModel !== body.model;
+	const outboundBody = rewritten ? { ...stripped.body, model: upstreamModel } : stripped.body;
+	const outboundBuffer =
+		stripped.modified || rewritten ? Buffer.from(JSON.stringify(outboundBody)) : bodyBuffer;
 
 	console.log(`[${new Date().toISOString()}] ${inboundModel} -> ${provider.id} ${req.url}`);
 	debug(

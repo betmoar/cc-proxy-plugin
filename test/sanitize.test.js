@@ -118,3 +118,32 @@ describe("stripAssistantThinking", () => {
 		assert.deepEqual(out.thinking, body.thinking);
 	});
 });
+
+// The aliasing contract handleProxy() depends on (Copilot review, PR #18).
+// stripAssistantThinking returns the CALLER'S OWN object when it changed
+// nothing, so `stripped.body === body` in the common case. handleProxy applies
+// the `<provider>:` selector strip right after, and used to assign into
+// `stripped.body.model` — an in-place edit of the inbound body. Nothing read it
+// afterwards, so nothing broke; the danger is quiet. `inboundModel` is captured
+// before the rewrite, and if that capture ever moves below it the routing log
+// starts printing the UPSTREAM id as the inbound one — the exact line
+// scripts/status.js parses.
+describe("identity of the returned body (what handleProxy relies on)", () => {
+	it("returns the SAME object when nothing was stripped", () => {
+		const body = { model: "glm-5.2", messages: [{ role: "user", content: "hi" }] };
+		const out = stripAssistantThinking(body);
+		assert.equal(out.modified, false);
+		assert.equal(out.body, body, "unmodified must alias, not copy — the caller must not mutate it");
+	});
+
+	it("returns a NEW object when it did strip", () => {
+		const body = {
+			model: "glm-5.2",
+			messages: [{ role: "assistant", content: [{ type: "thinking", thinking: "x" }] }],
+		};
+		const out = stripAssistantThinking(body);
+		assert.equal(out.modified, true);
+		assert.notEqual(out.body, body, "a strip must not edit the caller's object either");
+		assert.equal(body.messages[0].content.length, 1, "the original is left intact");
+	});
+});

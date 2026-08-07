@@ -1,7 +1,10 @@
 import { strict as assert } from "node:assert";
 import { describe, it } from "node:test";
 import { buildProviders } from "../src/providers.js";
-import { resolve } from "../src/router.js";
+// `resolve` here is the provider-only wrapper — it keeps the ~50 pre-existing
+// `.id` assertions readable. `resolve2` is the full result, used wherever a test
+// needs to see the stripped upstream id.
+import { resolveProvider as resolve, resolve as resolve2 } from "../src/router.js";
 
 const config = { port: 4000, providers: buildProviders({ GLM_API_KEY: "glm-test" }, "claude") };
 
@@ -202,6 +205,140 @@ describe("router", () => {
 
 		it("qwen not configured → bare qwen ids fall to the default", () => {
 			assert.equal(resolve("qwen3.7-max", config).id, "claude");
+		});
+	});
+
+	describe("provider selector (<provider>:<model>) — the local lens", () => {
+		const all = {
+			port: 4000,
+			providers: buildProviders(
+				{
+					GLM_API_KEY: "g",
+					OPENROUTER_API_KEY: "o",
+					DEEPSEEK_API_KEY: "d",
+					DASHSCOPE_API_KEY: "q",
+				},
+				"claude",
+			),
+		};
+
+		it("routes to the named provider and strips the prefix from the upstream id", () => {
+			// The plan host has never heard of "qwen:deepseek-v4-pro" — the prefix is
+			// OUR name for the route, so it must not survive the proxy. Without the
+			// strip the upstream 400s ("Model not exist"), which is exactly what a
+			// live probe of the un-stripped id returned on 2026-08-06.
+			const r = resolve2("qwen:deepseek-v4-pro", all);
+			assert.equal(r.provider.id, "qwen");
+			assert.equal(r.upstreamModel, "deepseek-v4-pro");
+		});
+
+		it("reaches the native route that the cheapest-route default would otherwise hide", () => {
+			// This is the whole point of the lens: deepseek-v4-pro defaults to the
+			// plan (tier 2 beats tier 3), so without a selector there is NO spelling
+			// that reaches DeepSeek's own endpoint. The two are not interchangeable —
+			// the plan gateway injects ~+79 input tokens.
+			assert.equal(resolve("deepseek-v4-pro", all).id, "qwen", "default is the cheap route");
+			const r = resolve2("deepseek:deepseek-v4-pro", all);
+			assert.equal(r.provider.id, "deepseek");
+			assert.equal(r.upstreamModel, "deepseek-v4-pro");
+		});
+
+		it("honors a selector that bare-id luck used to send to the default", () => {
+			// Before the explicit parse, "glm:glm-5.2" matched no predicate (the glm
+			// one wants a leading "glm-") and silently fell through to Claude.
+			assert.equal(resolve2("glm:glm-5.2", all).provider.id, "glm");
+			assert.equal(resolve2("glm:glm-5.2", all).upstreamModel, "glm-5.2");
+		});
+
+		it("keeps a slash-bearing tail intact for the aggregator", () => {
+			const r = resolve2("openrouter:tencent/hy3", all);
+			assert.equal(r.provider.id, "openrouter");
+			assert.equal(r.upstreamModel, "tencent/hy3", "OpenRouter needs its vendor/model id");
+		});
+
+		it("a claude-haiku-* TAIL ignores the selector (invariant 4 outranks the lens)", () => {
+			// The pin must test the STRIPPED id. Pinning on the raw string lets
+			// "glm:claude-haiku-…" skip it, and the body rewrite would then send the
+			// BARE haiku id to a third party — Claude Code's internal ops billed
+			// against paid quota, which is the exact thing invariant 4 prevents.
+			for (const id of [
+				"glm:claude-haiku-4-5-20251001",
+				"qwen:claude-haiku-4-5-20251001",
+				"deepseek:claude-haiku-4-6",
+				"openrouter:claude-haiku-4-6",
+			]) {
+				const r = resolve2(id, all);
+				assert.equal(r.provider.id, "claude", `${id} must stay on Claude`);
+				assert.equal(r.upstreamModel, id.slice(id.indexOf(":") + 1));
+			}
+		});
+
+		it("an unregistered prefix is not a selector — it falls through, never errors", () => {
+			// Keeps a future vendor id that happens to contain a colon safe.
+			assert.equal(resolve("bogus:glm-5.2", all).id, "claude", "unknown prefix → no selector");
+			assert.equal(resolve2("bogus:glm-5.2", all).upstreamModel, "bogus:glm-5.2");
+		});
+
+		it("a selector for a provider that is not configured falls through", () => {
+			// qwen key absent → the qwen leg never registers, so the selector cannot
+			// resolve. It must degrade to normal routing, not fail.
+			const noQwen = { port: 4000, providers: buildProviders({ GLM_API_KEY: "g" }, "claude") };
+			assert.equal(resolve("qwen:deepseek-v4-pro", noQwen).id, "claude");
+		});
+
+		it("leaves a bare id's upstream model untouched", () => {
+			// No selector → byte-for-byte body preserved (invariant 1); the rewrite
+			// in server.js is gated on upstreamModel !== body.model.
+			assert.equal(resolve2("glm-5.2", all).upstreamModel, "glm-5.2");
+			assert.equal(resolve2(undefined, all).upstreamModel, undefined);
+		});
+
+		it("does not treat a slash as a selector — OpenRouter keeps its namespace", () => {
+			// The colon-only decision. These are the collision-locks above, restated
+			// from the lens's side: adding ':' must not have changed '/' at all.
+			assert.equal(resolve("qwen/qwen3.7-max", all).id, "openrouter");
+			assert.equal(resolve("deepseek/deepseek-v4-pro", all).id, "openrouter");
+		});
+	});
+
+	describe("cheapest-route ranking (ROUTES table)", () => {
+		const all = {
+			port: 4000,
+			providers: buildProviders(
+				{
+					GLM_API_KEY: "g",
+					OPENROUTER_API_KEY: "o",
+					DEEPSEEK_API_KEY: "d",
+					DASHSCOPE_API_KEY: "q",
+				},
+				"claude",
+			),
+		};
+
+		it("prefers plan capacity over metered credits", () => {
+			// Prepaid capacity is free at the margin; DeepSeek native bills real USD.
+			assert.equal(resolve("deepseek-v4-pro", all).id, "qwen");
+		});
+
+		it("prefers a NATIVE plan over a resold plan", () => {
+			// glm-5.2 serves 200 on both Z.ai and the Qwen plan, both tier 2. Moving
+			// it would swap one prepaid pool for another and still pay the resold
+			// route's +6 injected tokens.
+			assert.equal(resolve("glm-5.2", all).id, "glm");
+		});
+
+		it("never returns a route the probe showed as unavailable", () => {
+			// The plan 403s deepseek-v4-flash, so it must go native even though the
+			// plan would otherwise be the cheaper tier.
+			assert.equal(resolve("deepseek-v4-flash", all).id, "deepseek");
+		});
+
+		it("skips ranked routes whose provider is not registered", () => {
+			const noPlan = {
+				port: 4000,
+				providers: buildProviders({ GLM_API_KEY: "g", DEEPSEEK_API_KEY: "d" }, "claude"),
+			};
+			assert.equal(resolve("deepseek-v4-pro", noPlan).id, "deepseek");
 		});
 	});
 
