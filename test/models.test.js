@@ -101,10 +101,11 @@ describe("models.js pure helpers", () => {
 		// The invariant is that every advertised id is REACHABLE on the plan — via
 		// the `qwen:` lens, which is what discovery publishes for the foreign ones.
 		// NOT that the bare id routes there: `glm-5.2` bare goes to Z.ai (a native
-		// plan outranks a resold one) and `deepseek-v4-pro` bare goes to the plan
-		// (prepaid beats DeepSeek's metered credits). Both are correct, and both
-		// are the ROUTER's business, not the catalog's — which is exactly why the
-		// lens exists.
+		// plan outranks a resold one) and, since issue #19, `deepseek-v4-pro` bare
+		// goes to native DeepSeek when a DeepSeek key is registered (as it is
+		// below) — the plan is only the bare id's fallback when no native key
+		// exists. Both are correct, and both are the ROUTER's business, not the
+		// catalog's — which is exactly why the lens exists.
 		const providers = buildProviders(
 			{ DASHSCOPE_API_KEY: "q", DEEPSEEK_API_KEY: "d", GLM_API_KEY: "g" },
 			"claude",

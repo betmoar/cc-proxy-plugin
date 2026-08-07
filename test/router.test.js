@@ -140,10 +140,14 @@ describe("router", () => {
 			assert.equal(resolve("kimi-k2-0711", all).id, "claude"); // unknown → default
 		});
 
-		// "Plan before credits" (0.5.1). DeepSeek native bills metered credits and
-		// the plan is prepaid, so the bare id goes to the plan. glm-5.2 does NOT:
-		// Z.ai is itself a plan (GLM Pro), and a native plan outranks a resold one
-		// — swapping prepaid pools saves nothing and costs +6 injected tokens.
+		// "Plan before credits" shipped in 0.5.1 (DeepSeek native bills metered
+		// credits, the plan is prepaid, so the bare id went to the plan) and was
+		// REVERSED for deepseek-v4-pro in 0.6.1 (issue #19): the plan gateway's
+		// +79-token preamble makes the routes non-interchangeable, so native now
+		// wins the bare id whenever it is registered. glm-5.2 was never affected
+		// either way: Z.ai is itself a plan (GLM Pro), and a native plan outranks
+		// a resold one — swapping prepaid pools saves nothing and costs +6
+		// injected tokens.
 		it("routes bare ids native even when the plan is configured (issue #19)", () => {
 			const withPlan = {
 				port: 4000,
@@ -339,7 +343,7 @@ describe("router", () => {
 		});
 	});
 
-	describe("cheapest-route ranking (ROUTES table)", () => {
+	describe("native-first, then cheapest-route ranking (ROUTES table)", () => {
 		const all = {
 			port: 4000,
 			providers: buildProviders(
@@ -381,6 +385,46 @@ describe("router", () => {
 				providers: buildProviders({ GLM_API_KEY: "g", DEEPSEEK_API_KEY: "d" }, "claude"),
 			};
 			assert.equal(resolve("deepseek-v4-pro", noPlan).id, "deepseek");
+		});
+
+		it("stays native-first even without a ROUTES entry (predicate layer, issue #19 regression)", async () => {
+			// rankRoutes() is not the only layer that can pick a provider for
+			// `deepseek-v4-pro` — if ROUTES ever loses the entry (a probe expiring,
+			// a table edit), resolve() falls through to the predicate layer
+			// (config.providers.find). That layer must independently agree with
+			// native-first, or ROUTES becomes a single point of failure for the
+			// #19 fix. Reproduced by deleting the entry in memory rather than
+			// mocking the module, so this exercises the real ROUTES object.
+			const { ROUTES } = await import("../src/routes.js");
+			const saved = ROUTES["deepseek-v4-pro"];
+			// biome-ignore lint/performance/noDelete: rankRoutes() gates on Object.hasOwn, so `= undefined` would not reproduce a missing entry.
+			delete ROUTES["deepseek-v4-pro"];
+			try {
+				const allKeys = {
+					port: 4000,
+					providers: buildProviders(
+						{ GLM_API_KEY: "g", DEEPSEEK_API_KEY: "d", DASHSCOPE_API_KEY: "q" },
+						"claude",
+					),
+				};
+				assert.equal(
+					resolve("deepseek-v4-pro", allKeys).id,
+					"deepseek",
+					"a DeepSeek key must still win the bare id with no ROUTES entry",
+				);
+
+				const planOnly = {
+					port: 4000,
+					providers: buildProviders({ GLM_API_KEY: "g", DASHSCOPE_API_KEY: "q" }, "claude"),
+				};
+				assert.equal(
+					resolve("deepseek-v4-pro", planOnly).id,
+					"qwen",
+					"a plan-only user (no DeepSeek key) must still fall back to qwen",
+				);
+			} finally {
+				ROUTES["deepseek-v4-pro"] = saved;
+			}
 		});
 	});
 

@@ -14,8 +14,9 @@ import { rankRoutes } from "./routes.js";
  * COLON ONLY, deliberately. `/` belongs to OpenRouter's `includes("/")`
  * predicate and keeps meaning OpenRouter forever. A slash selector was
  * considered and dropped because it buys nothing: the bare id already resolves
- * to the cheapest route and the slash form already resolves to the most
- * expensive one (`qwen3.7-max` → qwen plan, `qwen/qwen3.7-max` → OpenRouter).
+ * to the native backend when one is registered, otherwise the cheapest route
+ * serving it — and the slash form already resolves to the most expensive one
+ * (`qwen3.7-max` → qwen plan, `qwen/qwen3.7-max` → OpenRouter).
  * Its one unique job — naming a plan-resold id under a foreign vendor name —
  * is served identically by `qwen:deepseek-v4-pro`, without touching the
  * aggregator's namespace and without breaking the collision-lock tests.
@@ -48,7 +49,9 @@ export function parseModelSelector(model, config) {
  *   0. strip a `<provider>:` selector       → the lens never leaves the proxy
  *   1. claude-haiku-*                       → Claude (internal ops, pinned)
  *   2. explicit selector, if registered     → that provider
- *   3. cheapest probed route (src/routes.js)
+ *   3. ranked probed route (src/routes.js)  → native provider first, then
+ *                                              cheapest tier, among REGISTERED
+ *                                              providers only
  *   4. first matching predicate             → glm-* → GLM, vendor/model → OpenRouter
  *   5. no match                             → default backend
  *

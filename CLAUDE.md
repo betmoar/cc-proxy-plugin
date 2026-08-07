@@ -88,9 +88,12 @@ Each is locked by tests; the test names tell you what you broke.
   Display then follows **ownership, not cost** (`ownsId` in `src/models.js`):
   a backend publishes ids in its own namespace bare and everything else under
   the `<provider>:` lens, so `deepseek-v4-pro` stays bare on DeepSeek's card and
-  appears as `qwen:deepseek-v4-pro` on the plan's. Routing is still cost-ranked
-  and independent of that — the bare id resolves to the cheapest route, which
-  for `deepseek-v4-pro` is the plan, not the vendor whose namespace it is.
+  appears as `qwen:deepseek-v4-pro` on the plan's. Routing is independent of
+  that display rule — the bare id resolves to the NATIVE backend when one is
+  registered, otherwise to the cheapest route serving it, which for
+  `deepseek-v4-pro` means a DeepSeek key wins the bare id even though the
+  Qwen card is the one showing it under its own namespace (see item 8's
+  0.6.1 reversal below for why native outranks cost for this id).
   **Reversed 7b4361c.** The prior rule was the opposite — catalogs listed only
   their own vendor's ids, `collectModels()` derived the winner, and a foreign
   entry was forbidden (locked by a now-deleted test "no static catalog restates
@@ -323,8 +326,9 @@ tests in `providers.test.js` + `router.test.js`. Never a router/server change.
    **The `/` trap dissolved rather than being solved.** The worry was that
    OpenRouter's `includes("/")` claims the whole slash namespace, so
    `qwen/deepseek-v4-pro` could never mean the plan. True — and irrelevant, once
-   probed: the BARE id already routes to the cheapest backend and the slash form
-   already routes to the most expensive one (`qwen3.7-max` → plan,
+   probed: the BARE id already routes to the native backend when one is
+   registered (otherwise the cheapest route) and the slash form already routes
+   to the most expensive one (`qwen3.7-max` → plan,
    `qwen/qwen3.7-max` → OpenRouter). A slash selector therefore buys nothing in
    either direction, so `/` was left to OpenRouter untouched and the collision-
    lock tests (`test/router.test.js:65,77,179`) never needed changing.
@@ -500,7 +504,14 @@ tests in `providers.test.js` + `router.test.js`. Never a router/server change.
    Note this makes DeepSeek's own native endpoint the EXPENSIVE way to reach
    `deepseek-v4-pro` and the plan route the cheap one — the opposite of the
    intuition that first-party is cheapest. That inversion is the entire reason
-   this item exists. `deepseek-v4-flash`, though, is credits-only: the plan
+   this item exists, and it is still true as a COST fact. **It is no longer
+   what the bare id resolves to.** 0.6.1 (issue #19) made `rankRoutes` sort the
+   native provider ahead of tier for this id specifically, because the plan
+   gateway injects a +79-token preamble (see below) — predictability (the id
+   you tune a prompt against stays the id you get) outweighed the sunk-cost
+   saving. A DeepSeek-key holder now pays the expensive route by default;
+   `qwen:deepseek-v4-pro` still reaches the cheap one explicitly.
+   `deepseek-v4-flash`, though, is credits-only: the plan
    403s it (see the matrix above), so it has no cheap route.
    This is a **cost** ranking, not a knowledge ranking, and the two are
    deliberately not correlated — measuring capability-per-currency is out of

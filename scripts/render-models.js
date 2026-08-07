@@ -94,9 +94,15 @@ const LIVE_LEGS = new Set(["glm", "deepseek", "openrouter", "qwen"]);
  * injects a preamble: +6 input tokens on `glm-5.2`). Tagged rather than
  * re-homed, so the plan's true scope is visible without implying cc-proxy will
  * route there. 200-verified against the plan host 2026-08-04; re-probe before a
- * release. Only glm-5.2 qualifies: `deepseek-v4-pro` now ROUTES to the plan
- * (its native route is credit-billed — see providers.js QWEN_PLAN_RESELLS), and
- * `deepseek-v4-flash-0731` is plan-only. */
+ * release. Only glm-5.2 qualifies: `deepseek-v4-pro` is EXCLUDED because it
+ * isn't a "dup" in the sense this set encodes — since issue #19 (0.6.1) the
+ * bare id resolves NATIVE (deepseek) by design when a DeepSeek key is
+ * registered, so DeepSeek's card is already the one true home and the plan
+ * copy is the alternate, reachable only via `qwen:deepseek-v4-pro`; adding it
+ * here would need this generated artifact to be re-rendered against a live
+ * proxy, which CI cannot do (flagged as a follow-up, not fixed in this pass).
+ * `deepseek-v4-flash-0731` is plan-only (no native route exists at all, so it
+ * isn't a dup either). */
 const QWEN_PLAN_ALSO = new Set(["glm-5.2"]);
 
 // The number of dots a tier fills, of 4. Hue-independent ordinal encoding — a
@@ -588,9 +594,12 @@ async function main() {
 	// it through the router. Those are different questions and they disagree: the
 	// API publishes `deepseek-v4-pro` (provider deepseek, its owning namespace)
 	// AND `qwen:deepseek-v4-pro` (provider qwen, the plan that also serves it),
-	// while attribute() resolves BOTH to the cheapest route — so the bare id used
-	// to land on the Qwen card next to its own alias, and DeepSeek's card lost the
-	// model it owns. attribute() is kept only as a fallback for an entry from a
+	// while attribute() resolves BOTH through rankRoutes (native provider first,
+	// then cheapest tier) — pre-issue-#19 that meant the bare id landed on the
+	// Qwen card next to its own alias, and DeepSeek's card lost the model it
+	// owns; post-#19 attribute() would put it back on DeepSeek for this id, but
+	// still diverges from `provider` for any id where ownership and the ranked
+	// route disagree. attribute() is kept only as a fallback for an entry from a
 	// proxy too old to publish the field.
 	//
 	// Unusable entries (multimodal ids wanting another request schema, `:batch`

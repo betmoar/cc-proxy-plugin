@@ -657,9 +657,10 @@ export async function collectModels(config) {
 			// Ownership is a property of the id, needs no cost model, and answers
 			// both cases the same way.
 			//
-			// `/model <bare id>` still routes to the CHEAPEST backend (rankRoutes);
-			// the prefix is how you name a specific one. The two only look linked
-			// when the owner also happens to win.
+			// `/model <bare id>` still routes via `rankRoutes` — native provider
+			// first, then cheapest tier among registered providers; the prefix is
+			// how you name a specific one. The two only look linked when the owner
+			// also happens to win.
 			push(
 				entry,
 				ownsId(r.provider, entry.id) ? entry.id : `${r.provider}:${entry.id}`,

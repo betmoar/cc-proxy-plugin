@@ -41,7 +41,10 @@ const DATED_ID = /^deepseek-.*-\d{4}(\d{4})?$/;
  * Bare third-party ids the Qwen Token Plan serves that are ALSO reachable on
  * their own vendor's backend, AND whose native route bills metered credits.
  * Plan capacity is prepaid, so spending it is free at the margin — "plan before
- * credits". These route to qwen when `DASHSCOPE_API_KEY` is set.
+ * credits". These MAY route to qwen when `DASHSCOPE_API_KEY` is set — but since
+ * issue #19 (0.6.1) `deepseek-v4-pro` is native-first: a registered DeepSeek
+ * key wins the bare id via `rankRoutes`, and this predicate only fires as the
+ * fallback when no native route is registered. See the ISSUE #19 note below.
  *
  * A NATIVE PLAN OUTRANKS A RESOLD PLAN, which is why `glm-5.2` is not here.
  * Z.ai is a GLM Pro plan (`/quota/limit` reports `level=pro`), so routing it to
@@ -62,8 +65,11 @@ const DATED_ID = /^deepseek-.*-\d{4}(\d{4})?$/;
  * NOT free of consequence: the plan's gateway injects a preamble, measured at
  * +79 input tokens on `deepseek-v4-pro` and +6 on `glm-5.2` for an identical
  * body (2026-08-04). Same weights, different context — a prompt tuned on the
- * native route can behave differently here. Reaching the native route
- * explicitly needs the prefix scheme (CLAUDE.md backlog item 8).
+ * native route can behave differently here. The prefix scheme (CLAUDE.md
+ * backlog item 8) shipped in 0.6.0: `deepseek:deepseek-v4-pro` always reaches
+ * the native route explicitly, and — since issue #19 — so does the bare id
+ * whenever a DeepSeek key is registered; `qwen:deepseek-v4-pro` reaches the
+ * plan copy explicitly either way.
  *
  * Re-probe before a release: an id that 403s on the plan must come OUT of this
  * set or it becomes a hard failure on a model the user could otherwise reach.
@@ -71,7 +77,7 @@ const DATED_ID = /^deepseek-.*-\d{4}(\d{4})?$/;
  */
 // ISSUE #19: this set STILL CLAIMS `deepseek-v4-pro` for the qwen predicate —
 // the plan genuinely serves it, and the predicate is the last-resort router
-// (router.js step 5) that fires only when no ranked route is registered. The
+// (router.js step 4) that fires only when no ranked route is registered. The
 // DEFAULT changed (the bare id now resolves native via rankRoutes' native-first
 // sort), but the predicate's job is capability, not preference: it must keep
 // claiming the id so a plan-holder WITHOUT a native DeepSeek key still routes
@@ -95,9 +101,10 @@ const QWEN_PLAN_RESELLS = new Set(["deepseek-v4-pro"]);
 export function buildProviders(env = process.env, defaultId = env.DEFAULT_BACKEND || "claude") {
 	// "Plan before credits": when the Qwen Token Plan is configured it claims the
 	// bare ids it resells (QWEN_PLAN_RESELLS), so prepaid capacity is spent before
-	// metered credits. Computed once here and consulted by the glm/deepseek
-	// predicates below — WITHOUT the key those predicates are unchanged, so a user
-	// who holds no plan sees the original native routing.
+	// metered credits — for ids whose native route still metered credits, i.e.
+	// glm-5.2 (it doesn't; see below). Computed once here and consulted by the
+	// glm predicate below; the deepseek predicate deliberately does NOT consult
+	// it since issue #19 (0.6.1) — see that predicate's comment.
 	const planResells = env.DASHSCOPE_API_KEY ? (m) => QWEN_PLAN_RESELLS.has(m) : () => false;
 
 	/** @type {Provider[]} */
@@ -147,11 +154,17 @@ export function buildProviders(env = process.env, defaultId = env.DEFAULT_BACKEN
 			// deepseek-v4-flash"), so claiming it would route a reachable model to a
 			// backend that has never heard of it. The two predicates stay disjoint:
 			// dated → qwen, bare → deepseek. Verified 2026-08-04; see CLAUDE.md item 8.
-			// …and yields the bare ids the plan resells (deepseek-v4-pro) when the
-			// plan leg is registered. deepseek-v4-flash is NOT in that set — the
-			// plan 403s it — so it keeps routing here.
-			match: (m) =>
-				typeof m === "string" && m.startsWith("deepseek-") && !DATED_ID.test(m) && !planResells(m),
+			// NO `!planResells(m)` here — issue #19 (0.6.1) deliberately drops it.
+			// Registry order (glm, openrouter, deepseek, qwen, claude) then makes
+			// this predicate agree with rankRoutes' native-first sort: both this
+			// predicate and qwen's below claim `deepseek-v4-pro`, `providers.find()`
+			// hits this one first (native wins when a DeepSeek key exists), and a
+			// plan-only user simply never gets this entry registered, so qwen's
+			// claim below is what fires for them. Before #19 the `!planResells(m)`
+			// guard made this predicate REFUSE a plan-resold id even when native was
+			// registered, silently reversing #19's fix whenever the static ROUTES
+			// table didn't also carry the id.
+			match: (m) => typeof m === "string" && m.startsWith("deepseek-") && !DATED_ID.test(m),
 		});
 	}
 
@@ -196,8 +209,11 @@ export function buildProviders(env = process.env, defaultId = env.DEFAULT_BACKEN
 			//      resold one.
 			// Case 3 is the one that trades a known cost for a saving: the plan's
 			// gateway injects a preamble (+79 input tokens on deepseek-v4-pro), so
-			// the routes are not interchangeable, and there is currently no spelling
-			// that reaches the native one. → CLAUDE.md backlog item 8.
+			// the routes are not interchangeable. Since issue #19 (0.6.1) this
+			// predicate is a FALLBACK, not the default: `deepseek:deepseek-v4-pro`
+			// and — when a DeepSeek key is registered — the bare id both reach the
+			// native route explicitly; this predicate only fires when no native
+			// route is registered (or via the explicit `qwen:` selector).
 			match: (m) =>
 				typeof m === "string" &&
 				!m.includes("/") &&
