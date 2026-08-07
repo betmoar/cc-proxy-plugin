@@ -3,7 +3,7 @@
 import { parseArgs } from "node:util";
 import { load } from "../src/config.js";
 import { loadEnv } from "../src/env.js";
-import { defaultProvider, providerById } from "../src/providers.js";
+import { defaultProvider } from "../src/providers.js";
 import { createServer } from "../src/server.js";
 
 // Load API keys + config from ~/.env (canonical for the installed plugin) and,
@@ -24,12 +24,26 @@ const config = load({
 	defaultBackend: values["default-backend"],
 });
 
-const glm = providerById(config, "glm");
-if (glm && !glm.apiKey) {
+// GLM (and every other third-party backend) is opt-in: buildProviders() only
+// registers it when its key is present. Claude (OAuth, no key) is always
+// available, so a zero-key start is a valid install, never a misconfigured
+// one — never exit on a missing third-party key. Still surface it loudly: a
+// user who MEANT to configure GLM (the product's original reason to exist)
+// should notice it silently didn't register.
+const active = config.providers.map((p) => p.id);
+const thirdParty = active.filter((id) => id !== "claude");
+if (thirdParty.length === 0) {
 	console.error(
-		"GLM_API_KEY is not set. Put it in ~/.env (or .env at the repo root for dev); run /cc-proxy:setup.",
+		"cc-proxy: active backends: claude only (no third-party keys found). Run /cc-proxy:setup to add GLM/OpenRouter/DeepSeek/Qwen.",
 	);
-	process.exit(1);
+} else if (!active.includes("glm")) {
+	// Some third-party backend registered but GLM didn't — most likely an
+	// unset/typo'd GLM_API_KEY rather than a deliberate choice, so name it.
+	console.error(
+		`cc-proxy: active backends: ${active.join(", ")} (GLM_API_KEY is not set — put it in ~/.env, or run /cc-proxy:setup)`,
+	);
+} else {
+	console.error(`cc-proxy: active backends: ${active.join(", ")}`);
 }
 
 // Fail loud on a bad port instead of letting listen() throw a bare RangeError:

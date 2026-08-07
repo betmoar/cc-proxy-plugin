@@ -1,6 +1,6 @@
 ---
 name: setup
-description: One-time setup for the cc-proxy plugin. Writes API keys (GLM_API_KEY, optionally OPENROUTER_API_KEY) to ~/.env, and configures ANTHROPIC_BASE_URL and the glm-5.2[1m] custom model option in ~/.claude/settings.json so the SessionStart hook can auto-start the proxy and /model can route to GLM. Invoke via /cc-proxy:setup.
+description: One-time setup for the cc-proxy plugin. Writes API keys (all optional — GLM_API_KEY, OPENROUTER_API_KEY, DEEPSEEK_API_KEY, DASHSCOPE_API_KEY) to ~/.env, and configures ANTHROPIC_BASE_URL and the glm-5.2[1m] custom model option in ~/.claude/settings.json so the SessionStart hook can auto-start the proxy and /model can route to GLM. Invoke via /cc-proxy:setup.
 ---
 
 # cc-proxy setup
@@ -28,9 +28,14 @@ API keys live in `~/.env` — the single source of truth the proxy reads at star
 
 Read `~/.env` first (create the file if absent). For each key, reuse a value already present rather than re-asking.
 
-**Z.ai / GLM — required.** This is the model wired into the `/model` picker. If `GLM_API_KEY` is missing or empty in `~/.env`, **ask explicitly**:
+**Z.ai / GLM — optional, but the one this plugin is built around.** It is the model wired into the `/model` picker, so without it that picker entry routes nowhere useful. If `GLM_API_KEY` is missing or empty in `~/.env`, **ask explicitly**:
 
-> "Enter your Z.ai API key (https://z.ai → Dashboard → API Keys). It will be stored in ~/.env:"
+> "Enter your Z.ai API key (https://z.ai → Dashboard → API Keys), or press Enter to skip. It will be stored in ~/.env:"
+
+If the user skips, continue setup — do not stop and do not re-ask. The proxy
+starts without it and routes to Claude; a backend with no key is simply not
+registered. Say once that `glm-5.2[1m]` will appear in `/model` but won't route
+until a key is added, then move on.
 
 **OpenRouter — optional.** Ask the user whether they also want OpenRouter routing. If yes and `OPENROUTER_API_KEY` is missing or empty in `~/.env`, ask:
 

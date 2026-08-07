@@ -13,6 +13,14 @@ describe("router", () => {
 		assert.equal(resolve("glm-5.2", config).id, "glm");
 	});
 
+	// Issue #20: GLM is opt-in. With no GLM_API_KEY, the glm entry never gets
+	// registered, so a glm- id falls through to the default backend (claude)
+	// instead of a dead/unregistered "glm" entry.
+	it("falls through glm-* to the default backend when GLM_API_KEY is unset", () => {
+		const noGlm = { port: 4000, providers: buildProviders({}, "claude") };
+		assert.equal(resolve("glm-5.2", noGlm).id, "claude");
+	});
+
 	it("routes claude-* models to Claude", () => {
 		assert.equal(resolve("claude-opus-4-6", config).id, "claude");
 	});

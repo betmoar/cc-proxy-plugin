@@ -108,19 +108,25 @@ export function buildProviders(env = process.env, defaultId = env.DEFAULT_BACKEN
 	const planResells = env.DASHSCOPE_API_KEY ? (m) => QWEN_PLAN_RESELLS.has(m) : () => false;
 
 	/** @type {Provider[]} */
-	const providers = [
-		{
+	const providers = [];
+
+	// GLM was the original single backend, but it's third-party like OpenRouter/
+	// DeepSeek/Qwen below — opt-in: only registered when a key is present. Claude
+	// (OAuth, no key) is the structural default, so a zero-key proxy is a working
+	// proxy, not a degraded one. Issue #20.
+	if (env.GLM_API_KEY) {
+		providers.push({
 			id: "glm",
 			baseUrl: "https://api.z.ai/api/anthropic",
-			apiKey: env.GLM_API_KEY || "",
+			apiKey: env.GLM_API_KEY,
 			auth: "apiKey",
 			// All glm- ids stay here: Z.ai is itself a plan (GLM Pro), and a native
 			// plan outranks a resold one — see QWEN_PLAN_RESELLS. planResells() is
 			// still consulted so the rule holds if a future GLM id ever becomes
 			// credit-billed.
 			match: (m) => typeof m === "string" && m.startsWith("glm-") && !planResells(m),
-		},
-	];
+		});
+	}
 
 	// OpenRouter speaks the Anthropic "Skin" at /api/v1/messages with Bearer
 	// auth. Opt-in: only registered when a key is present. Its model ids are

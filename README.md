@@ -53,7 +53,7 @@ It writes your **API keys to `~/.env`** (the single source of truth the proxy re
 
 | Key | Where | Purpose |
 | --- | --- | --- |
-| `GLM_API_KEY` | `~/.env` | Your Z.ai key (forwarded as `x-api-key`) |
+| `GLM_API_KEY` | `~/.env` | Your Z.ai key (forwarded as `x-api-key`). Optional — every backend key is |
 | `ANTHROPIC_BASE_URL=http://127.0.0.1:4000` | settings.json `env` | Route API calls through the proxy |
 
 The proxy binary is found automatically: the SessionStart hook spawns `bin/cc-proxy.js` from its own plugin tree, which is always the installed version. After a plugin update, the hook also detects a still-running older proxy (via the version on `/_status`) and replaces it gracefully — no manual restart.
@@ -201,7 +201,7 @@ The statusline runs as its own subprocess and only inherits `settings.json`'s `e
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `ANTHROPIC_BASE_URL` | — | Set by setup to `http://127.0.0.1:4000` |
-| `GLM_API_KEY` | — | Z.ai API key (lives in `~/.env`) |
+| `GLM_API_KEY` | — | Enable GLM/Z.ai (bare `glm-*` models; lives in `~/.env`). Optional like every other backend key — without it the proxy still starts and routes to Claude |
 | `OPENROUTER_API_KEY` | — | Enable OpenRouter (slash-namespaced models; lives in `~/.env`) |
 | `DEEPSEEK_API_KEY` | — | Enable DeepSeek (bare `deepseek-*` models; lives in `~/.env`) |
 | `DASHSCOPE_API_KEY` | — | Enable Qwen (bare `qwen`-prefixed models, Token Plan skin; lives in `~/.env`) |

@@ -75,6 +75,14 @@ There is no automatic replay. Recovery: switch model with `/model`, `/clear`, or
 
 ## Environment variables
 
+**Every backend key is optional, GLM included** (issue #20). `buildProviders()`
+registers a third-party backend only when its key is present, so an absent key
+means that backend is simply not available — never a startup failure. Claude is
+OAuth and needs no key, so a proxy with zero keys starts fine and routes
+everything there. At startup the proxy prints one stderr line naming the active
+backends; when GLM is the only one missing it says so, because an unset
+`GLM_API_KEY` is more often a typo than a choice.
+
 | Variable | Effect |
 | --- | --- |
 | `PROXY_HOST` | Interface the proxy binds to (default `127.0.0.1`; loopback on purpose — the proxy injects keys) |

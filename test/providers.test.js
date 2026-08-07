@@ -9,8 +9,20 @@ import {
 } from "../src/providers.js";
 
 describe("buildProviders", () => {
-	it("returns glm + claude, claude default by default", () => {
+	// Issue #20: GLM is opt-in like every other third-party backend — a
+	// zero-key env registers ONLY Claude (OAuth, no key required). A
+	// zero-key proxy is a working proxy, not a degraded one.
+	it("returns claude only with no keys at all", () => {
 		const providers = buildProviders({});
+		assert.deepEqual(
+			providers.map((p) => p.id),
+			["claude"],
+		);
+		assert.equal(defaultProvider({ providers }).id, "claude");
+	});
+
+	it("registers glm + claude, claude default by default, when GLM_API_KEY is set", () => {
+		const providers = buildProviders({ GLM_API_KEY: "k" });
 		assert.deepEqual(
 			providers.map((p) => p.id),
 			["glm", "claude"],
@@ -19,7 +31,7 @@ describe("buildProviders", () => {
 	});
 
 	it("DEFAULT_BACKEND / defaultId selects the default provider", () => {
-		const providers = buildProviders({}, "glm");
+		const providers = buildProviders({ GLM_API_KEY: "k" }, "glm");
 		assert.equal(defaultProvider({ providers }).id, "glm");
 		assert.equal(providers.find((p) => p.id === "glm").isDefault, true);
 	});
@@ -101,6 +113,7 @@ describe("buildProviders", () => {
 
 	it("DeepSeek sits before claude and after openrouter in registry order", () => {
 		const ids = buildProviders({
+			GLM_API_KEY: "g",
 			OPENROUTER_API_KEY: "or",
 			DEEPSEEK_API_KEY: "ds",
 		}).map((p) => p.id);
@@ -160,6 +173,7 @@ describe("buildProviders", () => {
 
 	it("Qwen sits before claude and after deepseek in registry order", () => {
 		const ids = buildProviders({
+			GLM_API_KEY: "g",
 			OPENROUTER_API_KEY: "or",
 			DEEPSEEK_API_KEY: "ds",
 			DASHSCOPE_API_KEY: "qwen",
@@ -168,7 +182,7 @@ describe("buildProviders", () => {
 	});
 
 	it("match predicates key off the model prefix", () => {
-		const providers = buildProviders({});
+		const providers = buildProviders({ GLM_API_KEY: "k" });
 		const glm = providers.find((p) => p.id === "glm");
 		const claude = providers.find((p) => p.id === "claude");
 		assert.equal(glm.match("glm-5.2"), true);

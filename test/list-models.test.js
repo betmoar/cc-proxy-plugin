@@ -40,13 +40,11 @@ describe("list-models attribute()", () => {
 		assert.equal(attribute("claude-haiku-4-5", glmDefault), "claude");
 	});
 
-	it("routes glm-* to GLM (glm is always registered — the primary backend)", () => {
-		// glm is the one provider buildProviders() always pushes (with an empty
-		// key when unset), so glm-* ids always attribute to GLM. /v1/models only
-		// lists glm models when the key is set, so this can't show a model that
-		// isn't reachable.
+	it("routes glm-* to GLM only when GLM_API_KEY is set (issue #20: opt-in like every other third-party backend)", () => {
 		assert.equal(attribute("glm-5.2", buildProviders({ GLM_API_KEY: "g" }, "claude")), "glm");
-		assert.equal(attribute("glm-5.2", buildProviders({}, "claude")), "glm");
+		// No GLM key registered: the glm entry doesn't exist, so a glm- id falls
+		// through to the default backend, same as any other unreachable id.
+		assert.equal(attribute("glm-5.2", buildProviders({}, "claude")), "claude");
 	});
 
 	it("routes bare deepseek-* to DeepSeek; deepseek/... to OpenRouter", () => {
@@ -149,7 +147,10 @@ describe("list-models attribute()", () => {
 	// The claude fallback is load-bearing: resolve()'s default-backend fallback
 	// must always have claude available even when /_status omits it.
 	describe("registeredProviders()", () => {
-		const all = buildProviders({ DEEPSEEK_API_KEY: "d", DASHSCOPE_API_KEY: "q" }, "claude");
+		const all = buildProviders(
+			{ GLM_API_KEY: "g", DEEPSEEK_API_KEY: "d", DASHSCOPE_API_KEY: "q" },
+			"claude",
+		);
 
 		it("drops providers /_status doesn't report", () => {
 			const on = registeredProviders(all, ["glm", "claude"]).map((p) => p.id);
