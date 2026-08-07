@@ -33,8 +33,20 @@ describe("routes", () => {
 	});
 
 	describe("rankRoutes", () => {
-		it("returns the cheapest usable route first", () => {
-			assert.equal(rankRoutes("deepseek-v4-pro")[0].provider, "qwen");
+		it("returns the native route first for a plan-resold id (issue #19)", () => {
+			// REVERSED: bare deepseek-v4-pro used to route to the Qwen plan
+			// (tier 2 plan beat tier 3 credits). The plan gateway injects a
+			// +79-token preamble, so the two routes are NOT interchangeable, and
+			// the bare id is the one /model sets — making the default the
+			// native DeepSeek backend. The plan still serves it (reachable via
+			// the qwen: selector); its route is deliberately absent from ROUTES
+			// so rankRoutes can no longer re-hide the native one.
+			assert.equal(rankRoutes("deepseek-v4-pro")[0].provider, "deepseek");
+			assert.deepEqual(
+				rankRoutes("deepseek-v4-pro").map((r) => r.provider),
+				["deepseek", "openrouter"],
+				"the plan route is reachable only via the qwen: selector",
+			);
 		});
 
 		it("breaks a tier tie toward the native provider", () => {

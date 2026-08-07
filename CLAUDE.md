@@ -376,6 +376,22 @@ tests in `providers.test.js` + `router.test.js`. Never a router/server change.
 
    So the plan resells exactly one GLM (5.2) and two DeepSeek models.
 
+   **REVERSED 0.6.1 (issue #19) for `deepseek-v4-pro` — the bare id now routes
+   NATIVE, not to the plan.** The "plan before credits" policy below shipped in
+   0.5.1 and is now overturned for this one id: the plan gateway injects a
+   +79-token preamble, so the plan and native routes are NOT interchangeable,
+   and the bare id is the one `/model` sets — defaulting it to the plan
+   silently rerouted users who had tuned prompts against native weights. The
+   fix is `default: false` on the qwen route in `ROUTES` (src/routes.js): the
+   200 probe stays RECORDED (so the catalog-coherence coupling holds and the
+   probe matrix stays complete), but `rankRoutes` never sorts it into the
+   auto-pick. `QWEN_PLAN_RESELLS` (src/providers.js) is emptied — its predicate
+   no longer claims the bare id; the plan route is reachable only via the
+   `qwen:` selector. `glm-5.2` is UNAFFECTED (a native plan outranks a resold
+   one — it ties at tier 2 and the native tiebreak already won). Everything
+   below — the probe matrix, the tier vocabulary, the cost rank — remains the
+   reference; only the default-pick policy for one id changed.
+
    **Partially DONE in 0.5.1 — "plan before credits" is the DEFAULT now.**
    `QWEN_PLAN_RESELLS` (`src/providers.js`) routes bare `deepseek-v4-pro` to the
    plan when `DASHSCOPE_API_KEY` is set, because prepaid capacity is free at the

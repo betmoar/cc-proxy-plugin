@@ -144,7 +144,7 @@ describe("router", () => {
 		// the plan is prepaid, so the bare id goes to the plan. glm-5.2 does NOT:
 		// Z.ai is itself a plan (GLM Pro), and a native plan outranks a resold one
 		// — swapping prepaid pools saves nothing and costs +6 injected tokens.
-		it("routes plan-resold bare ids to qwen when the plan is configured", () => {
+		it("routes bare ids native even when the plan is configured (issue #19)", () => {
 			const withPlan = {
 				port: 4000,
 				providers: buildProviders(
@@ -152,12 +152,16 @@ describe("router", () => {
 					"claude",
 				),
 			};
-			assert.equal(resolve("deepseek-v4-pro", withPlan).id, "qwen");
+			// REVERSED: deepseek-v4-pro used to hop to the qwen plan ("plan before
+			// credits"). It now stays native because the plan gateway injects a
+			// +79-token preamble. The plan route is still reachable via qwen: (see
+			// the lens block); only the DEFAULT changed.
+			assert.equal(resolve("deepseek-v4-pro", withPlan).id, "deepseek");
 			assert.equal(resolve("glm-5.2", withPlan).id, "glm", "a native plan outranks a resold plan");
-			// deepseek-v4-flash is NOT resold — the plan 403s it — so it must stay
+			// deepseek-v4-flash is NOT resold — the plan 403s it — so it stays
 			// native or the user loses a model they can otherwise reach.
 			assert.equal(resolve("deepseek-v4-flash", withPlan).id, "deepseek");
-			// Everything else is untouched: only the one resold id moves.
+			// Everything else is untouched.
 			assert.equal(resolve("glm-5.1", withPlan).id, "glm");
 			assert.equal(resolve("glm-4.5", withPlan).id, "glm");
 		});
@@ -232,14 +236,16 @@ describe("router", () => {
 			assert.equal(r.upstreamModel, "deepseek-v4-pro");
 		});
 
-		it("reaches the native route that the cheapest-route default would otherwise hide", () => {
-			// This is the whole point of the lens: deepseek-v4-pro defaults to the
-			// plan (tier 2 beats tier 3), so without a selector there is NO spelling
-			// that reaches DeepSeek's own endpoint. The two are not interchangeable —
-			// the plan gateway injects ~+79 input tokens.
-			assert.equal(resolve("deepseek-v4-pro", all).id, "qwen", "default is the cheap route");
-			const r = resolve2("deepseek:deepseek-v4-pro", all);
-			assert.equal(r.provider.id, "deepseek");
+		it("reaches the plan route that the native default would otherwise hide", () => {
+			// REVERSED (issue #19): the bare id now defaults to native DeepSeek, so
+			// the LENS's job is to reach the PLAN (qwen:) that the default would
+			// otherwise hide. The two are not interchangeable — the plan gateway
+			// injects ~+79 input tokens — which is why the default is native: the
+			// bare id is what /model sets, and a user who tuned a prompt against
+			// native must not be silently rerouted to the preamble-augmented plan.
+			assert.equal(resolve("deepseek-v4-pro", all).id, "deepseek", "default is the native route");
+			const r = resolve2("qwen:deepseek-v4-pro", all);
+			assert.equal(r.provider.id, "qwen");
 			assert.equal(r.upstreamModel, "deepseek-v4-pro");
 		});
 
@@ -315,9 +321,12 @@ describe("router", () => {
 			),
 		};
 
-		it("prefers plan capacity over metered credits", () => {
-			// Prepaid capacity is free at the margin; DeepSeek native bills real USD.
-			assert.equal(resolve("deepseek-v4-pro", all).id, "qwen");
+		it("prefers the native route for a plan-resold id (issue #19)", () => {
+			// REVERSED: "plan before credits" was the default for deepseek-v4-pro
+			// until the +79-token plan preamble made the routes non-interchangeable.
+			// The bare id now routes to native DeepSeek; the plan route stays
+			// reachable via the qwen: selector (see the lens block above).
+			assert.equal(resolve("deepseek-v4-pro", all).id, "deepseek");
 		});
 
 		it("prefers a NATIVE plan over a resold plan", () => {

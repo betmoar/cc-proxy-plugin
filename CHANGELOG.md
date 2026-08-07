@@ -2,6 +2,11 @@
 
 All notable changes to cc-proxy are recorded here. Versions follow [semver](https://semver.org/); `package.json` is the single source of truth and propagates to `.claude-plugin/plugin.json` via `scripts/sync-version.mjs`.
 
+## [0.6.1] — Unreleased
+
+### Fixed
+- **Bare `deepseek-v4-pro` routed to the Qwen Token Plan instead of native DeepSeek (issue #19).** The "plan before credits" policy (0.5.1) made the bare id — the one `/model` sets — spend prepaid Qwen capacity before metered DeepSeek credits. But the plan's gateway injects a **+79-token preamble**, so the two routes are behaviourally non-interchangeable, and a user who tuned a prompt against native weights was silently rerouted. The bare id now resolves to native DeepSeek; the plan route is reachable only via the `qwen:` selector. **Implemented as `default: false` on the qwen route in `ROUTES`** (`src/routes.js`): the 200 probe stays recorded (so catalog↔routing coherence holds and the probe matrix stays complete), but `rankRoutes()` never sorts it into the auto-pick. `QWEN_PLAN_RESELLS` (`src/providers.js`) is emptied — its predicate no longer claims the bare id. `glm-5.2` is unaffected: it ties at tier 2 on both backends and the native tiebreak already routed it to Z.ai. This reverses a deliberate, documented policy (CLAUDE.md backlog item 8); the probe matrix, tier vocabulary, and cost rank there remain the reference.
+
 ## [0.6.0] — 2026-08-07
 
 ### Added

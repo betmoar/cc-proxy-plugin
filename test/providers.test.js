@@ -139,10 +139,18 @@ describe("buildProviders", () => {
 		assert.equal(qwen.match("qwen3.7-max"), true);
 		assert.equal(qwen.match("qwen3.6-flash"), true);
 		assert.equal(qwen.match("qwen3.8-max"), true);
-		// Plan-resold third-party ids (0.5.1, "plan before credits"): prepaid
-		// capacity is spent before metered credits, so the plan leg claims these.
-		// The glm/deepseek predicates yield them in turn — see router.test.js.
-		assert.equal(qwen.match("deepseek-v4-pro"), true, "plan resells deepseek-v4-pro");
+		// REVERSED (issue #19): the plan still SERVES deepseek-v4-pro, but the
+		// qwen predicate no longer CLAIMS the bare id — the default routes native
+		// (rankRoutes), and the plan route is reached only via the qwen: selector,
+		// which bypasses match() entirely. So match() returns false here: the bare
+		// id is not the plan's to claim by predicate. Only DATED plan-only builds
+		// (deepseek-v4-flash-0731) are claimed, since no native backend knows them.
+		assert.equal(
+			qwen.match("deepseek-v4-pro"),
+			false,
+			"native id; plan reached via qwen: selector only",
+		);
+		assert.equal(qwen.match("deepseek-v4-flash-0731"), true, "dated build is plan-only");
 		// glm-5.2 is served by the plan but NOT claimed: Z.ai is a plan too, and a
 		// native plan outranks a resold one.
 		assert.equal(qwen.match("glm-5.2"), false, "a native plan outranks a resold plan");

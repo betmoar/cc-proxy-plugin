@@ -24,6 +24,13 @@
  * @property {string} provider - provider id, must exist in the registry
  * @property {number} status - what the live probe returned (200 = usable)
  * @property {"plan" | "credits"} [billing] - overrides the provider default
+ * @property {boolean} [default=true] - false = probe RECORDED but never an
+ *   auto-pick. A backend may genuinely SERVE a foreign id (so its catalog lists
+ *   it, and the route is honestly probed) yet not be the route the bare id
+ *   resolves to. Such a route is reachable only via the `<provider>:` selector,
+ *   which bypasses rankRoutes. Recording it (rather than omitting) keeps the
+ *   probe matrix complete and the catalog↔routing coherence check honest, while
+ *   `default: false` stops rankRoutes from ever sorting it into the auto-pick.
  */
 
 /**
@@ -82,8 +89,24 @@ export function tierOf(providerId, route) {
  */
 export const ROUTES = {
 	// --- served by more than one backend: the reason this file exists ---
+	// REVERSED for `deepseek-v4-pro` (issue #19): the bare id now routes to the
+	// NATIVE DeepSeek backend, not the Qwen plan. The plan still SERVES it — the
+	// 200 probe is RECORDED so the catalog↔routing coherence check stays honest
+	// and the probe matrix stays complete — but `default: false` stops rankRoutes
+	// from ever sorting the qwen route into the auto-pick. It is reachable only
+	// via the `qwen:` selector (which bypasses rankRoutes), and still appears on
+	// Qwen's discovery card as a foreign id under the lens.
+	//
+	// Why the default flipped: the plan gateway injects a +79-token preamble, so
+	// the two routes are behaviourally non-interchangeable, and the bare id is
+	// the one /model sets — defaulting it to the plan silently reroutes a user
+	// who tuned a prompt against native weights. glm-5.2 (below) is UNAFFECTED:
+	// it ties at tier 2 on both backends and the native tiebreak wins, so its
+	// bare id already means native. deepseek-v4-pro does NOT tie — its tiers
+	// differ (plan 2 vs credits 3) — which is exactly why only it needed the
+	// `default: false` flag.
 	"deepseek-v4-pro": [
-		{ provider: "qwen", status: 200 },
+		{ provider: "qwen", status: 200, default: false },
 		{ provider: "deepseek", status: 200 },
 		{ provider: "openrouter", status: 200 },
 	],
@@ -148,14 +171,20 @@ export const ROUTES = {
  */
 export function rankRoutes(model) {
 	if (typeof model !== "string" || !Object.hasOwn(ROUTES, model)) return [];
-	return ROUTES[model]
-		.filter((r) => r.status === 200)
-		.map((r, i) => ({ route: r, i, native: model.startsWith(r.provider) }))
-		.sort((a, b) => {
-			const byTier = tierOf(a.route.provider, a.route) - tierOf(b.route.provider, b.route);
-			if (byTier !== 0) return byTier;
-			if (a.native !== b.native) return a.native ? -1 : 1;
-			return a.i - b.i; // stable: declaration order
-		})
-		.map((x) => x.route);
+	return (
+		ROUTES[model]
+			// `default: false` routes are probed-and-recorded but excluded from the
+			// auto-pick — reachable only via the `<provider>:` selector. See the
+			// deepseek-v4-pro qwen route (issue #19): the plan serves it, but the
+			// bare id must resolve native, so it never sorts into the default ranking.
+			.filter((r) => r.status === 200 && r.default !== false)
+			.map((r, i) => ({ route: r, i, native: model.startsWith(r.provider) }))
+			.sort((a, b) => {
+				const byTier = tierOf(a.route.provider, a.route) - tierOf(b.route.provider, b.route);
+				if (byTier !== 0) return byTier;
+				if (a.native !== b.native) return a.native ? -1 : 1;
+				return a.i - b.i; // stable: declaration order
+			})
+			.map((x) => x.route)
+	);
 }

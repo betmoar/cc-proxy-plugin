@@ -69,7 +69,19 @@ const DATED_ID = /^deepseek-.*-\d{4}(\d{4})?$/;
  * set or it becomes a hard failure on a model the user could otherwise reach.
  * `deepseek-v4-flash` is absent for exactly that reason (403 AccessDenied).
  */
-const QWEN_PLAN_RESELLS = new Set(["deepseek-v4-pro"]);
+// REVERSED for `deepseek-v4-pro` (issue #19): this set is now EMPTY. The bare
+// id routes to its native DeepSeek backend, not the Qwen plan. The plan still
+// SERVES it and `qwen:deepseek-v4-pro` still works via the selector lens, but
+// the default no longer spends plan capacity to avoid metered credits, because
+// the plan gateway injects a +79-token preamble that makes the routes
+// behaviourally non-interchangeable and the bare id is the one /model sets.
+//
+// The set is kept (as an empty Set) rather than deleted because the predicate
+// machinery below (planResells → deepseek/qwen match()) is still the structure
+// for any FUTURE plan-resold id; emptying it is the reversal, removing it would
+// also rip out the mechanism. The docstring above describing the policy is
+// retained as the record of the reversed decision.
+const QWEN_PLAN_RESELLS = new Set(/** @type {string[]} */ ([]));
 
 /**
  * Build the provider registry from the environment. Order matters: `resolve()`
