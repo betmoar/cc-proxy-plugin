@@ -2,6 +2,11 @@
 
 All notable changes to cc-proxy are recorded here. Versions follow [semver](https://semver.org/); `package.json` is the single source of truth and propagates to `.claude-plugin/plugin.json` via `scripts/sync-version.mjs`.
 
+## [Unreleased]
+
+### Fixed
+- **The version handshake evicted a proxy NEWER than the plugin tree (issue #24).** `ensureProxyRunning()` compared versions with `!==`, so *any* difference read as stale — including a dev tree deliberately ahead of the installed plugin. Because SessionStart fires on every `claude` invocation, the client under test kept replacing the binary under test: a working tree running `bin/cc-proxy.js` at the next version could never hold port 4000 against an older cached build, and a routing fix was read as broken four times in a row before the cause was found. The comparison is now ordered (new `isOlderVersion()`, numeric per segment — a string compare would rank `0.6.10` below `0.6.9`), so only a genuinely older proxy is replaced. The staleness protection is unchanged in the direction it was written for: an old long-lived proxy is still swapped out after a plugin update, and a `null` version (too old to report one) still counts as behind.
+
 ## [0.6.0] — 2026-08-07
 
 ### Added
