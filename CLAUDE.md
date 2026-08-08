@@ -280,6 +280,30 @@ tests in `providers.test.js` + `router.test.js`. Never a router/server change.
 
 ## Backlog (prioritized, with context)
 
+**Write down what you do NOT know, not only what you decided.** Every entry
+below earns its length the same way: the unknown is stated as plainly as the
+conclusion. A backlog of decisions reads as settled and invites the next reader
+to build on sand; a backlog that names its open questions tells them where the
+ground is soft. Three shapes worth spelling out every time:
+
+- **Unverified assumptions** — what was probed and when, versus what was
+  inferred. `ROUTES` (item 12) is a set of statuses from one afternoon; that
+  sentence is why nobody trusts it blindly.
+- **What a fix did NOT cover.** Item 15 exists because a test PASSED against the
+  defect it was meant to catch — deleting it and saying so is worth more than
+  leaving a green assertion that guards nothing.
+- **What would kill an idea**, listed hardest-first, before it is built. Item 9's
+  leaderboard direction listed four; building it hit them in order, and the
+  third ("their axis is not our axis") is what forced `grade` off benchmark
+  scores onto vendor version ordering. If the blocking question is unanswerable,
+  that is the finding.
+
+The same rule applies to a session report: state what only the human can verify
+from where they sit, and mark anything unverified as such rather than rounding
+it to done. **An unknown that outlives the session belongs in a GitHub issue
+labeled `question`, not in a chat reply** — the register is the part that
+survives.
+
 1. **Thinking-strip vs Claude thinking+tool-use** (`src/sanitize.js`) — thinking
    blocks are stripped from history on *every* route, including Claude→Claude.
    The Anthropic API has historically required the preceding assistant turn's
