@@ -70,8 +70,20 @@ const DEFAULT_TIER = 3;
  * @returns {number} 1..4
  */
 export function tierOf(providerId, route) {
-	const billing = route?.billing || PROVIDER_BILLING[providerId];
-	return BILLING_TIER[billing] ?? DEFAULT_TIER;
+	// `Object.hasOwn` on BOTH lookups, for the same reason rankRoutes uses it
+	// below: a bare `BILLING_TIER[billing]` inherits from Object.prototype, so a
+	// typo'd `billing: "constructor"` returns a FUNCTION — which `??` cannot
+	// guard, because a function is neither null nor undefined. The comparator
+	// then computes `function - number` = NaN, and V8's sort does not throw on a
+	// NaN comparator: it silently yields a declaration-order-dependent partial
+	// order, so a route can outrank a cheaper or native one with no error at all.
+	const own = Object.hasOwn(PROVIDER_BILLING, providerId)
+		? PROVIDER_BILLING[providerId]
+		: undefined;
+	const billing = route?.billing || own;
+	return billing !== undefined && Object.hasOwn(BILLING_TIER, billing)
+		? BILLING_TIER[billing]
+		: DEFAULT_TIER;
 }
 
 /**

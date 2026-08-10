@@ -98,6 +98,22 @@ const QWEN_PLAN_RESELLS = new Set(["deepseek-v4-pro"]);
  * @param {string} [defaultId] - which provider id is the fallback/default tier.
  * @returns {Provider[]}
  */
+/**
+ * Every provider id this proxy knows how to spell, registered or not.
+ *
+ * `<provider>:` is cc-proxy's LOCAL lens — no backend has heard of it — so it
+ * must be stripped from an outbound body whether or not that backend currently
+ * holds a key. Gating the strip on REGISTRATION (which is what
+ * `config.providers` describes) leaked the raw `glm:glm-5.2` upstream once GLM
+ * became opt-in: with no GLM key the selector went unrecognized, the tail was
+ * never stripped, and the literal lens string was forwarded to Anthropic. The
+ * spelling is a static fact about this proxy; whether the backend is usable is
+ * a separate question that `resolve()` answers by skipping unregistered routes.
+ *
+ * @type {ReadonlySet<string>}
+ */
+export const PROVIDER_IDS = new Set(["glm", "openrouter", "deepseek", "qwen", "claude"]);
+
 export function buildProviders(env = process.env, defaultId = env.DEFAULT_BACKEND || "claude") {
 	// "Plan before credits": when the Qwen Token Plan is configured it claims the
 	// bare ids it resells (QWEN_PLAN_RESELLS), so prepaid capacity is spent before

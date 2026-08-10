@@ -53,7 +53,7 @@ It writes your **API keys to `~/.env`** (the single source of truth the proxy re
 
 | Key | Where | Purpose |
 | --- | --- | --- |
-| `GLM_API_KEY` | `~/.env` | Your Z.ai key (forwarded as `x-api-key`). Optional — every backend key is |
+| `GLM_API_KEY` | `~/.env` | Your Z.ai key (forwarded as `x-api-key`). Optional — every backend key is; with none set the proxy still starts and routes to Claude |
 | `ANTHROPIC_BASE_URL=http://127.0.0.1:4000` | settings.json `env` | Route API calls through the proxy |
 
 The proxy binary is found automatically: the SessionStart hook spawns `bin/cc-proxy.js` from its own plugin tree, which is always the installed version. After a plugin update, the hook also detects a still-running older proxy (via the version on `/_status`) and replaces it gracefully — no manual restart.

@@ -334,6 +334,28 @@ describe("router", () => {
 			// resolve. It must degrade to normal routing, not fail.
 			const noQwen = { port: 4000, providers: buildProviders({ GLM_API_KEY: "g" }, "claude") };
 			assert.equal(resolve("qwen:deepseek-v4-pro", noQwen).id, "claude");
+			// …and the LENS IS STILL STRIPPED. This half was untested, and once GLM
+			// became opt-in (issue #20) the gap became a live leak: the strip used to
+			// require the provider to be REGISTERED, so with no key the raw
+			// `glm:glm-5.2` was forwarded to Anthropic as a literal model id.
+			// server.js gates its body rewrite on `upstreamModel !== body.model`, so
+			// an unstripped tail means the lens reaches a backend that has never
+			// heard of it → opaque 400.
+			assert.equal(
+				resolve2("qwen:deepseek-v4-pro", noQwen).upstreamModel,
+				"deepseek-v4-pro",
+				"an unregistered provider's lens must still be stripped",
+			);
+		});
+
+		it("strips a KNOWN provider's lens even when that provider holds no key", () => {
+			// The regression issue #20 opened: `glm:` is documented in README,
+			// CONTRIBUTING and ARCHITECTURE, and GLM is now opt-in, so this is the
+			// common case for a user who never configured Z.ai — not an edge case.
+			const noKeys = { port: 4000, providers: buildProviders({}, "claude") };
+			const r = resolve2("glm:glm-5.2", noKeys);
+			assert.equal(r.provider.id, "claude", "no glm leg → falls through to default");
+			assert.equal(r.upstreamModel, "glm-5.2", "the lens must never reach an upstream");
 		});
 
 		it("leaves a bare id's upstream model untouched", () => {

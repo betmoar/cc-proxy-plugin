@@ -30,6 +30,27 @@ describe("routes", () => {
 		it("falls back to the credits tier for an unknown provider", () => {
 			assert.equal(tierOf("nobody-knows"), 3);
 		});
+
+		it("returns a NUMBER for a prototype-key billing mode or provider id", () => {
+			// A bare `BILLING_TIER[billing]` inherits from Object.prototype, so a
+			// typo'd `billing: "constructor"` hands back a FUNCTION — and `??`
+			// cannot guard it, because a function is neither null nor undefined.
+			// rankRoutes' comparator then computes `function - number` = NaN, and
+			// V8's sort does NOT throw on a NaN comparator: it silently produces a
+			// declaration-order-dependent partial order, so a route can outrank a
+			// cheaper or native one with no error anywhere. Same class as the
+			// CONTEXT_WINDOW bug fixed in 0.5.1.
+			for (const key of ["constructor", "__proto__", "toString", "hasOwnProperty"]) {
+				const viaRoute = tierOf("qwen", { provider: "qwen", status: 200, billing: key });
+				assert.equal(
+					typeof viaRoute,
+					"number",
+					`billing:${key} must not return a prototype member`,
+				);
+				assert.equal(viaRoute, 3, `billing:${key} falls back to the credits tier`);
+				assert.equal(typeof tierOf(key), "number", `provider ${key} must not inherit a tier`);
+			}
+		});
 	});
 
 	describe("rankRoutes", () => {
