@@ -247,11 +247,36 @@ tests in `providers.test.js` + `router.test.js`. Never a router/server change.
 4. Add an end-to-end test in `server.test.js` with a local stub backend. Cover
    both the streaming and buffered paths; they are separate code.
 
+**Merging a PR** → `gh pr merge <n> --squash`, **never `--rebase`**. `main` is
+one commit per PR, titled `<type>: <what> (#<n>)`, with no merge commits —
+`git log --merges 156a1f8..origin/main` must stay empty. `--rebase` replays
+every commit of the branch onto main: #21 landed as **nine** commits that way
+(2026-08-11) and had to be undone with a force-push, which is a rewrite of
+published history and needs every other clone and worktree reset. The squash
+body is where the WHY goes — the per-commit messages are discarded, so anything
+worth keeping (rejected alternatives, what a review refuted) has to be restated
+there or it is lost.
+
+Two consequences to expect, neither a problem:
+- Branches that landed via squash do **not** show up in `git branch --merged` —
+  the commits are new objects. `git branch -d` refuses them; `-D` is correct
+  once you have confirmed the content landed (`git diff <pr-head> <squash>`).
+- If several PRs are squashed in one pass, each `CHANGELOG.md` entry conflicts
+  with the previous — they all write the same `## [Unreleased]` section. Resolve
+  by folding into ONE version section ordered Added → Changed → Fixed, not by
+  taking one side.
+
 **Releasing** →
 1. `CHANGELOG.md` entry.
 2. `pnpm version patch|minor` (never hand-edit versions).
 3. `pnpm check`, push. The marketplace repo (`betmoar/ccp-market`) points at
    this repo; users pick it up via `claude plugin update cc-proxy@betmoar`.
+4. `docs/models.html` is generated against a LIVE proxy and CI cannot rebuild
+   it. If the release touched routing, the catalog, or the renderer: confirm the
+   port owner by PID (`lsof -nP -iTCP:4000 -sTCP:LISTEN -t` — `/_status` tells
+   you what ANSWERED, not what is bound), restart the proxy so it matches the
+   merged tree, then `pnpm models:html` and commit. A stale artifact ships
+   silently; the test suite reads the committed file, so it stays green.
 
 ## Reversed decisions
 
