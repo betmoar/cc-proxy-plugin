@@ -967,7 +967,10 @@ describe("provider selector strip (the local lens must never leak upstream)", ()
 	it("a non-prefixed body is forwarded byte-for-byte (invariant 1 intact)", async () => {
 		// The rewrite is gated on upstreamModel !== body.model, so an untouched
 		// request must still reuse the original buffer verbatim — key order and
-		// whitespace included.
+		// whitespace included. Under the stub setup (GLM + DASHSCOPE, no
+		// DEEPSEEK_API_KEY), the bare id routes to the qwen plan (native not
+		// registered → plan fallback, issue #19), which is what makes this a
+		// real forwarding path rather than a default-backend fallthrough.
 		await wire(okJson);
 		const payload = { model: "deepseek-v4-pro", messages: [{ role: "user", content: "hi" }] };
 		await post(proxy.port, payload);

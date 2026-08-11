@@ -110,20 +110,29 @@ describe("bin/cc-proxy.js loads ~/.env", () => {
 		);
 	});
 
+	// Issue #20: GLM is opt-in like every other third-party backend. A zero-key
+	// install is a VALID install (Claude/OAuth needs no key) — the old exit-1
+	// guard is gone. Startup must still succeed and must still say something
+	// loud enough that a user who MEANT to configure GLM notices it's missing.
 	it(
-		"still exits 1 when GLM_API_KEY is absent everywhere",
+		"starts with a claude-only notice when GLM_API_KEY is absent everywhere",
 		{ skip: repoEnvHasGlmKey() },
 		async () => {
 			// The positive test above wrote <home>/.env with a key; remove it so this
 			// case genuinely has no key in ~/.env or process.env.
 			fs.rmSync(path.join(home, ".env"), { force: true });
 			const port = await freePort();
-			// No ~/.env, no key in process.env. The guard at the top of bin/cc-proxy.js
-			// must still fire so a misconfigured install fails loudly, not silently.
+			// No ~/.env, no key in process.env. Must still start (exit code never
+			// reached — startProxy resolves on the listening line), and must print
+			// a notice naming the active backends.
 			const childEnv = { PATH: process.env.PATH, HOME: home, PROXY_PORT: String(port) };
-			const { code, stderr } = await startProxy(childEnv).catch((e) => e);
-			assert.equal(code, 1);
-			assert.match(stderr, /GLM_API_KEY is not set/);
+			const { stdout, stderr } = await startProxy(childEnv);
+			assert.match(
+				stdout,
+				new RegExp(`cc-proxy listening on http://127.0.0.1:${port}`),
+				`Expected proxy to start with no third-party keys, got: ${stdout}`,
+			);
+			assert.match(stderr, /active backends: claude only \(no third-party keys found\)/);
 		},
 	);
 });

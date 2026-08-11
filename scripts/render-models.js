@@ -94,10 +94,17 @@ const LIVE_LEGS = new Set(["glm", "deepseek", "openrouter", "qwen"]);
  * injects a preamble: +6 input tokens on `glm-5.2`). Tagged rather than
  * re-homed, so the plan's true scope is visible without implying cc-proxy will
  * route there. 200-verified against the plan host 2026-08-04; re-probe before a
- * release. Only glm-5.2 qualifies: `deepseek-v4-pro` now ROUTES to the plan
- * (its native route is credit-billed — see providers.js QWEN_PLAN_RESELLS), and
- * `deepseek-v4-flash-0731` is plan-only. */
-const QWEN_PLAN_ALSO = new Set(["glm-5.2"]);
+ * release.
+ *
+ * Both ids the plan resells qualify, and for the SAME reason — each keeps its
+ * native route while the plan also serves it. `glm-5.2` routes to Z.ai (a
+ * native plan outranks a resold one) and `deepseek-v4-pro` routes to DeepSeek
+ * since issue #19 (0.6.1, native-first ranking). Excluding the DeepSeek id
+ * would under-report the plan's scope on the Qwen card — exactly what the tag
+ * exists to prevent. `deepseek-v4-flash-0731` is NOT here: it is plan-ONLY (no
+ * native route exists), so the plan is its one true home and it renders on the
+ * Qwen card bare, with nothing to cross-reference. */
+const QWEN_PLAN_ALSO = new Set(["glm-5.2", "deepseek-v4-pro"]);
 
 // The number of dots a tier fills, of 4. Hue-independent ordinal encoding — a
 // tier never relies on color alone (the dot fill carries it).
@@ -588,9 +595,12 @@ async function main() {
 	// it through the router. Those are different questions and they disagree: the
 	// API publishes `deepseek-v4-pro` (provider deepseek, its owning namespace)
 	// AND `qwen:deepseek-v4-pro` (provider qwen, the plan that also serves it),
-	// while attribute() resolves BOTH to the cheapest route — so the bare id used
-	// to land on the Qwen card next to its own alias, and DeepSeek's card lost the
-	// model it owns. attribute() is kept only as a fallback for an entry from a
+	// while attribute() resolves BOTH through rankRoutes (native provider first,
+	// then cheapest tier) — pre-issue-#19 that meant the bare id landed on the
+	// Qwen card next to its own alias, and DeepSeek's card lost the model it
+	// owns; post-#19 attribute() would put it back on DeepSeek for this id, but
+	// still diverges from `provider` for any id where ownership and the ranked
+	// route disagree. attribute() is kept only as a fallback for an entry from a
 	// proxy too old to publish the field.
 	//
 	// Unusable entries (multimodal ids wanting another request schema, `:batch`

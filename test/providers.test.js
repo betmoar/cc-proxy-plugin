@@ -9,8 +9,20 @@ import {
 } from "../src/providers.js";
 
 describe("buildProviders", () => {
-	it("returns glm + claude, claude default by default", () => {
+	// Issue #20: GLM is opt-in like every other third-party backend — a
+	// zero-key env registers ONLY Claude (OAuth, no key required). A
+	// zero-key proxy is a working proxy, not a degraded one.
+	it("returns claude only with no keys at all", () => {
 		const providers = buildProviders({});
+		assert.deepEqual(
+			providers.map((p) => p.id),
+			["claude"],
+		);
+		assert.equal(defaultProvider({ providers }).id, "claude");
+	});
+
+	it("registers glm + claude, claude default by default, when GLM_API_KEY is set", () => {
+		const providers = buildProviders({ GLM_API_KEY: "k" });
 		assert.deepEqual(
 			providers.map((p) => p.id),
 			["glm", "claude"],
@@ -19,7 +31,7 @@ describe("buildProviders", () => {
 	});
 
 	it("DEFAULT_BACKEND / defaultId selects the default provider", () => {
-		const providers = buildProviders({}, "glm");
+		const providers = buildProviders({ GLM_API_KEY: "k" }, "glm");
 		assert.equal(defaultProvider({ providers }).id, "glm");
 		assert.equal(providers.find((p) => p.id === "glm").isDefault, true);
 	});
@@ -101,6 +113,7 @@ describe("buildProviders", () => {
 
 	it("DeepSeek sits before claude and after openrouter in registry order", () => {
 		const ids = buildProviders({
+			GLM_API_KEY: "g",
 			OPENROUTER_API_KEY: "or",
 			DEEPSEEK_API_KEY: "ds",
 		}).map((p) => p.id);
@@ -139,10 +152,14 @@ describe("buildProviders", () => {
 		assert.equal(qwen.match("qwen3.7-max"), true);
 		assert.equal(qwen.match("qwen3.6-flash"), true);
 		assert.equal(qwen.match("qwen3.8-max"), true);
-		// Plan-resold third-party ids (0.5.1, "plan before credits"): prepaid
-		// capacity is spent before metered credits, so the plan leg claims these.
-		// The glm/deepseek predicates yield them in turn — see router.test.js.
+		// Plan-resold third-party ids: the plan SERVES deepseek-v4-pro, so the
+		// predicate CLAIMS it — the predicate is the capability/last-resort router,
+		// not the preference. The DEFAULT is native now (issue #19, rankRoutes'
+		// native-first sort), but a plan-holder without a native DeepSeek key still
+		// routes here. The deepseek predicate yields in turn so the two stay disjoint
+		// for the all-providers case — see router.test.js.
 		assert.equal(qwen.match("deepseek-v4-pro"), true, "plan resells deepseek-v4-pro");
+		assert.equal(qwen.match("deepseek-v4-flash-0731"), true, "dated build is plan-only");
 		// glm-5.2 is served by the plan but NOT claimed: Z.ai is a plan too, and a
 		// native plan outranks a resold one.
 		assert.equal(qwen.match("glm-5.2"), false, "a native plan outranks a resold plan");
@@ -156,6 +173,7 @@ describe("buildProviders", () => {
 
 	it("Qwen sits before claude and after deepseek in registry order", () => {
 		const ids = buildProviders({
+			GLM_API_KEY: "g",
 			OPENROUTER_API_KEY: "or",
 			DEEPSEEK_API_KEY: "ds",
 			DASHSCOPE_API_KEY: "qwen",
@@ -164,7 +182,7 @@ describe("buildProviders", () => {
 	});
 
 	it("match predicates key off the model prefix", () => {
-		const providers = buildProviders({});
+		const providers = buildProviders({ GLM_API_KEY: "k" });
 		const glm = providers.find((p) => p.id === "glm");
 		const claude = providers.find((p) => p.id === "claude");
 		assert.equal(glm.match("glm-5.2"), true);

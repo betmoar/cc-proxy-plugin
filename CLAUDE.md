@@ -88,9 +88,12 @@ Each is locked by tests; the test names tell you what you broke.
   Display then follows **ownership, not cost** (`ownsId` in `src/models.js`):
   a backend publishes ids in its own namespace bare and everything else under
   the `<provider>:` lens, so `deepseek-v4-pro` stays bare on DeepSeek's card and
-  appears as `qwen:deepseek-v4-pro` on the plan's. Routing is still cost-ranked
-  and independent of that — the bare id resolves to the cheapest route, which
-  for `deepseek-v4-pro` is the plan, not the vendor whose namespace it is.
+  appears as `qwen:deepseek-v4-pro` on the plan's. Routing is independent of
+  that display rule — the bare id resolves to the NATIVE backend when one is
+  registered, otherwise to the cheapest route serving it, which for
+  `deepseek-v4-pro` means a DeepSeek key wins the bare id even though the
+  Qwen card is the one showing it under its own namespace (see item 8's
+  0.6.1 reversal below for why native outranks cost for this id).
   **Reversed 7b4361c.** The prior rule was the opposite — catalogs listed only
   their own vendor's ids, `collectModels()` derived the winner, and a foreign
   entry was forbidden (locked by a now-deleted test "no static catalog restates
@@ -277,6 +280,30 @@ tests in `providers.test.js` + `router.test.js`. Never a router/server change.
 
 ## Backlog (prioritized, with context)
 
+**Write down what you do NOT know, not only what you decided.** Every entry
+below earns its length the same way: the unknown is stated as plainly as the
+conclusion. A backlog of decisions reads as settled and invites the next reader
+to build on sand; a backlog that names its open questions tells them where the
+ground is soft. Three shapes worth spelling out every time:
+
+- **Unverified assumptions** — what was probed and when, versus what was
+  inferred. `ROUTES` (item 12) is a set of statuses from one afternoon; that
+  sentence is why nobody trusts it blindly.
+- **What a fix did NOT cover.** Item 15 exists because a test PASSED against the
+  defect it was meant to catch — deleting it and saying so is worth more than
+  leaving a green assertion that guards nothing.
+- **What would kill an idea**, listed hardest-first, before it is built. Item 9's
+  leaderboard direction listed four; building it hit them in order, and the
+  third ("their axis is not our axis") is what forced `grade` off benchmark
+  scores onto vendor version ordering. If the blocking question is unanswerable,
+  that is the finding.
+
+The same rule applies to a session report: state what only the human can verify
+from where they sit, and mark anything unverified as such rather than rounding
+it to done. **An unknown that outlives the session belongs in a GitHub issue
+labeled `question`, not in a chat reply** — the register is the part that
+survives.
+
 1. **Thinking-strip vs Claude thinking+tool-use** (`src/sanitize.js`) — thinking
    blocks are stripped from history on *every* route, including Claude→Claude.
    The Anthropic API has historically required the preceding assistant turn's
@@ -323,8 +350,9 @@ tests in `providers.test.js` + `router.test.js`. Never a router/server change.
    **The `/` trap dissolved rather than being solved.** The worry was that
    OpenRouter's `includes("/")` claims the whole slash namespace, so
    `qwen/deepseek-v4-pro` could never mean the plan. True — and irrelevant, once
-   probed: the BARE id already routes to the cheapest backend and the slash form
-   already routes to the most expensive one (`qwen3.7-max` → plan,
+   probed: the BARE id already routes to the native backend when one is
+   registered (otherwise the cheapest route) and the slash form already routes
+   to the most expensive one (`qwen3.7-max` → plan,
    `qwen/qwen3.7-max` → OpenRouter). A slash selector therefore buys nothing in
    either direction, so `/` was left to OpenRouter untouched and the collision-
    lock tests (`test/router.test.js:65,77,179`) never needed changing.
@@ -375,6 +403,28 @@ tests in `providers.test.js` + `router.test.js`. Never a router/server change.
    and `wan2.6-t2i` don't exist, `wan2.7-image` does.)
 
    So the plan resells exactly one GLM (5.2) and two DeepSeek models.
+
+   **REVERSED 0.6.1 (issue #19) for `deepseek-v4-pro` — NATIVE wins over the
+   plan WHEN NATIVE IS REGISTERED.** The "plan before credits" policy below
+   shipped in 0.5.1 and is overturned for this one id: the plan gateway injects
+   a +79-token preamble, so the plan and native routes are NOT interchangeable,
+   and the bare id is the one `/model` sets — defaulting it to the plan silently
+   rerouted users who had tuned prompts against native weights. The fix is a
+   STRENGTHENING of `rankRoutes` (src/routes.js): the NATIVE provider now sorts
+   ABOVE tier, not just as a tier tiebreak. So for `deepseek-v4-pro` (native
+   deepseek tier 3 vs plan qwen tier 2) native wins; for every other multi-route
+   id nothing changes (`glm-5.2` already resolved native via the tiebreak). The
+   plan route is NOT removed — a plan-holder WITHOUT a native DeepSeek key still
+   lands on it (the native route isn't registered, so `resolve` skips to the
+   next-ranked qwen route), and `qwen:` always reaches it. `QWEN_PLAN_RESELLS`
+   stays populated: the predicate is the capability/last-resort router, and
+   claiming the id is the honest "the plan serves this" statement — preference
+   (native-first) lives in rankRoutes, not the predicate. A first attempt used
+   a `default: false` route flag to exclude the plan from the auto-pick; review
+   REFUTED it because a plan-only user then lost the model entirely (the flag
+   was unconditional; native-first is registration-aware). Everything below —
+   the probe matrix, the tier vocabulary, the cost rank — remains the reference;
+   only the native-vs-tier precedence for one id changed.
 
    **Partially DONE in 0.5.1 — "plan before credits" is the DEFAULT now.**
    `QWEN_PLAN_RESELLS` (`src/providers.js`) routes bare `deepseek-v4-pro` to the
@@ -478,7 +528,14 @@ tests in `providers.test.js` + `router.test.js`. Never a router/server change.
    Note this makes DeepSeek's own native endpoint the EXPENSIVE way to reach
    `deepseek-v4-pro` and the plan route the cheap one — the opposite of the
    intuition that first-party is cheapest. That inversion is the entire reason
-   this item exists. `deepseek-v4-flash`, though, is credits-only: the plan
+   this item exists, and it is still true as a COST fact. **It is no longer
+   what the bare id resolves to.** 0.6.1 (issue #19) made `rankRoutes` sort the
+   native provider ahead of tier for this id specifically, because the plan
+   gateway injects a +79-token preamble (see below) — predictability (the id
+   you tune a prompt against stays the id you get) outweighed the sunk-cost
+   saving. A DeepSeek-key holder now pays the expensive route by default;
+   `qwen:deepseek-v4-pro` still reaches the cheap one explicitly.
+   `deepseek-v4-flash`, though, is credits-only: the plan
    403s it (see the matrix above), so it has no cheap route.
    This is a **cost** ranking, not a knowledge ranking, and the two are
    deliberately not correlated — measuring capability-per-currency is out of

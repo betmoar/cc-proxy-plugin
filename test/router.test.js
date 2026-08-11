@@ -13,6 +13,14 @@ describe("router", () => {
 		assert.equal(resolve("glm-5.2", config).id, "glm");
 	});
 
+	// Issue #20: GLM is opt-in. With no GLM_API_KEY, the glm entry never gets
+	// registered, so a glm- id falls through to the default backend (claude)
+	// instead of a dead/unregistered "glm" entry.
+	it("falls through glm-* to the default backend when GLM_API_KEY is unset", () => {
+		const noGlm = { port: 4000, providers: buildProviders({}, "claude") };
+		assert.equal(resolve("glm-5.2", noGlm).id, "claude");
+	});
+
 	it("routes claude-* models to Claude", () => {
 		assert.equal(resolve("claude-opus-4-6", config).id, "claude");
 	});
@@ -140,11 +148,15 @@ describe("router", () => {
 			assert.equal(resolve("kimi-k2-0711", all).id, "claude"); // unknown → default
 		});
 
-		// "Plan before credits" (0.5.1). DeepSeek native bills metered credits and
-		// the plan is prepaid, so the bare id goes to the plan. glm-5.2 does NOT:
-		// Z.ai is itself a plan (GLM Pro), and a native plan outranks a resold one
-		// — swapping prepaid pools saves nothing and costs +6 injected tokens.
-		it("routes plan-resold bare ids to qwen when the plan is configured", () => {
+		// "Plan before credits" shipped in 0.5.1 (DeepSeek native bills metered
+		// credits, the plan is prepaid, so the bare id went to the plan) and was
+		// REVERSED for deepseek-v4-pro in 0.6.1 (issue #19): the plan gateway's
+		// +79-token preamble makes the routes non-interchangeable, so native now
+		// wins the bare id whenever it is registered. glm-5.2 was never affected
+		// either way: Z.ai is itself a plan (GLM Pro), and a native plan outranks
+		// a resold one — swapping prepaid pools saves nothing and costs +6
+		// injected tokens.
+		it("routes bare ids native even when the plan is configured (issue #19)", () => {
 			const withPlan = {
 				port: 4000,
 				providers: buildProviders(
@@ -152,12 +164,16 @@ describe("router", () => {
 					"claude",
 				),
 			};
-			assert.equal(resolve("deepseek-v4-pro", withPlan).id, "qwen");
+			// REVERSED: deepseek-v4-pro used to hop to the qwen plan ("plan before
+			// credits"). It now stays native because the plan gateway injects a
+			// +79-token preamble. The plan route is still reachable via qwen: (see
+			// the lens block); only the DEFAULT changed.
+			assert.equal(resolve("deepseek-v4-pro", withPlan).id, "deepseek");
 			assert.equal(resolve("glm-5.2", withPlan).id, "glm", "a native plan outranks a resold plan");
-			// deepseek-v4-flash is NOT resold — the plan 403s it — so it must stay
+			// deepseek-v4-flash is NOT resold — the plan 403s it — so it stays
 			// native or the user loses a model they can otherwise reach.
 			assert.equal(resolve("deepseek-v4-flash", withPlan).id, "deepseek");
-			// Everything else is untouched: only the one resold id moves.
+			// Everything else is untouched.
 			assert.equal(resolve("glm-5.1", withPlan).id, "glm");
 			assert.equal(resolve("glm-4.5", withPlan).id, "glm");
 		});
@@ -174,6 +190,38 @@ describe("router", () => {
 			assert.equal(resolve("deepseek-v4-pro", noPlan).id, "deepseek");
 			assert.equal(resolve("glm-5.2", noPlan).id, "glm");
 			assert.equal(resolve("deepseek-v4-flash", noPlan).id, "deepseek");
+		});
+
+		// A plan-holder WITHOUT a native DeepSeek key must still reach
+		// deepseek-v4-pro through the plan — the native-first DEFAULT only applies
+		// when native is actually registered. This is the case the first issue-#19
+		// fix broke (review REFUTED): it excluded the qwen route from rankRoutes
+		// unconditionally, so a plan-only user fell through to the default backend
+		// (or worse, to a metered reseller) and lost the model entirely.
+		it("falls back to the plan for a plan-holder with no native DeepSeek key", () => {
+			const planOnly = {
+				port: 4000,
+				providers: buildProviders({ DASHSCOPE_API_KEY: "q", GLM_API_KEY: "g" }, "claude"),
+			};
+			assert.equal(
+				resolve("deepseek-v4-pro", planOnly).id,
+				"qwen",
+				"native not registered → plan wins",
+			);
+			// Even with the reseller present, the prepaid plan outranks metered
+			// OpenRouter credits once native is out of the picture.
+			const planAndReseller = {
+				port: 4000,
+				providers: buildProviders(
+					{ DASHSCOPE_API_KEY: "q", OPENROUTER_API_KEY: "o", GLM_API_KEY: "g" },
+					"claude",
+				),
+			};
+			assert.equal(
+				resolve("deepseek-v4-pro", planAndReseller).id,
+				"qwen",
+				"plan (tier 2) beats reseller (tier 4) when native is absent",
+			);
 		});
 
 		it("does not route slash-namespaced qwen/* to qwen (collision-lock)", () => {
@@ -232,14 +280,16 @@ describe("router", () => {
 			assert.equal(r.upstreamModel, "deepseek-v4-pro");
 		});
 
-		it("reaches the native route that the cheapest-route default would otherwise hide", () => {
-			// This is the whole point of the lens: deepseek-v4-pro defaults to the
-			// plan (tier 2 beats tier 3), so without a selector there is NO spelling
-			// that reaches DeepSeek's own endpoint. The two are not interchangeable —
-			// the plan gateway injects ~+79 input tokens.
-			assert.equal(resolve("deepseek-v4-pro", all).id, "qwen", "default is the cheap route");
-			const r = resolve2("deepseek:deepseek-v4-pro", all);
-			assert.equal(r.provider.id, "deepseek");
+		it("reaches the plan route that the native default would otherwise hide", () => {
+			// REVERSED (issue #19): the bare id now defaults to native DeepSeek, so
+			// the LENS's job is to reach the PLAN (qwen:) that the default would
+			// otherwise hide. The two are not interchangeable — the plan gateway
+			// injects ~+79 input tokens — which is why the default is native: the
+			// bare id is what /model sets, and a user who tuned a prompt against
+			// native must not be silently rerouted to the preamble-augmented plan.
+			assert.equal(resolve("deepseek-v4-pro", all).id, "deepseek", "default is the native route");
+			const r = resolve2("qwen:deepseek-v4-pro", all);
+			assert.equal(r.provider.id, "qwen");
 			assert.equal(r.upstreamModel, "deepseek-v4-pro");
 		});
 
@@ -284,6 +334,28 @@ describe("router", () => {
 			// resolve. It must degrade to normal routing, not fail.
 			const noQwen = { port: 4000, providers: buildProviders({ GLM_API_KEY: "g" }, "claude") };
 			assert.equal(resolve("qwen:deepseek-v4-pro", noQwen).id, "claude");
+			// …and the LENS IS STILL STRIPPED. This half was untested, and once GLM
+			// became opt-in (issue #20) the gap became a live leak: the strip used to
+			// require the provider to be REGISTERED, so with no key the raw
+			// `glm:glm-5.2` was forwarded to Anthropic as a literal model id.
+			// server.js gates its body rewrite on `upstreamModel !== body.model`, so
+			// an unstripped tail means the lens reaches a backend that has never
+			// heard of it → opaque 400.
+			assert.equal(
+				resolve2("qwen:deepseek-v4-pro", noQwen).upstreamModel,
+				"deepseek-v4-pro",
+				"an unregistered provider's lens must still be stripped",
+			);
+		});
+
+		it("strips a KNOWN provider's lens even when that provider holds no key", () => {
+			// The regression issue #20 opened: `glm:` is documented in README,
+			// CONTRIBUTING and ARCHITECTURE, and GLM is now opt-in, so this is the
+			// common case for a user who never configured Z.ai — not an edge case.
+			const noKeys = { port: 4000, providers: buildProviders({}, "claude") };
+			const r = resolve2("glm:glm-5.2", noKeys);
+			assert.equal(r.provider.id, "claude", "no glm leg → falls through to default");
+			assert.equal(r.upstreamModel, "glm-5.2", "the lens must never reach an upstream");
 		});
 
 		it("leaves a bare id's upstream model untouched", () => {
@@ -301,7 +373,7 @@ describe("router", () => {
 		});
 	});
 
-	describe("cheapest-route ranking (ROUTES table)", () => {
+	describe("native-first, then cheapest-route ranking (ROUTES table)", () => {
 		const all = {
 			port: 4000,
 			providers: buildProviders(
@@ -315,9 +387,13 @@ describe("router", () => {
 			),
 		};
 
-		it("prefers plan capacity over metered credits", () => {
-			// Prepaid capacity is free at the margin; DeepSeek native bills real USD.
-			assert.equal(resolve("deepseek-v4-pro", all).id, "qwen");
+		it("prefers the native route for a plan-resold id (issue #19)", () => {
+			// "plan before credits" was the default for deepseek-v4-pro until the
+			// +79-token plan preamble made the routes non-interchangeable. The bare
+			// id now routes native WHEN NATIVE IS REGISTERED. The plan route still
+			// wins for a plan-holder without a DeepSeek key (tested above) and is
+			// always reachable via the qwen: selector (see the lens block).
+			assert.equal(resolve("deepseek-v4-pro", all).id, "deepseek");
 		});
 
 		it("prefers a NATIVE plan over a resold plan", () => {
@@ -339,6 +415,46 @@ describe("router", () => {
 				providers: buildProviders({ GLM_API_KEY: "g", DEEPSEEK_API_KEY: "d" }, "claude"),
 			};
 			assert.equal(resolve("deepseek-v4-pro", noPlan).id, "deepseek");
+		});
+
+		it("stays native-first even without a ROUTES entry (predicate layer, issue #19 regression)", async () => {
+			// rankRoutes() is not the only layer that can pick a provider for
+			// `deepseek-v4-pro` — if ROUTES ever loses the entry (a probe expiring,
+			// a table edit), resolve() falls through to the predicate layer
+			// (config.providers.find). That layer must independently agree with
+			// native-first, or ROUTES becomes a single point of failure for the
+			// #19 fix. Reproduced by deleting the entry in memory rather than
+			// mocking the module, so this exercises the real ROUTES object.
+			const { ROUTES } = await import("../src/routes.js");
+			const saved = ROUTES["deepseek-v4-pro"];
+			// biome-ignore lint/performance/noDelete: rankRoutes() gates on Object.hasOwn, so `= undefined` would not reproduce a missing entry.
+			delete ROUTES["deepseek-v4-pro"];
+			try {
+				const allKeys = {
+					port: 4000,
+					providers: buildProviders(
+						{ GLM_API_KEY: "g", DEEPSEEK_API_KEY: "d", DASHSCOPE_API_KEY: "q" },
+						"claude",
+					),
+				};
+				assert.equal(
+					resolve("deepseek-v4-pro", allKeys).id,
+					"deepseek",
+					"a DeepSeek key must still win the bare id with no ROUTES entry",
+				);
+
+				const planOnly = {
+					port: 4000,
+					providers: buildProviders({ GLM_API_KEY: "g", DASHSCOPE_API_KEY: "q" }, "claude"),
+				};
+				assert.equal(
+					resolve("deepseek-v4-pro", planOnly).id,
+					"qwen",
+					"a plan-only user (no DeepSeek key) must still fall back to qwen",
+				);
+			} finally {
+				ROUTES["deepseek-v4-pro"] = saved;
+			}
 		});
 	});
 

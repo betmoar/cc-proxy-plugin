@@ -398,26 +398,60 @@ describe("render-models against a live-shaped proxy", () => {
 	};
 
 	// Discovery publishes BOTH spellings; the bare one is owned by DeepSeek while
-	// the plan's copy carries the qwen: lens. Re-deriving the provider through the
-	// cost-ranked router (the defect) collapses both onto Qwen and deletes the
-	// DeepSeek card entirely.
+	// the plan's copy carries the qwen: lens. Re-deriving the provider through
+	// attribute()/rankRoutes (the defect this guards) is a MOVING TARGET across
+	// router changes — pre-#19 it collapsed both onto Qwen (cheapest tier); this
+	// stub still asserts the published `provider` field wins regardless of what
+	// the router would derive, so the card is stable even if a future routing
+	// change flips the derived answer back.
 	const DUAL = [
 		{ type: "model", id: "deepseek-v4-pro", display_name: "P", provider: "deepseek", tier: 3 },
 		{ type: "model", id: "qwen:deepseek-v4-pro", display_name: "P", provider: "qwen", tier: 2 },
 		{ type: "model", id: "qwen3.8-max", display_name: "M", provider: "qwen", tier: 2 },
 	];
 
-	it("files each row under the provider DISCOVERY published, not the cheapest route", async () => {
+	it("files each row under the provider DISCOVERY published, not a re-derived route", async () => {
 		const html = await render(DUAL);
 		assert.ok(
 			cardFor(html, "DeepSeek").includes(">deepseek-v4-pro<"),
-			"the owning vendor must keep its bare id — re-deriving sends it to the cheaper plan",
+			"the owning vendor must keep its bare id regardless of what re-deriving would pick",
 		);
 		const qwen = cardFor(html, "Qwen");
 		assert.ok(qwen.includes("qwen:deepseek-v4-pro"), "the plan's copy renders under its lens");
 		assert.ok(
 			!qwen.includes(">deepseek-v4-pro<"),
 			"the bare id must not ALSO appear on Qwen — that is the duplicate row",
+		);
+	});
+
+	// Both ids the Qwen plan resells carry the "also on plan" tag on their NATIVE
+	// card, for the same reason: the plan serves them but does not route them.
+	// `deepseek-v4-pro` was missing from QWEN_PLAN_ALSO (caught in review on
+	// PR #21) — the set had been narrowed to glm-5.2 on the theory that a
+	// natively-routed id isn't a "dup", which is exactly backwards: native
+	// routing is the PRECONDITION for the tag. Without it the Qwen card
+	// under-reports the entitlement.
+	it("tags a natively-routed id that the Qwen plan also serves", async () => {
+		const html = await render([
+			...DUAL,
+			{ type: "model", id: "glm-5.2", display_name: "G", provider: "glm", tier: 2 },
+		]);
+		const deepseekCard = cardFor(html, "DeepSeek");
+		assert.match(
+			deepseekCard,
+			/deepseek-v4-pro[\s\S]{0,400}?also on plan/,
+			"deepseek-v4-pro routes native but the plan serves it — it must carry the tag",
+		);
+		assert.match(
+			cardFor(html, "GLM"),
+			/glm-5\.2[\s\S]{0,400}?also on plan/,
+			"glm-5.2 is the other resold id and must carry the tag too",
+		);
+		// The tag marks the plan's reach, not a second route: the id still files
+		// under its owner, never onto the Qwen card.
+		assert.ok(
+			!cardFor(html, "Qwen").includes(">deepseek-v4-pro<"),
+			"tagging must not move the row onto the plan's card",
 		);
 	});
 

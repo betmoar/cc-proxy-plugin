@@ -53,7 +53,7 @@ It writes your **API keys to `~/.env`** (the single source of truth the proxy re
 
 | Key | Where | Purpose |
 | --- | --- | --- |
-| `GLM_API_KEY` | `~/.env` | Your Z.ai key (forwarded as `x-api-key`) |
+| `GLM_API_KEY` | `~/.env` | Your Z.ai key (forwarded as `x-api-key`). Optional, like every backend key — with none set, the proxy still starts and routes everything to Claude |
 | `ANTHROPIC_BASE_URL=http://127.0.0.1:4000` | settings.json `env` | Route API calls through the proxy |
 
 The proxy binary is found automatically: the SessionStart hook spawns `bin/cc-proxy.js` from its own plugin tree, which is always the installed version. After a plugin update, the hook also detects a still-running older proxy (via the version on `/_status`) and replaces it gracefully — no manual restart.
@@ -103,27 +103,33 @@ tier 2 and Economy.
 
 ## Choosing a route
 
-The **bare id always routes to the cheapest backend**. Every other route stays
-selectable under a `<provider>:<model>` prefix:
+The **bare id routes to the native backend when one is configured**, otherwise
+to the cheapest backend serving it. Every route stays selectable under a
+`<provider>:<model>` prefix:
 
 ```
-/model deepseek-v4-pro           # cheapest route (prepaid plan capacity)
-/model deepseek:deepseek-v4-pro  # DeepSeek's own endpoint (metered credits)
+/model deepseek-v4-pro           # native DeepSeek (when DEEPSEEK_API_KEY set), else the plan
+/model deepseek:deepseek-v4-pro  # DeepSeek's own endpoint, explicit
+/model qwen:deepseek-v4-pro      # the Qwen plan copy, explicit
 /model deepseek/deepseek-v4-pro  # via OpenRouter (a real OpenRouter id, unchanged)
 ```
 
+Native wins over a cheaper resold route on purpose: a plan gateway injects a
+preamble (measured at **+79 input tokens** on `deepseek-v4-pro`), so the native
+and plan routes are not behaviourally interchangeable, and the bare id is the
+one `/model` sets — defaulting it to the plan would silently reroute a prompt
+tuned against native weights. If you hold the plan but not a native DeepSeek
+key, the bare id falls back to the plan (the native route isn't registered).
 The prefix is local to cc-proxy — it is stripped before the request is
-forwarded, so the backend only ever sees its own id. Note the routes are not
-byte-identical: a plan gateway injects a preamble (measured at +79 input tokens
-on `deepseek-v4-pro`), which is precisely why the choice is explicit rather than
-silent. `claude-haiku-*` ignores any prefix and always goes to Anthropic.
+forwarded, so the backend only ever sees its own id. `claude-haiku-*` ignores
+any prefix and always goes to Anthropic.
 
 In the discovery list, **which spelling appears bare is decided by namespace
-ownership, not by cost**: each backend lists ids in its own namespace bare and
-every foreign id it serves under the `<provider>:` lens. So `deepseek-v4-pro` is
-bare under DeepSeek and `qwen:deepseek-v4-pro` under the plan — even though the
-plan is the cheaper route the bare id resolves to. Listing and routing are
-deliberately independent.
+ownership, not by routing**: each backend lists ids in its own namespace bare
+and every foreign id it serves under the `<provider>:` lens. So `deepseek-v4-pro`
+is bare under DeepSeek and `qwen:deepseek-v4-pro` under the plan — whichever of
+the two the bare id resolves to. Listing and routing are deliberately
+independent.
 
 ## Commands
 
@@ -195,7 +201,7 @@ The statusline runs as its own subprocess and only inherits `settings.json`'s `e
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `ANTHROPIC_BASE_URL` | — | Set by setup to `http://127.0.0.1:4000` |
-| `GLM_API_KEY` | — | Z.ai API key (lives in `~/.env`) |
+| `GLM_API_KEY` | — | Enable GLM/Z.ai (bare `glm-*` models; lives in `~/.env`). Optional like every other backend key — without it the proxy still starts and routes to Claude |
 | `OPENROUTER_API_KEY` | — | Enable OpenRouter (slash-namespaced models; lives in `~/.env`) |
 | `DEEPSEEK_API_KEY` | — | Enable DeepSeek (bare `deepseek-*` models; lives in `~/.env`) |
 | `DASHSCOPE_API_KEY` | — | Enable Qwen (bare `qwen`-prefixed models, Token Plan skin; lives in `~/.env`) |

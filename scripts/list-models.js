@@ -157,9 +157,12 @@ async function main() {
 		// `provider` is which backend PUBLISHED the row — discovery already knows,
 		// because it built the row. attribute() answers a different question ("where
 		// would /model send this id?"), and the two diverge exactly where it matters:
-		// a bare id routes to its cheapest backend, so re-deriving here filed
-		// deepseek-v4-pro under Qwen while DeepSeek's own card lost the model it
-		// owns. Fall back to the router only for a proxy older than this field.
+		// a bare id routes by rankRoutes (native first, then cheapest tier), which
+		// used to (pre-issue-#19) file deepseek-v4-pro under Qwen when re-derived
+		// here, leaving DeepSeek's own card without the model it owns — still a
+		// live trap for any id where the ranked route and the owning vendor
+		// diverge (e.g. `deepseek-v4-flash-0731`, plan-only, no native route at
+		// all). Fall back to the router only for a proxy older than this field.
 		const pid = m.provider || attribute(m.id, providers);
 		const name = DISPLAY[pid] || pid;
 		// A prefixed id (`qwen:deepseek-v4-pro`) is the same model reached another
