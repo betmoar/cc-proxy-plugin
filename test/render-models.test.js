@@ -424,6 +424,37 @@ describe("render-models against a live-shaped proxy", () => {
 		);
 	});
 
+	// Both ids the Qwen plan resells carry the "also on plan" tag on their NATIVE
+	// card, for the same reason: the plan serves them but does not route them.
+	// `deepseek-v4-pro` was missing from QWEN_PLAN_ALSO (caught in review on
+	// PR #21) — the set had been narrowed to glm-5.2 on the theory that a
+	// natively-routed id isn't a "dup", which is exactly backwards: native
+	// routing is the PRECONDITION for the tag. Without it the Qwen card
+	// under-reports the entitlement.
+	it("tags a natively-routed id that the Qwen plan also serves", async () => {
+		const html = await render([
+			...DUAL,
+			{ type: "model", id: "glm-5.2", display_name: "G", provider: "glm", tier: 2 },
+		]);
+		const deepseekCard = cardFor(html, "DeepSeek");
+		assert.match(
+			deepseekCard,
+			/deepseek-v4-pro[\s\S]{0,400}?also on plan/,
+			"deepseek-v4-pro routes native but the plan serves it — it must carry the tag",
+		);
+		assert.match(
+			cardFor(html, "GLM"),
+			/glm-5\.2[\s\S]{0,400}?also on plan/,
+			"glm-5.2 is the other resold id and must carry the tag too",
+		);
+		// The tag marks the plan's reach, not a second route: the id still files
+		// under its owner, never onto the Qwen card.
+		assert.ok(
+			!cardFor(html, "Qwen").includes(">deepseek-v4-pro<"),
+			"tagging must not move the row onto the plan's card",
+		);
+	});
+
 	it("drops unusable entries and caps a card, declaring what it hid", async () => {
 		const many = Array.from({ length: 25 }, (_, i) => ({
 			type: "model",

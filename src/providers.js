@@ -116,11 +116,19 @@ export const PROVIDER_IDS = new Set(["glm", "openrouter", "deepseek", "qwen", "c
 
 export function buildProviders(env = process.env, defaultId = env.DEFAULT_BACKEND || "claude") {
 	// "Plan before credits": when the Qwen Token Plan is configured it claims the
-	// bare ids it resells (QWEN_PLAN_RESELLS), so prepaid capacity is spent before
-	// metered credits — for ids whose native route still metered credits, i.e.
-	// glm-5.2 (it doesn't; see below). Computed once here and consulted by the
-	// glm predicate below; the deepseek predicate deliberately does NOT consult
-	// it since issue #19 (0.6.1) — see that predicate's comment.
+	// bare ids it resells (QWEN_PLAN_RESELLS = {deepseek-v4-pro}), so prepaid
+	// capacity is spent before metered credits.
+	//
+	// The set holds only ids the plan resells, so no glm-* id can ever be in it:
+	// Z.ai is itself a plan (GLM Pro), and a native plan outranks a resold one —
+	// which is why `glm-5.2` stays on Z.ai and is NOT claimed here. The glm
+	// predicate still consults planResells so that rule is enforced by code
+	// rather than by the set happening to be empty of glm ids.
+	//
+	// Since issue #19 (0.6.1) the deepseek predicate deliberately does NOT
+	// consult it: rankRoutes now sorts the native provider above tier, so a
+	// DeepSeek-key holder gets native and a plan-only holder still falls through
+	// to qwen. See that predicate's comment.
 	const planResells = env.DASHSCOPE_API_KEY ? (m) => QWEN_PLAN_RESELLS.has(m) : () => false;
 
 	/** @type {Provider[]} */

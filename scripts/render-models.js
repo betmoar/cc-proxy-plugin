@@ -94,16 +94,17 @@ const LIVE_LEGS = new Set(["glm", "deepseek", "openrouter", "qwen"]);
  * injects a preamble: +6 input tokens on `glm-5.2`). Tagged rather than
  * re-homed, so the plan's true scope is visible without implying cc-proxy will
  * route there. 200-verified against the plan host 2026-08-04; re-probe before a
- * release. Only glm-5.2 qualifies: `deepseek-v4-pro` is EXCLUDED because it
- * isn't a "dup" in the sense this set encodes — since issue #19 (0.6.1) the
- * bare id resolves NATIVE (deepseek) by design when a DeepSeek key is
- * registered, so DeepSeek's card is already the one true home and the plan
- * copy is the alternate, reachable only via `qwen:deepseek-v4-pro`; adding it
- * here would need this generated artifact to be re-rendered against a live
- * proxy, which CI cannot do (flagged as a follow-up, not fixed in this pass).
- * `deepseek-v4-flash-0731` is plan-only (no native route exists at all, so it
- * isn't a dup either). */
-const QWEN_PLAN_ALSO = new Set(["glm-5.2"]);
+ * release.
+ *
+ * Both ids the plan resells qualify, and for the SAME reason — each keeps its
+ * native route while the plan also serves it. `glm-5.2` routes to Z.ai (a
+ * native plan outranks a resold one) and `deepseek-v4-pro` routes to DeepSeek
+ * since issue #19 (0.6.1, native-first ranking). Excluding the DeepSeek id
+ * would under-report the plan's scope on the Qwen card — exactly what the tag
+ * exists to prevent. `deepseek-v4-flash-0731` is NOT here: it is plan-ONLY (no
+ * native route exists), so the plan is its one true home and it renders on the
+ * Qwen card bare, with nothing to cross-reference. */
+const QWEN_PLAN_ALSO = new Set(["glm-5.2", "deepseek-v4-pro"]);
 
 // The number of dots a tier fills, of 4. Hue-independent ordinal encoding — a
 // tier never relies on color alone (the dot fill carries it).
