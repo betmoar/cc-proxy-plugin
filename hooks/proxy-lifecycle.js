@@ -49,6 +49,39 @@ export function pluginVersion(hooksDir = HOOKS_DIR) {
 }
 
 /**
+ * Is `a` an OLDER version than `b`? Numeric, segment-by-segment — a string
+ * compare would rank "0.6.10" below "0.6.9" and evict the newer build.
+ *
+ * Only the leading numeric segments are compared; a pre-release suffix
+ * ("0.7.0-rc.1") is deliberately treated as its base version, because the
+ * question here is "is this proxy behind the tree", not "which release is
+ * canonical". A malformed segment reads as 0, so garbage sorts oldest and is
+ * replaced rather than trusted.
+ *
+ * @param {string} a
+ * @param {string} b
+ * @returns {boolean}
+ */
+export function isOlderVersion(a, b) {
+	/** @param {string} v @returns {number[]} */
+	const parse = (v) =>
+		String(v)
+			.split("-")[0]
+			.split(".")
+			.map((n) => {
+				const i = Number.parseInt(n, 10);
+				return Number.isFinite(i) ? i : 0;
+			});
+	const x = parse(a);
+	const y = parse(b);
+	for (let i = 0; i < Math.max(x.length, y.length); i++) {
+		const d = (x[i] ?? 0) - (y[i] ?? 0);
+		if (d !== 0) return d < 0;
+	}
+	return false;
+}
+
+/**
  * GET /_status on a listening proxy and return its reported version.
  * Distinguishes three cases: a cc-proxy that reports a version (string), a
  * cc-proxy too old to report one (null), and something that doesn't speak the
@@ -253,9 +286,11 @@ export function spawnProxy(proxyPath, logPath, env = process.env) {
 
 /**
  * Ensure the CURRENT proxy is reachable on its port. If nothing listens, spawn
- * and wait for readiness. If a cc-proxy is listening but reports a different
+ * and wait for readiness. If a cc-proxy is listening but reports an OLDER
  * version than this plugin tree (stale process from before an update), ask it
- * to shut down via POST /_shutdown and spawn the current one in its place.
+ * to shut down via POST /_shutdown and spawn the current one in its place. A
+ * proxy at the same version — or NEWER, i.e. a dev tree deliberately ahead of
+ * the installed plugin — is left alone (issue #24).
  * Anything on the port that doesn't speak the /_status contract is treated as
  * foreign and left untouched ("already-up" — same behavior as the pre-version
  * TCP probe, and never a kill).
@@ -284,12 +319,25 @@ export async function ensureProxyRunning(opts = {}) {
 	if (await checkPort(port)) {
 		const running = await probeProxyVersion(port);
 		const current = pluginVersion();
-		// Foreign listener (undefined), unknown own version, or match → leave it.
-		// Only a confirmed cc-proxy (running !== undefined) with a confirmed
-		// different version is replaced. `null` (a cc-proxy too old to report a
-		// version) counts as a mismatch — every version from this change on
-		// reports one, so null is by definition stale.
-		const stale = running !== undefined && current !== undefined && running !== current;
+		// Foreign listener (undefined), unknown own version, or a proxy at least
+		// as new as this tree → leave it. Only a confirmed cc-proxy (running !==
+		// undefined) that is confirmed OLDER is replaced. `null` (a cc-proxy too
+		// old to report a version) counts as older — every version from that
+		// change on reports one, so null is by definition behind.
+		//
+		// ORDERED, not `!==` (issue #24). Inequality also evicted a proxy NEWER
+		// than the hook's tree, which is the normal state during development: the
+		// working tree runs `bin/cc-proxy.js` at the next version while the
+		// installed plugin cache is still on the last one. Because SessionStart
+		// fires on every `claude` invocation, the client under test kept
+		// replacing the binary under test — a routing fix verified as broken four
+		// times in a row before the cause was found. The staleness protection is
+		// unchanged in the direction it was written for: an older long-lived
+		// proxy is still replaced after a plugin update.
+		const stale =
+			running !== undefined &&
+			current !== undefined &&
+			(running === null || isOlderVersion(running, current));
 		if (!stale) return "already-up";
 		if (!proxyPath) return "missing-path";
 

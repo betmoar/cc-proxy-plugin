@@ -10,6 +10,7 @@ import {
 	LOG_MAX_BYTES,
 	checkPort,
 	ensureProxyRunning,
+	isOlderVersion,
 	pluginVersion,
 	resolveProxyPath,
 	rotateLogIfLarge,
@@ -256,6 +257,41 @@ s.listen(${port}, "127.0.0.1", () => {
 	// -probed via /_status; a mismatch gets a graceful POST /_shutdown and a
 	// respawn from the (current) proxyPath. Anything that doesn't speak the
 	// /_status contract is foreign — never killed.
+	describe("isOlderVersion", () => {
+		it("compares numerically, not lexically", () => {
+			// The reason this is not a string compare: "0.6.10" < "0.6.9" as text,
+			// which would evict the newer build on every double-digit patch.
+			assert.equal(isOlderVersion("0.6.9", "0.6.10"), true);
+			assert.equal(isOlderVersion("0.6.10", "0.6.9"), false);
+			assert.equal(isOlderVersion("0.9.0", "0.10.0"), true);
+		});
+
+		it("orders across each segment", () => {
+			assert.equal(isOlderVersion("0.6.0", "0.6.1"), true);
+			assert.equal(isOlderVersion("0.6.1", "0.6.0"), false);
+			assert.equal(isOlderVersion("0.6.1", "0.6.1"), false, "equal is not older");
+			assert.equal(isOlderVersion("1.0.0", "0.99.99"), false);
+		});
+
+		it("treats a pre-release as its base version", () => {
+			// The question is "is this proxy behind the tree", not which release is
+			// canonical — so 0.7.0-rc.1 is not older than 0.7.0.
+			assert.equal(isOlderVersion("0.7.0-rc.1", "0.7.0"), false);
+			assert.equal(isOlderVersion("0.6.0", "0.7.0-rc.1"), true);
+		});
+
+		it("sorts malformed input oldest so garbage is replaced, never trusted", () => {
+			assert.equal(isOlderVersion("garbage", "0.0.1"), true);
+			assert.equal(isOlderVersion("", "0.0.1"), true);
+			assert.equal(isOlderVersion("0.0.0", "garbage"), false);
+		});
+
+		it("tolerates a missing segment", () => {
+			assert.equal(isOlderVersion("0.6", "0.6.1"), true);
+			assert.equal(isOlderVersion("0.6.0", "0.6"), false, "0.6 reads as 0.6.0");
+		});
+	});
+
 	describe("ensureProxyRunning version handshake", () => {
 		/** Stand-in "old proxy": answers /_status with `version`, closes on /_shutdown. */
 		function startOldProxy(port, version) {
@@ -329,6 +365,25 @@ s.listen(${port}, "127.0.0.1", () => {
 				assert.equal(state, "already-up");
 			} finally {
 				old.close();
+			}
+		});
+
+		// Issue #24: the check used to be `running !== current`, so a proxy NEWER
+		// than the hook's tree was evicted exactly like an older one. That is the
+		// normal state during development — the working tree runs the next
+		// version while the installed plugin cache is still on the last one — and
+		// because SessionStart fires on every `claude` invocation, the client
+		// under test kept replacing the binary under test.
+		it("leaves a NEWER proxy alone (a dev tree ahead of the installed plugin)", async () => {
+			const port = await freePort();
+			const [maj, min, patch] = pluginVersion().split(".").map(Number);
+			const newer = `${maj}.${min}.${patch + 1}`;
+			const devProxy = await startOldProxy(port, newer);
+			try {
+				const state = await ensureProxyRunning({ port, proxyPath: "/unused" });
+				assert.equal(state, "already-up", `${newer} is newer than ${pluginVersion()}`);
+			} finally {
+				devProxy.close();
 			}
 		});
 
