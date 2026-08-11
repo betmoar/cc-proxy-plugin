@@ -127,11 +127,11 @@ const DOTS = { Flagship: 4, Strong: 3, Specialist: 2, Economy: 1 };
  * provider's quota/balance endpoint 2026-08-04 (Z.ai reports level=pro;
  * DeepSeek reports a topped-up USD balance). */
 const PROVIDER_META = {
-	glm: { glyph: "G", color: "#eb6834", source: "native", billing: "plan" },
-	deepseek: { glyph: "DS", color: "#1baf7a", source: "native", billing: "credits" },
-	openrouter: { glyph: "OR", color: "#eda100", source: "reseller", billing: "credits" },
-	qwen: { glyph: "Q", color: "#e87ba4", source: "plan", billing: "plan" },
-	claude: { glyph: "C", color: "#2a78d6", source: "native", billing: "plan" },
+	glm: { glyph: "G", color: "#c0c0c0", source: "native", billing: "plan" },
+	deepseek: { glyph: "DS", color: "#4d6bfe", source: "native", billing: "credits" },
+	openrouter: { glyph: "OR", color: "#c8ff00", source: "reseller", billing: "credits" },
+	qwen: { glyph: "Q", color: "#653aff", source: "plan", billing: "plan" },
+	claude: { glyph: "C", color: "#c96442", source: "native", billing: "plan" },
 };
 
 /** Rank a provider by route quality for display order: native → plan → credits
@@ -307,7 +307,7 @@ export function conduitSvg(ids) {
 	const paths = legs
 		.map(
 			(l) =>
-				`<path d="M${l.x} ${SPINE_Y} V${l.node + (l.node < SPINE_Y ? 8 : -8)}" stroke="var(--rail)"/>` +
+				`<path d="M${l.x} ${SPINE_Y} V${l.node + (l.node < SPINE_Y ? 8 : -8)}" stroke="#5fa8a8"/>` +
 				`<circle cx="${l.x}" cy="${l.node}" r="7" fill="var(--surface-2)" stroke="${l.color}"/>`,
 		)
 		.join("");
@@ -318,13 +318,13 @@ export function conduitSvg(ids) {
 		)
 		.join("");
 	return `<svg viewBox="0 0 ${Math.round(overhang) + 16} 200" role="img">
-          <path d="M44 ${SPINE_Y} H104" stroke="var(--rail)" stroke-width="2" stroke-linecap="round" fill="none"/>
-          <circle cx="44" cy="${SPINE_Y}" r="5" fill="none" stroke="var(--ink-2)" stroke-width="1.6"/>
+          <path d="M44 ${SPINE_Y} H104" stroke="#5fa8a8" stroke-width="2" stroke-linecap="round" fill="none"/>
+          <circle cx="44" cy="${SPINE_Y}" r="5" fill="none" stroke="#c96442" stroke-width="1.6"/>
           <text x="44" y="32" class="cnode" fill="var(--ink-2)" text-anchor="middle">Claude Code</text>
           <text x="44" y="52" class="clabel" fill="var(--muted)" text-anchor="middle">request</text>
-          <rect x="104" y="56" width="118" height="36" rx="9" fill="var(--surface-2)" stroke="#3987e5" stroke-width="1.5"/>
-          <text x="163" y="79" class="cnode" fill="var(--ink)" text-anchor="middle" font-weight="650">cc-proxy</text>
-          <path d="M222 ${SPINE_Y} H${spineEnd}" stroke="var(--rail)" stroke-width="2" stroke-linecap="round" fill="none"/>
+          <rect x="104" y="56" width="118" height="36" rx="9" fill="var(--surface-2)" stroke="#5fa8a8" stroke-width="1.5"/>
+          <text x="163" y="79" class="cnode" fill="#c96442" text-anchor="middle" font-weight="650">cc<tspan fill="var(--ink)">-proxy</tspan></text>
+          <path d="M222 ${SPINE_Y} H${spineEnd}" stroke="#5fa8a8" stroke-width="2" stroke-linecap="round" fill="none"/>
           <g stroke-width="1.6" stroke-linecap="round" fill="none">${paths}</g>
           ${labels}
         </svg>`;
@@ -408,12 +408,12 @@ function renderHtml({ rows, defaultBackend, errors, providerIds }) {
   .topbar { display:flex; align-items:center; justify-content:space-between; gap:16px; margin-bottom:46px; }
   .brand { display:flex; align-items:center; gap:12px; }
   .brandmark { width:34px; height:34px; border-radius:9px; background:var(--surface-2); border:1px solid var(--hairline); display:grid; place-items:center; }
-  .brand .bname { font-family:var(--mono); font-weight:600; font-size:15px; color:var(--ink); letter-spacing:-0.01em; }
-  .brand .bname b { color:#3987e5; font-weight:600; }
+  .brand .bname { font-family:var(--mono); font-weight:600; font-size:15px; color:#c96442; letter-spacing:-0.01em; }
+  .brand .bname b { color:var(--ink); font-weight:600; }
   .brand .btag { font-family:var(--mono); font-size:10.5px; color:var(--muted); letter-spacing:.14em; text-transform:uppercase; }
   .topbar .ver { font-family:var(--mono); font-size:11px; color:var(--muted); letter-spacing:.08em; }
   .hero { display:grid; grid-template-columns:1.05fr 1fr; gap:40px; align-items:center; margin-bottom:44px; }
-  .hero-eyebrow { font-family:var(--mono); font-size:11px; color:#3987e5; letter-spacing:.18em; text-transform:uppercase; margin:0 0 16px; }
+  .hero-eyebrow { font-family:var(--mono); font-size:11px; color:#5fa8a8; letter-spacing:.18em; text-transform:uppercase; margin:0 0 16px; }
   .hero h1 { font-size:clamp(34px,4.4vw,52px); line-height:1.04; font-weight:720; letter-spacing:-0.022em; color:var(--ink); margin:0 0 18px; }
   .hero h1 .rule { color:var(--ink-2); font-weight:500; }
   .hero .lede { font-size:16px; line-height:1.6; color:var(--ink-2); max-width:46ch; margin:0 0 26px; }
@@ -507,7 +507,7 @@ function renderHtml({ rows, defaultBackend, errors, providerIds }) {
   <div class="wrap">
     <div class="topbar">
       <div class="brand"><span class="brandmark" aria-hidden="true">
-        <svg width="18" height="18" viewBox="0 0 18 18"><circle cx="3.5" cy="9" r="2.4" fill="none" stroke="var(--rail)" stroke-width="1.6"/><circle cx="14.5" cy="4.5" r="2.4" fill="#eb6834"/><circle cx="14.5" cy="13.5" r="2.4" fill="#3987e5"/><path d="M5.6 9 H12 M12 5 L14 5 M12 13 L14 13" stroke="var(--rail)" stroke-width="1.6" stroke-linecap="round"/></svg>
+        <svg width="18" height="18" viewBox="0 0 18 18"><circle cx="3.5" cy="9" r="2.4" fill="none" stroke="#c96442" stroke-width="1.6"/><circle cx="14.5" cy="4.5" r="2.4" fill="#c96442"/><circle cx="14.5" cy="13.5" r="2.4" fill="#5fa8a8"/><path d="M5.6 9 H12 M12 5 L14 5 M12 13 L14 13" stroke="#5fa8a8" stroke-width="1.6" stroke-linecap="round"/></svg>
       </span><span><span class="bname">cc<b>-proxy</b></span><br><span class="btag">model router</span></span></div>
       <span class="ver">reachable · ${providers} providers</span>
     </div>
@@ -518,7 +518,7 @@ function renderHtml({ rows, defaultBackend, errors, providerIds }) {
         <h1>One proxy.<br>Every model.<span class="rule"> Routed by name.</span></h1>
         <p class="lede">cc-proxy sits in front of Claude Code and dispatches each call to the model it deserves — ${esc(lede)}, in a single session. Nothing leaves the machine but the upstream call itself. The route is <code>model name</code>.</p>
         <ul class="stats">
-          <li><span class="dot" style="background:#3987e5"></span><span class="n">${providers}</span><span class="k">provider${providers === 1 ? "" : "s"}</span></li>
+          <li><span class="dot" style="background:#5fa8a8"></span><span class="n">${providers}</span><span class="k">provider${providers === 1 ? "" : "s"}</span></li>
           <li><span class="n">${rows.length}</span><span class="k">models</span></li>
           <li><span class="n">${liveCount}</span><span class="k">live leg${liveCount === 1 ? "" : "s"}</span></li>
           <li><span class="dot" style="background:var(--good)"></span><span class="k">loopback&nbsp;only</span></li>
