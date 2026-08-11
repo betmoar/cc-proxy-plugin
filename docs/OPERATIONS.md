@@ -67,6 +67,26 @@ the live endpoint; treat the docs as context, not as the catalog.
 - **`/v1/models`** (GET; other methods 405) returns a merged, best-effort Anthropic-format model list — GLM + DeepSeek + Qwen + OpenRouter live (each with a curated offline fallback), Claude static. Each live leg is bounded by a ~3 s timeout (`modelsTimeoutMs`, not env-configurable); a failed leg is named in a non-standard `_errors` array and the response is still `200`. Synthesized, not forwarded; `/v1/models/<id>` still forwards. Entries also carry a non-standard `context_window` (integer tokens, e.g. `1000000`) when the id has a curated window; ids without one **omit** the field rather than sending `null` — check with `"context_window" in entry`. Every entry additionally carries `provider`, `tier` (route cost: `1` OAuth/Anthropic, `2` prepaid plan, `3` metered credits, `4` reseller) and `grade` (model capability: `Flagship`/`Strong`/`Specialist`/`Economy`). Cost and capability are independent — do not derive one from the other. Spelling follows **namespace ownership, not cost**: a backend publishes ids in its own namespace bare and every foreign id it serves under the `<provider>:<id>` lens, so `deepseek-v4-pro` is bare on DeepSeek and `qwen:deepseek-v4-pro` on the plan that also serves it. Routing is separate — the bare id resolves to the NATIVE route when one is registered, otherwise the cheapest route serving it, which need not be the owning vendor. Entries this proxy cannot actually use (multimodal ids wanting another request schema, `:batch` variants, `~latest` aliases) carry `usable: false`; the field is absent when the entry is usable, so test `entry.usable !== false`.
 - **Orphan log inode trap:** `rm -f $PROXY_LOG && touch $PROXY_LOG` while the proxy runs leaves it writing to the deleted inode — output "disappears". Truncate in place (`truncate -s 0`) or restart the proxy; never `rm && touch` a file a live process holds open.
 
+## State on disk (`~/.claude/cc-proxy/`)
+
+The proxy itself is stateless (invariant 2). Everything here is written by the
+hook or by an explicitly-invoked command — never on a request path.
+
+| File | Written by | Notes |
+| --- | --- | --- |
+| `cc-proxy.log` | SessionStart hook (spawn stdio) | routing lines; rotated to `.1` past `PROXY_LOG_MAX_BYTES` |
+| `grades.json` | `/cc-proxy:bench grades` | model capability + price. Absent = the built-in `MODEL_GRADES` applies |
+| `speed.jsonl` | `/cc-proxy:bench speed` | append-only route timings, one JSON object per line |
+| `*_cache.json` | statusline | 60 s quota/credit caches + the 1 s proxy-liveness probe |
+
+Nothing here is required: delete any of it and the proxy still starts and
+routes. `grades.json` and `speed.jsonl` grow only when you run the command.
+
+**`bench speed` records `proxy_pid` and `proxy_version` per row on purpose.** A
+series that spans a proxy restart is measuring two different binaries; without
+those fields the medians silently blend. That is issue #24's failure mode in
+measurement form — the reason the fields exist.
+
 ## Context-overflow handling
 
 A **non-streaming** GLM overflow comes back as `200` with empty content and `stop_reason=model_context_window_exceeded` — which a plain pipe would forward as a silent successful empty turn. The proxy detects that one case and converts it to a `400` the user sees immediately. Everything else passes through unchanged: a native `400`/error already surfaces, and a **streaming** overflow reaches Claude Code as its own context-limit message (synthesized from the SSE `stop_reason`).
