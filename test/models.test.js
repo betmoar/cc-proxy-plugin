@@ -1,6 +1,11 @@
 import { strict as assert } from "node:assert";
+import { execFile as execFileCb } from "node:child_process";
+import fs from "node:fs";
 import http from "node:http";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, describe, it } from "node:test";
+import { promisify } from "node:util";
 import {
 	CONTEXT_WINDOW,
 	DEEPSEEK_PRICING,
@@ -15,6 +20,8 @@ import {
 import { buildProviders } from "../src/providers.js";
 import { resolve as resolve2 } from "../src/router.js";
 import { createServer } from "../src/server.js";
+
+const execFile = promisify(execFileCb);
 
 describe("models.js pure helpers", () => {
 	it("DEFAULT_CLAUDE_MODELS holds only reachable Claude ids (no haiku, no mythos)", () => {
@@ -397,33 +404,43 @@ describe("collectModels fan-out", () => {
 		assert.deepEqual(_errors, [{ provider: "glm", message: "invalid response shape" }]);
 	});
 
+	// This id ("x") is not in MODEL_GRADES, so it grades on the built-in
+	// default unless a hostile ~/.claude/cc-proxy/grades.json overrides it
+	// (src/models.js:100-118 loads that file ONCE at module import). Run in a
+	// SUBPROCESS with a throwaway HOME — an in-process env.HOME swap can't
+	// isolate this, the module cache already pinned whatever the first import
+	// read. Same pattern as test/grades-refresh.test.js:18-45.
 	it("GLM entry coercion: drops no-id, converts numeric created, defaults display_name", async () => {
-		glm = await startBackend(() => ({
-			status: 200,
-			headers: { "content-type": "application/json" },
-			body: JSON.stringify({ data: [{}, { id: "x", created: 1700000000 }, { id: "" }] }),
-		}));
-		const config = wireConfig(glm.baseUrl);
-		const { data } = await collectModels(config);
-		// Published as `glm:x`, not `x`: the id is not in glm's namespace, so the
-		// lens is what says which backend serves it. (A vendor's real ids are
-		// `glm-*` and render bare — this stub id is deliberately foreign.)
-		const glmEntries = data.filter((m) => m.id === "glm:x");
-		assert.equal(glmEntries.length, 1);
-		assert.deepEqual(glmEntries[0], {
-			type: "model",
-			id: "glm:x",
-			display_name: "x",
-			// Unix seconds from the backend, converted to ISO — see coerceCreated.
-			created_at: "2023-11-14T22:13:20.000Z",
-			// Route metadata, attached to every entry: which backend won it, what
-			// that route costs (tier 2 = plan), and how strong the model is. An
-			// uncurated id grades Specialist by default — a shape, not a rung.
-			provider: "glm",
-			tier: 2,
-			grade: "Specialist",
-		});
-		assert.ok(!data.some((m) => m.id === ""));
+		const home = fs.mkdtempSync(path.join(os.tmpdir(), "ccp-models-"));
+		try {
+			const script = new URL("./fixtures/glm-entry-coercion-subprocess.mjs", import.meta.url)
+				.pathname;
+			const { stdout } = await execFile(process.execPath, [script], {
+				env: { ...process.env, HOME: home },
+			});
+			const data = JSON.parse(stdout);
+			// Published as `glm:x`, not `x`: the id is not in glm's namespace, so the
+			// lens is what says which backend serves it. (A vendor's real ids are
+			// `glm-*` and render bare — this stub id is deliberately foreign.)
+			const glmEntries = data.filter((m) => m.id === "glm:x");
+			assert.equal(glmEntries.length, 1);
+			assert.deepEqual(glmEntries[0], {
+				type: "model",
+				id: "glm:x",
+				display_name: "x",
+				// Unix seconds from the backend, converted to ISO — see coerceCreated.
+				created_at: "2023-11-14T22:13:20.000Z",
+				// Route metadata, attached to every entry: which backend won it, what
+				// that route costs (tier 2 = plan), and how strong the model is. An
+				// uncurated id grades Specialist by default — a shape, not a rung.
+				provider: "glm",
+				tier: 2,
+				grade: "Specialist",
+			});
+			assert.ok(!data.some((m) => m.id === ""));
+		} finally {
+			fs.rmSync(home, { recursive: true, force: true });
+		}
 	});
 
 	it("GLM not configured (no key) → GLM absent, not an error", async () => {
