@@ -232,6 +232,24 @@ Each is locked by tests; the test names tell you what you broke.
   (unquoted, to word-split into a real argv). Verified against the live harness,
   not simulated — a shell-level test of the SOURCE passes while the SUBSTITUTED
   body fails, so this cannot be caught by testing the template. → `commands/bench.md`
+- **A session SNAPSHOTS command bodies at startup — editing a command and
+  re-running it in the same session tests the OLD body.** True even under
+  `--plugin-dir .`: that reloads the plugin directory, but a `/command`'s text is
+  resolved once and served for the rest of the session. Fixing the trap above
+  took four attempts because three of them silently re-ran a body committed
+  ~45 minutes earlier — the file on disk had the fix, the harness did not.
+  The failure is invisible from inside: the expansion looks plausible, so a
+  green run "proves" a fix that was never loaded.
+  **Verify which body you are testing before trusting any result.** Read the
+  expanded body in the prompt and match it against the file
+  (`md5 -q commands/<cmd>.md` vs `git show <sha>:commands/<cmd>.md | md5 -q`),
+  or give the command a cheap signature only the new version has — a bogus
+  sub-command that the new code rejects and the old one silently accepts is a
+  free probe. Then `/exit` and relaunch to pick the edit up.
+  Corollary for anything that costs money or writes files: pick an observable
+  that separates the two paths BEFORE running — `bench speed --report` is
+  read-only while a live run appends, so a byte-identical `speed.jsonl`
+  (`wc -l` + `md5`) is what proves the flag actually arrived.
 - **CC internals may drift**: the `[1m]` model suffix, internal `claude-haiku-*`
   ids, and `ANTHROPIC_CUSTOM_MODEL_OPTION` (exactly one slot) are not public
   API. When routing looks wrong after a Claude Code update, check these first.
