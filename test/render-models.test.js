@@ -414,15 +414,17 @@ describe("route aliases keep their model's grade", () => {
 // run the renderer as a subprocess against a fake /_status + /v1/models, so a
 // regression fails the gate instead of waiting for someone to regenerate.
 describe("render-models against a live-shaped proxy", () => {
-	/** Serve the two endpoints the renderer fetches, then run it and return stdout. */
-	async function render(modelsData, env = {}) {
+	/** Serve the two endpoints the renderer fetches, then run it and return stdout.
+	 * `providers` overrides the /_status leg list — a card is dropped entirely
+	 * for a provider the proxy does not report, so an openrouter row needs it. */
+	async function render(modelsData, env = {}, providers = ["glm", "deepseek", "qwen", "claude"]) {
 		const server = http.createServer((req, res) => {
 			const body = req.url.startsWith("/_status")
 				? JSON.stringify({
 						port: 0,
 						version: "test",
 						defaultBackend: "claude",
-						providers: ["glm", "deepseek", "qwen", "claude"],
+						providers,
 					})
 				: JSON.stringify({ object: "list", data: modelsData });
 			res.writeHead(200, { "content-type": "application/json" });
@@ -506,6 +508,51 @@ describe("render-models against a live-shaped proxy", () => {
 			cardFor(html, "Qwen"),
 			/qwen:glm-5\.2[\s\S]{0,200}?class="win">1M</,
 			"the SAME model under a lens must render the SAME window, not a blank",
+		);
+	});
+
+	// The renderer used to re-derive every window from the curated CONTEXT_WINDOW
+	// table, which covers only the ids this repo curates. OpenRouter's ~300 carry
+	// a real `context_length` that only the API knows, so ALL 20 OpenRouter rows
+	// in the committed docs/models.html rendered blank while /v1/models had the
+	// number in hand — the same "re-derivation beats the published field" defect
+	// class as the provider mix-up and the lensed-row window (c243b74).
+	it("renders the PUBLISHED context_window for an id the curated table does not cover", async () => {
+		const html = await render(
+			[
+				{
+					type: "model",
+					id: "moonshotai/kimi-k3",
+					display_name: "K",
+					provider: "openrouter",
+					tier: 4,
+					context_window: 262144,
+				},
+			],
+			{ OPENROUTER_API_KEY: "or" },
+			["openrouter"],
+		);
+		assert.match(
+			cardFor(html, "OpenRouter"),
+			/kimi-k3[\s\S]{0,200}?class="win">262K</,
+			"an uncurated id must render the window the API published, not a blank",
+		);
+	});
+
+	// An id with no curated window AND no published one still renders no window
+	// column — the omission survives to the page, it does not become "0K".
+	it("renders no window when neither the table nor the API has one", async () => {
+		const html = await render(
+			[{ type: "model", id: "vendor/unknown", display_name: "U", provider: "openrouter", tier: 4 }],
+			{ OPENROUTER_API_KEY: "or" },
+			["openrouter"],
+		);
+		const card = cardFor(html, "OpenRouter");
+		assert.match(card, /vendor\/<wbr>unknown/, "the row must render at all");
+		assert.doesNotMatch(
+			card,
+			/vendor\/<wbr>unknown[\s\S]{0,120}?class="win"/,
+			"no curated and no published window must render no window column",
 		);
 	});
 

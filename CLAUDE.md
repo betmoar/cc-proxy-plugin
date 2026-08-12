@@ -166,7 +166,14 @@ or the renderer changed, also regenerate `docs/models.html`: confirm the port
 owner by PID (`lsof -nP -iTCP:4000 -sTCP:LISTEN -t` — `/_status` says what
 ANSWERED, not what is bound), restart the proxy to match the merged tree, then
 `pnpm models:html` and commit. CI cannot rebuild it and the suite reads the
-committed file, so a stale artifact ships green and silent.
+committed file, so a stale artifact ships green and silent. `models:html` goes
+through `scripts/render-html.mjs`, which runs the renderer against a temp HOME
+holding only a symlink to `~/.env` — the renderer grades in-process through
+`gradeOf()`, so a plain run publishes YOUR `grades.json` instead of the repo's
+table (it shipped four wrong grades that way). Never "simplify" it back to
+`node render-models.js >`, and never isolate the whole HOME: `loadEnv()` reads
+`~/.env` from it, so a blanket override drops every key and the page collapses
+to the Claude card alone (measured: 40 rows → 3).
 
 ## Backlog
 

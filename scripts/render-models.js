@@ -34,7 +34,13 @@
 import { loadEnv } from "../src/env.js";
 import { MODEL_GRADES, gradeOf } from "../src/models.js";
 import { buildProviders } from "../src/providers.js";
-import { CONTEXT_WINDOW, DISPLAY, attribute, registeredProviders } from "./list-models.js";
+import {
+	CONTEXT_WINDOW,
+	DISPLAY,
+	attribute,
+	formatContextWindow,
+	registeredProviders,
+} from "./list-models.js";
 
 // MUST stay directly under the imports — see list-models.js / CLAUDE.md.
 loadEnv();
@@ -111,7 +117,14 @@ const tierFor = (id) => gradeOf(id) ?? gradeOf(id.slice(id.indexOf(":") + 1)) ??
  * window beside a bare `glm-5.2` showing 1M — the same model, two answers.
  * Object.hasOwn on both reads: ids come from live catalogs, so `constructor`
  * would otherwise inherit a function off Object.prototype. */
-const windowFor = (id) => {
+const windowFor = (id, published) => {
+	// The PUBLISHED integer wins when the API sent one. `provider` above already
+	// learned this lesson ("use the published field, not a re-derivation"): the
+	// curated table covers the ids this repo curates, while OpenRouter's ~300
+	// carry a real `context_length` that only the API knows. Re-deriving from the
+	// table alone rendered all 20 OpenRouter rows blank while /v1/models had the
+	// number in hand.
+	if (typeof published === "number" && published > 0) return formatContextWindow(published);
 	if (Object.hasOwn(CONTEXT_WINDOW, id)) return CONTEXT_WINDOW[id];
 	const bare = id.slice(id.indexOf(":") + 1);
 	return Object.hasOwn(CONTEXT_WINDOW, bare) ? CONTEXT_WINDOW[bare] : undefined;
@@ -234,6 +247,11 @@ export function groupByProvider(rows) {
 			plan,
 			tier: tierFor(r.id),
 			created: r.created_at || null,
+			// Carried through, not re-derived downstream: this rebuild is where a
+			// published `context_window` would otherwise be dropped, leaving the row
+			// renderer with only the curated table — which is how all 20 OpenRouter
+			// rows shipped blank. Omitted when absent, so the key stays the test.
+			...("context_window" in r ? { context_window: r.context_window } : {}),
 		});
 	}
 	// Grade first, then NEWEST within a grade, then id descending as the final
@@ -279,7 +297,7 @@ function providerCard([pid, group]) {
 			// the BARE vendor id, so `qwen:glm-5.2` must fall back to `glm-5.2` or
 			// the lensed row renders blank next to an identical bare row that does
 			// not (measured: 3 such rows shipped in docs/models.html).
-			const win = windowFor(m.id);
+			const win = windowFor(m.id, m.context_window);
 			// A zero-width break opportunity after the namespace slash, so a long
 			// OpenRouter id wraps on the boundary a reader recognizes.
 			const id = esc(m.id).replace("/", "/<wbr>");
@@ -657,6 +675,9 @@ async function main() {
 			id: m.id,
 			provider: m.provider || attribute(m.id, providers),
 			created_at: m.created_at ?? null,
+			// Carried, not re-derived: OMITTED for an id with no curated window, so
+			// `"context_window" in entry` stays the test all the way to the page.
+			...("context_window" in m ? { context_window: m.context_window } : {}),
 		}))
 		.filter((r) => providerSet.has(r.provider));
 
