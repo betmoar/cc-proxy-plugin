@@ -108,7 +108,7 @@ ids with no curated window — the OpenRouter-prefixed `vendor/model` ids and
 distinguishable from "known" via `"context_window" in entry`. This is a
 published contract with a named downstream consumer (cc-reload budgets a
 session against it), which is why the table lives in `src/` rather than in the
-display layer — see CLAUDE.md "Reversed decisions".
+display layer — see [`docs/BACKLOG.md`](BACKLOG.md) "Reversed decisions".
 
 Entries also carry `provider`, `tier` (cost, from `src/routes.js` `tierOf()`),
 and — for an assessed model only — `grade` (capability, from `src/models.js`
