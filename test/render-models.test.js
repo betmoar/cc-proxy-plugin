@@ -78,21 +78,27 @@ describe("render-models MODEL_TIERS", () => {
 // diagram overlapped "OpenRouter" with "Qwen", and the GLM card listed glm-5
 // above glm-5.1. A screenshot found them; these assertions keep them found.
 describe("render-models derivations", () => {
-	it("orders models by tier, then by version descending within a tier", () => {
-		const rows = [
-			{ id: "glm-5", provider: "glm" },
-			{ id: "glm-5.2", provider: "glm" },
-			{ id: "glm-5.1", provider: "glm" },
-			{ id: "glm-4.5", provider: "glm" },
-			{ id: "glm-4.7", provider: "glm" },
-		];
-		const ids = groupByProvider(rows)
-			.get("glm")
-			.models.map((m) => m.id);
-		// glm-5.2 Flagship, then the two Strong (5.1 before 5 — numeric collation,
-		// not lexicographic, which would invert them), then the two Specialist
-		// (superseded generations; `Economy` until 0.6.1 retired it) newest-first.
-		assert.deepEqual(ids, ["glm-5.2", "glm-5.1", "glm-5", "glm-4.7", "glm-4.5"]);
+	// SUBPROCESS with a throwaway HOME, not an in-process call: groupByProvider
+	// sorts by grade, grades come from gradeOf(), and gradeOf() overlays
+	// ~/.claude/cc-proxy/grades.json — bound once at module import, so swapping
+	// env.HOME inside this process is already too late. Read the developer's real
+	// file until now; verified by pinning a HOME whose grades.json calls glm-5.2
+	// "Specialist" and glm-4.5 "Flagship", which inverted this order and failed.
+	it("orders models by tier, then by version descending within a tier", async () => {
+		const home = fs.mkdtempSync(path.join(os.tmpdir(), "ccp-order-"));
+		try {
+			const script = new URL("./fixtures/group-order-subprocess.mjs", import.meta.url).pathname;
+			const { stdout } = await execFile(process.execPath, [script], {
+				env: { ...process.env, HOME: home },
+			});
+			const { ids } = JSON.parse(stdout);
+			// glm-5.2 Flagship, then the two Strong (5.1 before 5 — numeric collation,
+			// not lexicographic, which would invert them), then the two Specialist
+			// (superseded generations; `Economy` until 0.6.1 retired it) newest-first.
+			assert.deepEqual(ids, ["glm-5.2", "glm-5.1", "glm-5", "glm-4.7", "glm-4.5"]);
+		} finally {
+			fs.rmSync(home, { recursive: true, force: true });
+		}
 	});
 
 	it("draws one diagram leg per provider, with no overlapping labels", () => {
@@ -432,6 +438,14 @@ describe("render-models against a live-shaped proxy", () => {
 		});
 		await new Promise((r) => server.listen(0, "127.0.0.1", r));
 		const { port } = server.address();
+		// Throwaway HOME, same pattern as test/models.test.js:415 and
+		// grades-refresh.test.js. The renderer grades through gradeOf(), which
+		// overlays ~/.claude/cc-proxy/grades.json at module load — so inheriting
+		// the real HOME made these assertions depend on whatever the developer
+		// last benched. Verified: a HOME whose grades.json calls glm-5.2
+		// "Specialist" and glm-4.5 "Flagship" fails the two ordering tests here.
+		// 9ac2bf2 fixed exactly this for models.test.js; this layer was missed.
+		const home = fs.mkdtempSync(path.join(os.tmpdir(), "ccp-render-"));
 		try {
 			const script = path.join(
 				path.dirname(fileURLToPath(import.meta.url)),
@@ -441,6 +455,7 @@ describe("render-models against a live-shaped proxy", () => {
 				env: {
 					...process.env,
 					...env,
+					HOME: home,
 					PROXY_PORT: String(port),
 					GLM_API_KEY: "g",
 					DEEPSEEK_API_KEY: "d",
@@ -450,6 +465,7 @@ describe("render-models against a live-shaped proxy", () => {
 			});
 			return stdout;
 		} finally {
+			fs.rmSync(home, { recursive: true, force: true });
 			server.close();
 		}
 	}

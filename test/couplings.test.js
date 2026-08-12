@@ -202,16 +202,25 @@ describe("cross-file couplings", () => {
 	// must be tagged, or the Qwen card under-reports what the plan entitles you to:
 	// `deepseek-v4-pro` renders on the DeepSeek card (native-first since issue #19)
 	// and would appear nowhere on Qwen's without the tag. The reverse is legitimate
-	// — `glm-5.2` is in the display set but NOT in the predicate, and putting it
-	// there would not be a no-op: the glm predicate is
-	// `startsWith("glm-") && !planResells(m)`, so membership makes glm STOP
-	// matching. Measured: with `glm-5.2` in the set, `glm.match` flips true→false,
-	// `qwen.match` false→true, and a plan-holder's `glm-5.2` leaves Z.ai for the
-	// resold route — reversing "a native plan outranks a resold one" (the rule
-	// QWEN_PLAN_RESELLS's own docstring states). The display set has no such
-	// power: it only decides whether a tag is drawn. Two sets, one shared fact,
-	// asymmetric consequences — which is why this asserts containment and set
-	// equality would fail on correct code.
+	// — `glm-5.2` is in the display set but NOT in the predicate. Adding it there
+	// would change the PREDICATES without changing where anything routes, because
+	// `resolve()` consults `rankRoutes()` (router.js:90) BEFORE the predicate scan
+	// (router.js:96), and `ROUTES["glm-5.2"]` lists glm first. Measured, with
+	// `glm-5.2` added to the set and both keys present:
+	//
+	//   glm.match  true → false      qwen.match  false → true
+	//   resolve("glm-5.2").provider.id → "glm"   (unchanged)
+	//
+	// So it is latent, not inert: the predicates disagree with the route table,
+	// and the day `glm-5.2` loses its ROUTES entry the fallback lands on qwen
+	// instead of glm — reversing "a native plan outranks a resold one" with
+	// nothing to catch it. The display set has no such power: it only decides
+	// whether a tag is drawn. Two sets, one shared fact, asymmetric consequences
+	// — which is why this asserts containment and equality would fail on correct
+	// code. (An earlier version of this comment said "dead code", and its
+	// correction said routing moves. Both were wrong; these numbers are from
+	// running it — `resolve()` returns `{provider, upstreamModel}`, and reading a
+	// `.id` off that is what produced the second wrong answer.)
 	//
 	// They have drifted before: `deepseek-v4-pro` was dropped from the display set
 	// on the theory that a natively-routed id is not a "dup", which is exactly
