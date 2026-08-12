@@ -31,22 +31,32 @@ EOF
 [ -n "$root" ] || { echo 'cc-proxy: cannot locate plugin root; run /cc-proxy:setup or /resume'; exit 1; }
 
 # Trap 3 (this command's own): a slash-command body has NO real positional
-# parameters — Claude Code substitutes the dollar-N tokens TEXTUALLY before the
-# shell runs. So `shift; "$@"` did not forward anything: `$@` expands against an
-# empty argv, which silently dropped `--report` (turning a read-only report into
-# a full live measurement run against every configured backend), and zsh's
-# `shift` additionally errored with "shift count must be <= $#". Rebuild the
-# argv from the substituted values instead, skipping empties so an absent
-# argument is never passed as a literal "" (bench-speed would read that as a
-# model id to measure).
-case "$1" in
-  speed)
-    set --
-    for a in "$2" "$3"; do
-      [ -n "$a" ] && set -- "$@" "$a"
-    done
-    node "$root/scripts/bench-speed.js" "$@" ;;
-  *)     node "$root/scripts/bench-grades.js" ;;
+# parameters. Claude Code substitutes the argument tokens TEXTUALLY before any
+# shell runs, and it substitutes only $ARGUMENTS and $1 — $2 and $3 are left as
+# the literal characters "$2"/"$3" for the shell to expand against an EMPTY
+# argv, i.e. to nothing.
+#
+# Two bugs came from not knowing that, both verified against the real harness:
+#   1. `shift; "$@"` forwarded nothing, silently dropping `--report` and turning
+#      a read-only report into a full billed measurement run.
+#   2. Reading `$1` then `$2`/`$3` was worse: for `speed --report` the harness
+#      set $1 to `--report` (the LAST token, not the first), so `case "$1"`
+#      matched no branch and fell through to the grades default — the wrong
+#      sub-command entirely.
+#
+# So parse $ARGUMENTS — the whole argument string, the only token that carries
+# every word — with `set --` word-splitting it into a real argv. The unquoted
+# expansion is deliberate: these are shell-word arguments (`speed --report`),
+# and the values are the user's own command line.
+set -- $ARGUMENTS
+sub="${1:-grades}"
+shift 2>/dev/null || true
+case "$sub" in
+  speed) node "$root/scripts/bench-speed.js" "$@" ;;
+  grades) node "$root/scripts/bench-grades.js" ;;
+  *)
+    echo "cc-proxy: unknown sub-command '$sub' — expected 'grades', 'speed', or 'speed --report'" >&2
+    exit 1 ;;
 esac
 ```
 

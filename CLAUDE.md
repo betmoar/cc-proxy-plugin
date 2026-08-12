@@ -220,6 +220,18 @@ Each is locked by tests; the test names tell you what you broke.
   negotiated encoding. → `test/server.test.js` "buffered path forces
   accept-encoding: identity…", "…streaming path leaves accept-encoding
   untouched".
+- **A slash command has NO positional parameters.** Claude Code substitutes the
+  argument tokens TEXTUALLY into the body before any shell runs, and it
+  substitutes only `$ARGUMENTS` (the whole string) and `$1` — `$2`/`$3` survive
+  as literal `"$2"` and expand against an EMPTY argv, i.e. to nothing. Worse,
+  for `/cc-proxy:bench speed --report` the harness set `$1` to `--report`, the
+  LAST token, not the first. Two bugs shipped from this in one release: a
+  `shift; "$@"` that forwarded nothing (silently turning a read-only report into
+  a billed measurement run), and then a `$2`/`$3` rebuild that dispatched on the
+  wrong sub-command entirely. The only correct form is `set -- $ARGUMENTS`
+  (unquoted, to word-split into a real argv). Verified against the live harness,
+  not simulated — a shell-level test of the SOURCE passes while the SUBSTITUTED
+  body fails, so this cannot be caught by testing the template. → `commands/bench.md`
 - **CC internals may drift**: the `[1m]` model suffix, internal `claude-haiku-*`
   ids, and `ANTHROPIC_CUSTOM_MODEL_OPTION` (exactly one slot) are not public
   API. When routing looks wrong after a Claude Code update, check these first.
