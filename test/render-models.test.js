@@ -485,6 +485,30 @@ describe("render-models against a live-shaped proxy", () => {
 		);
 	});
 
+	// CONTEXT_WINDOW is keyed by the BARE vendor id, but this page only ever sees
+	// the PUBLISHED id, which may carry a `<provider>:` lens. Without the same
+	// alias fallback tierFor uses, a lensed row rendered blank beside an
+	// identical bare row showing 1M — the same model answering two ways. Caught
+	// by an external review of PR #32 after five internal lenses missed it: they
+	// were all pointed at `grade`, and this is the lookup on the next line of the
+	// same .map(). Three such rows shipped in docs/models.html.
+	it("renders the context window for a lensed id, not just the bare one", async () => {
+		const html = await render([
+			{ type: "model", id: "glm-5.2", display_name: "G", provider: "glm", tier: 2 },
+			{ type: "model", id: "qwen:glm-5.2", display_name: "G", provider: "qwen", tier: 2 },
+		]);
+		assert.match(
+			cardFor(html, "GLM"),
+			/glm-5\.2[\s\S]{0,200}?class="win">1M</,
+			"the bare id has a curated window and must render it",
+		);
+		assert.match(
+			cardFor(html, "Qwen"),
+			/qwen:glm-5\.2[\s\S]{0,200}?class="win">1M</,
+			"the SAME model under a lens must render the SAME window, not a blank",
+		);
+	});
+
 	// Both ids the Qwen plan resells carry the "also on plan" tag on their NATIVE
 	// card, for the same reason: the plan serves them but does not route them.
 	// `deepseek-v4-pro` was missing from QWEN_PLAN_ALSO (caught in review on

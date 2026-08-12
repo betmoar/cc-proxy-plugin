@@ -103,6 +103,20 @@ const tierRank = (t) => TIER_ORDER[t] ?? 99;
 // table read: gradeOf() uses Object.hasOwn internally and returns undefined.
 const tierFor = (id) => gradeOf(id) ?? gradeOf(id.slice(id.indexOf(":") + 1)) ?? UNGRADED;
 
+/** Curated context window for a published id, or undefined.
+ *
+ * Same aliasing as tierFor, and for the same reason: CONTEXT_WINDOW is keyed by
+ * the BARE vendor id, but this page sees the published one, which may carry a
+ * `<provider>:` lens. Without the fallback `qwen:glm-5.2` rendered a blank
+ * window beside a bare `glm-5.2` showing 1M — the same model, two answers.
+ * Object.hasOwn on both reads: ids come from live catalogs, so `constructor`
+ * would otherwise inherit a function off Object.prototype. */
+const windowFor = (id) => {
+	if (Object.hasOwn(CONTEXT_WINDOW, id)) return CONTEXT_WINDOW[id];
+	const bare = id.slice(id.indexOf(":") + 1);
+	return Object.hasOwn(CONTEXT_WINDOW, bare) ? CONTEXT_WINDOW[bare] : undefined;
+};
+
 /** Which provider legs pull their list live vs. ship a curated static list.
  * As of 2026-08-06 only Claude is static: it has no discoverable catalog
  * endpoint (OAuth, and invariant 4 deliberately hides claude-haiku-*). Qwen
@@ -261,7 +275,11 @@ function providerCard([pid, group]) {
 			// table renders, so the two views can't disagree about a model.
 			// Object.hasOwn for the same reason as tierFor above: m.id comes from a
 			// live catalog, and a bare lookup of `constructor` returns a function.
-			const win = Object.hasOwn(CONTEXT_WINDOW, m.id) ? CONTEXT_WINDOW[m.id] : undefined;
+			// And the same `<provider>:` fallback tierFor uses: the map is keyed by
+			// the BARE vendor id, so `qwen:glm-5.2` must fall back to `glm-5.2` or
+			// the lensed row renders blank next to an identical bare row that does
+			// not (measured: 3 such rows shipped in docs/models.html).
+			const win = windowFor(m.id);
 			// A zero-width break opportunity after the namespace slash, so a long
 			// OpenRouter id wraps on the boundary a reader recognizes.
 			const id = esc(m.id).replace("/", "/<wbr>");

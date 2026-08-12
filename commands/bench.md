@@ -48,7 +48,14 @@ EOF
 # every word — with `set --` word-splitting it into a real argv. The unquoted
 # expansion is deliberate: these are shell-word arguments (`speed --report`),
 # and the values are the user's own command line.
+#
+# `set -f` first, because unquoted word-splitting also GLOBS: measured in a
+# directory holding two files, `bench speed *` split to three words
+# (`speed aaa.txt bbb.txt`) instead of two. Splitting is what we want; pathname
+# expansion is not, and the argv it builds is passed straight to a script.
+set -f
 set -- $ARGUMENTS
+set +f
 sub="${1:-grades}"
 shift 2>/dev/null || true
 case "$sub" in
