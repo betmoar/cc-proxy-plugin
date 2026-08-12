@@ -73,6 +73,7 @@ there if you forget. The ones marked ⚠ have no test and drift silently.
 | the plugin description | `package.json`, `plugin.json`, `marketplace.json` |
 | an upstream request option | `upstreamRequestOptions()` only — a 2nd copy shipped the query-string bug twice |
 | a script's `process.env` read | `loadEnv()` directly under the imports, or `~/.env` is ignored |
+| `QWEN_PLAN_RESELLS` (`providers.js`) | `QWEN_PLAN_ALSO` (`render-models.js`) must cover it, or the Qwen card under-reports the plan |
 | ⚠ `MODEL_GRADES` | nothing — it is the ONLY copy; `render-models.js` re-exports it |
 | ⚠ a static catalog | confirm the id has a `ROUTES` entry |
 | ⚠ the `/v1/models` wire shape | README + OPERATIONS + ARCHITECTURE, by hand |

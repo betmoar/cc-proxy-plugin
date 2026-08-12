@@ -193,6 +193,43 @@ describe("cross-file couplings", () => {
 		);
 	});
 
+	// COUPLING: `QWEN_PLAN_ALSO` (scripts/render-models.js, the "also on plan" tag)
+	// must cover every id in `QWEN_PLAN_RESELLS` (src/providers.js, the routing
+	// predicate). Two hand-written copies of the same curated fact — which ids the
+	// Qwen Token Plan resells — in files that never import each other.
+	//
+	// Direction matters, and only ONE direction is an error. Every routed reseller
+	// must be tagged, or the Qwen card under-reports what the plan entitles you to:
+	// `deepseek-v4-pro` renders on the DeepSeek card (native-first since issue #19)
+	// and would appear nowhere on Qwen's without the tag. The reverse is legitimate
+	// — `glm-5.2` is in the display set but NOT in the predicate, because the glm
+	// predicate claims it before the qwen one is consulted, so adding it there
+	// would be dead code. Asserting set equality would therefore fail on correct
+	// code; this asserts containment.
+	//
+	// They have drifted before: `deepseek-v4-pro` was dropped from the display set
+	// on the theory that a natively-routed id is not a "dup", which is exactly
+	// backwards — native routing is the PRECONDITION for the tag (caught in review
+	// on PR #21, recorded in CHANGELOG). Neither file imports the other, so the
+	// next drift is silent again: routing keeps working and the page just quietly
+	// tells the reader less than the truth.
+	it("QWEN_PLAN_ALSO (renderer) covers every id in QWEN_PLAN_RESELLS (router)", () => {
+		const parse = (src, name) => {
+			const m = new RegExp(`${name} = new Set\\(\\[([^\\]]*)\\]\\)`).exec(src);
+			assert.ok(m, `could not parse ${name} — the coupling test needs updating, not deleting`);
+			return [...m[1].matchAll(/"([^"]+)"/g)].map((x) => x[1]);
+		};
+		const resells = parse(read("src/providers.js"), "QWEN_PLAN_RESELLS");
+		const tagged = parse(read("scripts/render-models.js"), "QWEN_PLAN_ALSO");
+		assert.ok(resells.length > 0, "parsed QWEN_PLAN_RESELLS as empty — the regex has rotted");
+		const untagged = resells.filter((id) => !tagged.includes(id));
+		assert.deepEqual(
+			untagged,
+			[],
+			`src/providers.js QWEN_PLAN_RESELLS has ${untagged.join(", ")} but scripts/render-models.js QWEN_PLAN_ALSO does not — the Qwen card will under-report the plan's scope for those ids`,
+		);
+	});
+
 	// COUPLING: every env var offered in .env.example must be documented in the
 	// README env table and in docs/OPERATIONS.md (new knobs go in all three).
 	it("every .env.example key is documented in README.md and docs/OPERATIONS.md", () => {
