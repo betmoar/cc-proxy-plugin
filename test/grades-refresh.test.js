@@ -140,4 +140,36 @@ describe("grade refresh (bench grades -> gradeOf)", () => {
 		const grade = await gradeIn(home, "constructor");
 		assert.equal(grade, null, `expected no grade, got: ${grade}`);
 	});
+
+	// D3: readFileSync on a FIFO/socket/device BLOCKS waiting for a writer,
+	// which the try/catch around it cannot stop — a stopped throw does not stop
+	// a block. This ran at module load (loadRefreshedGrades() is called at top
+	// level), so hitting it hangs the entire proxy boot: ECONNREFUSED for every
+	// session, since proxy-lifecycle.js's SessionStart hook never sees it come
+	// up. Regression for the statSync().isFile() guard. Skipped where mkfifo is
+	// unavailable, and bounded so a broken fix hangs the TEST, not the suite.
+	it("a non-regular file (FIFO) at grades.json does not hang module load", async () => {
+		const home = fs.mkdtempSync(path.join(os.tmpdir(), "ccp-grades-fifo-"));
+		tmpHomes.push(home);
+		const dir = path.join(home, ".claude", "cc-proxy");
+		fs.mkdirSync(dir, { recursive: true });
+		const fifoPath = path.join(dir, "grades.json");
+		try {
+			await execFile("mkfifo", [fifoPath]);
+		} catch {
+			// mkfifo unavailable in this environment — skip rather than fail;
+			// this is an environment limitation, not a regression.
+			return;
+		}
+		try {
+			const url = new URL("../src/models.js", import.meta.url).href;
+			await execFile(
+				process.execPath,
+				["-e", `import(${JSON.stringify(url)}).then(() => process.stdout.write("ok"))`],
+				{ env: { ...process.env, HOME: home }, timeout: 5000 },
+			);
+		} finally {
+			fs.rmSync(fifoPath, { force: true });
+		}
+	});
 });

@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import {
 	CONTEXT_WINDOW,
 	attribute,
+	buildRow,
 	formatContextWindow,
 	registeredProviders,
 } from "../scripts/list-models.js";
@@ -176,5 +177,36 @@ describe("list-models attribute()", () => {
 			const on = registeredProviders(all).map((p) => p.id);
 			assert.deepEqual(on, ["claude"], "no providers array → only the default backend stays");
 		});
+	});
+});
+
+// P4: CONTEXT_WINDOW/DISPLAY/DEEPSEEK_PRICING are keyed by ids from a LIVE
+// vendor catalog — not our key space. A bare bracket lookup on a prototype
+// property name (`constructor`, `__proto__`, `toString`, ...) resolves
+// through Object.prototype instead of missing: probed pre-fix,
+// `CONTEXT_WINDOW["constructor"]` returned `[Function: Object]` and
+// `DISPLAY["constructor"]` did too. buildRow() must render these ids the same
+// as any other id it has no data for — blank ctx/price, provider id as name.
+describe("buildRow() vendor-id prototype pollution (P4)", () => {
+	const providers = buildProviders({ GLM_API_KEY: "g" }, "claude");
+
+	it("an id named constructor gets no context window", () => {
+		const row = buildRow({ id: "constructor", provider: "glm" }, providers);
+		assert.equal(row.ctx, "", `expected no ctx, got: ${JSON.stringify(row.ctx)}`);
+	});
+
+	it("an id named __proto__ gets no context window", () => {
+		const row = buildRow({ id: "__proto__", provider: "glm" }, providers);
+		assert.equal(row.ctx, "", `expected no ctx, got: ${JSON.stringify(row.ctx)}`);
+	});
+
+	it("a provider id named constructor gets no display name substitution", () => {
+		const row = buildRow({ id: "some-model", provider: "constructor" }, providers);
+		assert.equal(row.name, "constructor", `expected the raw pid, got: ${JSON.stringify(row.name)}`);
+	});
+
+	it("a deepseek id named constructor gets no price", () => {
+		const row = buildRow({ id: "constructor", provider: "deepseek" }, providers);
+		assert.equal(row.price, "", `expected no price, got: ${JSON.stringify(row.price)}`);
 	});
 });

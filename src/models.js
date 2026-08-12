@@ -132,6 +132,15 @@ export const GRADES = new Set(["Flagship", "Strong", "Specialist"]);
 function loadRefreshedGrades() {
 	try {
 		const file = path.join(os.homedir(), ".claude", "cc-proxy", "grades.json");
+		// Only a REGULAR file. `readFileSync` on a FIFO/socket/device BLOCKS
+		// waiting for a writer instead of throwing, which the try/catch below
+		// cannot stop — a stopped throw does not stop a block. That turns
+		// module load (this runs at import time) into a boot hang, and
+		// proxy-lifecycle.js's SessionStart hook never sees the proxy come up:
+		// every session gets ECONNREFUSED. statSync a non-regular path throws
+		// too (ENOENT-shaped for a missing path, or just informs us to skip),
+		// which the existing catch already handles.
+		if (!fs.statSync(file).isFile()) return {};
 		const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
 		const models = parsed?.models;
 		if (!models || typeof models !== "object") return {};

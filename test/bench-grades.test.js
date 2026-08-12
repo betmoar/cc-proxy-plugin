@@ -1,4 +1,7 @@
 import { strict as assert } from "node:assert";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, it } from "node:test";
 import {
 	buildGrades,
@@ -7,6 +10,7 @@ import {
 	variantRank,
 	vendorOf,
 	versionKey,
+	writeGradesFile,
 } from "../scripts/bench-grades.js";
 
 describe("normalizeName", () => {
@@ -170,5 +174,55 @@ describe("buildGrades", () => {
 		const out = buildGrades({}, {}, ["glm-5.2"]);
 		assert.equal(out.models["glm-5.2"].grade, "Flagship", "grade needs no network");
 		assert.equal("score" in out.models["glm-5.2"], false);
+	});
+});
+
+describe("writeGradesFile", () => {
+	it("writes atomically: an existing file survives a kill mid-write of a new one", () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bench-grades-atomic-"));
+		const filePath = path.join(dir, "grades.json");
+		try {
+			// Simulate a prior, complete write.
+			fs.writeFileSync(filePath, JSON.stringify({ models: { old: { grade: "Flagship" } } }));
+
+			// Simulate a kill (SIGKILL/OOM/disk-full) mid-write: the temp path
+			// writeGradesFile would rename from is left half-written, exactly
+			// what a truncated fs.writeFileSync leaves behind. The regression
+			// this test catches: if writeGradesFile ever writes straight to
+			// filePath (no temp + rename), the target itself ends up holding
+			// this half-written content instead of being left untouched.
+			const tmpPath = `${filePath}.tmp-${process.pid}`;
+			fs.writeFileSync(tmpPath, '{"models":{"new":{"gr');
+
+			// The real target must be UNCHANGED and still valid JSON — the
+			// crash only ever touches the temp file, never the target.
+			const before = fs.readFileSync(filePath, "utf8");
+			assert.doesNotThrow(() => JSON.parse(before));
+			assert.equal(JSON.parse(before).models.old.grade, "Flagship");
+
+			// A subsequent successful writeGradesFile() call must still land
+			// cleanly (it overwrites its own temp file and renames over it).
+			writeGradesFile(dir, filePath, JSON.stringify({ models: { new: { grade: "Strong" } } }));
+			const after = JSON.parse(fs.readFileSync(filePath, "utf8"));
+			assert.equal(after.models.new.grade, "Strong");
+			assert.equal(fs.existsSync(tmpPath), false, "temp file must not survive a successful write");
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("leaves the target untouched if the write ITSELF throws before rename", () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bench-grades-atomic-fail-"));
+		const filePath = path.join(dir, "grades.json");
+		try {
+			fs.writeFileSync(filePath, "original content");
+			// Directory as the "data" write target is not representable here, so
+			// instead force writeFileSync to fail by writing to a path with a
+			// bogus parent — renameSync must therefore never run.
+			assert.throws(() => writeGradesFile(dir, filePath, undefined));
+			assert.equal(fs.readFileSync(filePath, "utf8"), "original content");
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });

@@ -38,6 +38,25 @@ export const OUT_PATH = path.join(OUT_DIR, "grades.json");
 export const ATTRIBUTION = "Capability scores: benchlm.ai";
 
 /**
+ * Write `data` to `filePath` atomically: write to a sibling temp file, then
+ * `renameSync` over the target. A rename within one directory is a single
+ * filesystem operation, so a reader (src/models.js loadRefreshedGrades(), at
+ * proxy boot) always sees either the complete old file or the complete new
+ * one — never a partial write left by a kill (SIGKILL, OOM, disk full)
+ * mid-write. Exported so the atomicity itself is testable without a live
+ * fetch.
+ * @param {string} dir
+ * @param {string} filePath
+ * @param {string} data
+ */
+export function writeGradesFile(dir, filePath, data) {
+	fs.mkdirSync(dir, { recursive: true });
+	const tmpPath = `${filePath}.tmp-${process.pid}`;
+	fs.writeFileSync(tmpPath, data);
+	fs.renameSync(tmpPath, filePath);
+}
+
+/**
  * Fold a model name or id to a comparison key: lowercase, and every separator
  * dropped. "DeepSeek V4 Pro", "deepseek-v4-pro" and "deepseek/deepseek-v4-pro"
  * all fold to "deepseekv4pro".
@@ -334,8 +353,10 @@ async function main() {
 	]);
 
 	const out = buildGrades(benchlm, openrouter, ids);
-	fs.mkdirSync(OUT_DIR, { recursive: true });
-	fs.writeFileSync(OUT_PATH, `${JSON.stringify(out, null, 2)}\n`);
+	// bench-speed.js's `appendFileSync` (JSONL) is a different case — a torn
+	// append only corrupts one LINE, and no reader depends on the whole file
+	// parsing — and is left as-is.
+	writeGradesFile(OUT_DIR, OUT_PATH, `${JSON.stringify(out, null, 2)}\n`);
 
 	const gradedCount = Object.values(out.models).filter((m) => "grade" in m).length;
 	const scoredCount = Object.values(out.models).filter((m) => "score" in m).length;
