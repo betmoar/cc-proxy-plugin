@@ -288,25 +288,47 @@ notes referencing "backlog item N" still resolve.
    plugin installable alone. A tier field on the discovery response respects the
    arrow; a tiers.env read does not.
 
-   **MECHANICALLY DONE (feat/route-selection); the grades themselves are not.**
+   **WIRED AND REFRESHABLE (0.6.1); the grades themselves still are not.**
    The map moved from `scripts/render-models.js` to `src/models.js` as
    `MODEL_GRADES` (+ `gradeOf`, `DEFAULT_GRADE`), and every `/v1/models` entry
-   now carries **`grade`** (capability) alongside **`tier`** (cost, 1–4 from
+   carries **`grade`** (capability) alongside **`tier`** (cost, 1–4 from
    `src/routes.js`). `render-models.js` re-exports `MODEL_TIERS = MODEL_GRADES`
    so the two cannot drift. That was the reversal this paragraph warned about:
-   a curated opinion is now API surface, so **every new model needs a grade or
-   discovery silently publishes `Specialist`**.
+   a curated opinion is now API surface.
 
-   **The live catalogs changed the SCALE of that, not just the principle.**
+   **The refresh loop was a DEAD END until 0.6.1 and this is worth remembering.**
+   `/cc-proxy:bench grades` wrote `~/.claude/cc-proxy/grades.json` and *nothing
+   read it* — `gradeOf()` returned the built-in table regardless. So the command
+   showed the operator one set of grades while discovery published another, and
+   measured on 2026-08-12 they disagreed on **13 of 24 ids** (`qwen3.8-max`
+   Strong vs Flagship, `glm-4.7` Economy vs Specialist, `claude-sonnet-5` Strong
+   vs Specialist, …). cc-operator dispatches on the published field, so it was
+   dispatching on the stale half. The lesson generalizes: a refresh command that
+   writes a file nobody reads looks exactly like a working feature — the
+   observable that catches it is "does a consumer's answer CHANGE after the
+   refresh", not "did the command succeed".
+   `gradeOf()` now reads `grades.json` at STARTUP, falling back to the built-in
+   table per-id. That is config, not state — the `~/.env` posture: written by a
+   human command, read once at boot, never on a request path. Invariant 2
+   forbids state carried BETWEEN requests, and a running proxy's answers still
+   never change for its lifetime. Locked by `test/grades-refresh.test.js`
+   (7 cases, mutation-verified), including the fallbacks that keep discovery
+   answering when the file is missing, truncated mid-write, or hand-edited to
+   junk, and the `constructor` prototype trap this repo has now hit three times.
+
+   **The live catalogs changed the SCALE of the remaining problem.**
    Grading was tractable while the catalog was ~27 hand-curated ids. Discovery
    now publishes ~320 usable models, almost all of them OpenRouter's, and the
    curated table covers a couple of dozen — so the overwhelming majority of the
    response ships the `Specialist` default, which reads as a claim and is really
    an absence. Measured 2026-08-07 against the live proxy: of 320 usable
-   entries, **299 are `Specialist`** (7 Flagship, 9 Strong, 5 Economy). Two consequences to decide on before item 9 is called done:
+   entries, **299 are `Specialist`** (7 Flagship, 9 Strong, 5 Economy). Two
+   consequences to decide on before item 9 is called done:
    (a) a consumer cannot distinguish "graded Specialist" from "never graded",
    which argues for OMITTING `grade` when there is no entry, exactly as
-   `context_window` already omits rather than sending `null`;
+   `context_window` already omits rather than sending `null` — a breaking change
+   for any consumer reading the field unconditionally, so it needs coordinating
+   with cc-operator rather than shipping quietly;
    (b) grading ~320 models by hand is not going to happen, so the eval harness
    below is now a prerequisite rather than a refinement — or the field is
    honestly scoped to the ids someone has actually assessed.

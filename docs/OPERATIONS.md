@@ -75,12 +75,16 @@ hook or by an explicitly-invoked command — never on a request path.
 | File | Written by | Notes |
 | --- | --- | --- |
 | `cc-proxy.log` | SessionStart hook (spawn stdio) | routing lines; rotated to `.1` past `PROXY_LOG_MAX_BYTES` |
-| `grades.json` | `/cc-proxy:bench grades` | model capability + price. Absent = the built-in `MODEL_GRADES` applies |
+| `grades.json` | `/cc-proxy:bench grades` | model capability + price. **Read by the proxy at startup** and published as `grade` on `/v1/models`; absent or malformed = the built-in `MODEL_GRADES` applies. Restart the proxy for a refresh to take effect |
 | `speed.jsonl` | `/cc-proxy:bench speed` | append-only route timings, one JSON object per line |
 | `*_cache.json` | statusline | 60 s quota/credit caches + the 1 s proxy-liveness probe |
 
 Nothing here is required: delete any of it and the proxy still starts and
-routes. `grades.json` and `speed.jsonl` grow only when you run the command.
+routes. `grades.json` and `speed.jsonl` are written only when you run the
+command. `grades.json` is the one file the proxy READS — at startup only, which
+is why it is config rather than state (invariant 2 forbids state carried
+between requests; a boot-time config read is the `~/.env` posture). A refresh
+therefore needs a proxy restart to reach `GET /v1/models`.
 
 **`bench speed` records `proxy_pid` and `proxy_version` per row on purpose.** A
 series that spans a proxy restart is measuring two different binaries; without

@@ -1,5 +1,8 @@
 // @ts-check
 
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { providerById } from "./providers.js";
 import { tierOf } from "./routes.js";
 
@@ -71,10 +74,64 @@ export const MODEL_GRADES = {
 export const DEFAULT_GRADE = "Specialist";
 
 /**
+ * Grades refreshed by `/cc-proxy:bench grades`, loaded ONCE at startup.
+ *
+ * This is config, not state — the same posture as `~/.env`: a file a human
+ * writes with a manual command, read when the process boots, never on a request
+ * path. Invariant 2 forbids state carried BETWEEN requests; it does not forbid
+ * reading configuration at startup. A running proxy's answers stay identical
+ * for its whole lifetime, which is the property that invariant protects.
+ *
+ * Without this the refresh command was a dead end: `bench grades` wrote
+ * `~/.claude/cc-proxy/grades.json` and NOTHING read it, so `/v1/models` kept
+ * publishing the built-in table while the command showed the operator a
+ * different one — measured 2026-08-12, they disagreed on 13 of 24 ids
+ * (`qwen3.8-max` Strong vs Flagship, `glm-4.7` Economy vs Specialist, …). That
+ * is the "same curated data in two places" drift `test/couplings.test.js`
+ * exists to catch, inside one repo, with cc-operator dispatching on the stale
+ * half.
+ *
+ * Bad JSON, a missing file, or an unreadable one all fall back to the built-in
+ * table in silence: discovery must keep answering. A malformed entry is skipped
+ * individually rather than voiding the whole file.
+ *
+ * @returns {Record<string, string>}
+ */
+function loadRefreshedGrades() {
+	try {
+		const file = path.join(os.homedir(), ".claude", "cc-proxy", "grades.json");
+		const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+		const models = parsed?.models;
+		if (!models || typeof models !== "object") return {};
+		/** @type {Record<string, string>} */
+		const out = {};
+		for (const [id, entry] of Object.entries(models)) {
+			const grade = /** @type {any} */ (entry)?.grade;
+			if (typeof grade === "string" && grade) out[id] = grade;
+		}
+		return out;
+	} catch {
+		return {};
+	}
+}
+
+const REFRESHED_GRADES = loadRefreshedGrades();
+
+/**
+ * Refreshed grade first, built-in table second, `Specialist` last.
+ *
+ * The default is a known wart, not a claim: of ~320 discovered ids only a
+ * couple of dozen are graded, so the overwhelming majority ship `Specialist`
+ * and a consumer cannot tell "assessed as Specialist" from "never assessed".
+ * Omitting the field instead — the rule `context_window` already follows — is
+ * the honest fix and a breaking change for consumers that read it
+ * unconditionally. → docs/BACKLOG.md item 9.
+ *
  * @param {string} id
  * @returns {string}
  */
 export function gradeOf(id) {
+	if (Object.hasOwn(REFRESHED_GRADES, id)) return REFRESHED_GRADES[id];
 	return Object.hasOwn(MODEL_GRADES, id) ? MODEL_GRADES[id] : DEFAULT_GRADE;
 }
 
