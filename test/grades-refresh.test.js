@@ -33,18 +33,22 @@ describe("grade refresh (bench grades -> gradeOf)", () => {
 		return home;
 	}
 
-	/** gradeOf(id) as evaluated in a fresh process rooted at `home`. */
+	/** gradeOf(id) as evaluated in a fresh process rooted at `home`.
+	 * JSON round-trip, not a bare write: since 0.6.1 gradeOf() returns UNDEFINED
+	 * for an unassessed id (there is no default), and `process.stdout.write(
+	 * undefined)` throws — which would have turned every absence assertion into a
+	 * subprocess crash indistinguishable from a real one. */
 	async function gradeIn(home, id) {
 		const url = new URL("../src/models.js", import.meta.url).href;
 		const { stdout } = await execFile(
 			process.execPath,
 			[
 				"-e",
-				`import(${JSON.stringify(url)}).then(m => process.stdout.write(m.gradeOf(${JSON.stringify(id)})))`,
+				`import(${JSON.stringify(url)}).then(m => process.stdout.write(JSON.stringify(m.gradeOf(${JSON.stringify(id)})) ?? "undefined"))`,
 			],
 			{ env: { ...process.env, HOME: home } },
 		);
-		return stdout.trim();
+		return JSON.parse(stdout.trim() === "undefined" ? "null" : stdout.trim());
 	}
 
 	after(() => {
@@ -52,11 +56,12 @@ describe("grade refresh (bench grades -> gradeOf)", () => {
 	});
 
 	it("a refreshed grade overrides the built-in table", async () => {
-		// glm-4.7 is Economy in MODEL_GRADES; the refresh says Specialist.
+		// glm-4.7 is Specialist in MODEL_GRADES; the refresh says Strong. The two
+		// must DIFFER or the assertion passes on the fallback and proves nothing.
 		const home = homeWith(
-			JSON.stringify({ models: { "glm-4.7": { grade: "Specialist", vendor: "Z.ai" } } }),
+			JSON.stringify({ models: { "glm-4.7": { grade: "Strong", vendor: "Z.ai" } } }),
 		);
-		assert.equal(await gradeIn(home, "glm-4.7"), "Specialist");
+		assert.equal(await gradeIn(home, "glm-4.7"), "Strong");
 	});
 
 	it("an id absent from the refresh still gets its built-in grade", async () => {
@@ -92,11 +97,47 @@ describe("grade refresh (bench grades -> gradeOf)", () => {
 		assert.equal(await gradeIn(home, "glm-4.7"), "Flagship", "good entry still applied");
 	});
 
+	// This file is written by an interruptible command and hand-editable, and its
+	// contents land on a PUBLISHED field another plugin dispatches on. Before
+	// 0.6.1 any non-empty string was accepted: a live proxy was made to publish
+	// `"grade":"SuperDuperMax"` and `"grade":"   "` on /v1/models. Membership in
+	// the allowed set is now the only way in — per ENTRY, so one bad row does not
+	// void a refresh of 300 good ones.
+	it("a grade outside the allowed set is skipped, not published", async () => {
+		const home = homeWith(
+			JSON.stringify({
+				models: {
+					"glm-5.2": { grade: "SuperDuperMax" },
+					"glm-5.1": { grade: "   " },
+					"glm-5": { grade: "" },
+					// Retired in 0.6.1 — an OLD grades.json still carries it, and it must
+					// not come back through the refresh door.
+					"glm-4.7": { grade: "Economy" },
+					// The one good row in a file full of bad ones.
+					"glm-4.6": { grade: "Flagship" },
+				},
+			}),
+		);
+		assert.equal(await gradeIn(home, "glm-5.2"), "Flagship", "unknown bucket -> built-in");
+		assert.equal(await gradeIn(home, "glm-5.1"), "Strong", "whitespace-only -> built-in");
+		assert.equal(await gradeIn(home, "glm-5"), "Strong", "empty string -> built-in");
+		assert.equal(await gradeIn(home, "glm-4.7"), "Specialist", "a retired value -> built-in");
+		assert.equal(await gradeIn(home, "glm-4.6"), "Flagship", "the valid entry still applies");
+	});
+
+	// The 0.6.1 contract: no default. An id nobody assessed has NO grade, and
+	// gradeOf() says so with undefined rather than a value a consumer would read
+	// as a verdict. `/v1/models` then omits the key (see test/models.test.js).
+	it("an id nobody has assessed gets no grade at all", async () => {
+		const home = homeWith(JSON.stringify({ models: { "glm-5.2": { grade: "Strong" } } }));
+		assert.equal(await gradeIn(home, "vendor/never-assessed"), null, "undefined, not a default");
+	});
+
 	// The prototype trap that already bit CONTEXT_WINDOW (0.5.1) and the renderer
 	// (0.6.1): ids come from a live catalog, and this file is user-writable.
 	it("an id named constructor cannot inherit from Object.prototype", async () => {
 		const home = homeWith(JSON.stringify({ models: { "glm-5.2": { grade: "Strong" } } }));
 		const grade = await gradeIn(home, "constructor");
-		assert.equal(grade, "Specialist", `expected the default, got: ${grade}`);
+		assert.equal(grade, null, `expected no grade, got: ${grade}`);
 	});
 });

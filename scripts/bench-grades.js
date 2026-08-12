@@ -127,9 +127,10 @@ const ANTHROPIC_LINE = ["opus", "fable", "sonnet", "haiku"];
  * Lower sorts first. Unlisted names sit between the two named groups, so a new
  * variant lands mid-pack rather than silently claiming Flagship.
  *
- * Note this is NOT the "flash is Economy" rule that was rejected: it decides
- * ORDER within a vendor, and says nothing about a model's absolute capability.
- * `deepseek-v4-flash` still measured equal to `glm-5.2` on implementation work.
+ * Note this is NOT the "flash is Economy" rule that was rejected (and whose
+ * value 0.6.1 then retired outright): it decides ORDER within a vendor, and says
+ * nothing about a model's absolute capability. `deepseek-v4-flash` still
+ * measured equal to `glm-5.2` on implementation work.
  *
  * @param {string} id
  * @returns {number}
@@ -161,10 +162,13 @@ export function variantRank(id) {
  * vendors — the part that genuinely needs measurement. It just no longer
  * decides the grade.
  *
- * Specialist means NARROW, not weak — it is the residual bucket. Economy is not
- * assigned from the name: a "flash"/"turbo" id is a latency and cost class, not
- * a capability rung (`deepseek-v4-flash` measured equal to `glm-5.2` on
- * implementation work).
+ * Specialist means NARROW, not weak — it is the residual ASSESSED bucket ("no
+ * assessment" is expressed by omitting `grade` entirely, never by a value).
+ * Economy was never assigned from the name here, because a "flash"/"turbo" id is
+ * a latency and cost class, not a capability rung (`deepseek-v4-flash` measured
+ * equal to `glm-5.2` on implementation work) — and 0.6.1 retired the value from
+ * `src/models.js` for exactly that reasoning, leaving the three grades this
+ * function has always emitted as the whole allowed set.
  *
  * @param {string[]} ids
  * @returns {Map<string, {grade: string, vendor: string}>} keyed by id

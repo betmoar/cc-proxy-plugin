@@ -111,10 +111,17 @@ session against it), which is why the table lives in `src/` rather than in the
 display layer — see CLAUDE.md "Reversed decisions".
 
 Entries also carry `provider`, `tier` (cost, from `src/routes.js` `tierOf()`),
-and `grade` (capability, from `src/models.js` `MODEL_GRADES`). Two fields
-because they are two axes: a resold model is expensive to reach and just as
-capable as its native twin. Collapsing them would force one of the two claims
-to be false.
+and — for an assessed model only — `grade` (capability, from `src/models.js`
+`gradeOf()`: the built-in `MODEL_GRADES` table overlaid with the `bench grades`
+refresh). Two fields because they are two axes: a resold model is expensive to
+reach and just as capable as its native twin. Collapsing them would force one of
+the two claims to be false, which is also why `Economy` was retired in 0.6.1 —
+it was a cost word living on the capability axis.
+
+`grade` follows `context_window`'s omission rule: three values (`Flagship`,
+`Strong`, `Specialist`) and no fourth for "unknown", because an unassessed id
+simply has no `grade` key. Most of the ~320 discovered ids are unassessed, and
+a default made the field claim otherwise about every one of them.
 
 ## Route selection
 

@@ -290,19 +290,29 @@ notes referencing "backlog item N" still resolve.
 
    **WIRED AND REFRESHABLE (0.6.1); the grades themselves still are not.**
    The map moved from `scripts/render-models.js` to `src/models.js` as
-   `MODEL_GRADES` (+ `gradeOf`, `DEFAULT_GRADE`), and every `/v1/models` entry
-   carries **`grade`** (capability) alongside **`tier`** (cost, 1–4 from
-   `src/routes.js`). `render-models.js` re-exports `MODEL_TIERS = MODEL_GRADES`
-   so the two cannot drift. That was the reversal this paragraph warned about:
-   a curated opinion is now API surface.
+   `MODEL_GRADES` (+ `gradeOf`), and every `/v1/models` entry carries **`grade`**
+   (capability) alongside **`tier`** (cost, 1–4 from `src/routes.js`) — for an
+   ASSESSED model only. That was the reversal this paragraph warned about: a
+   curated opinion is now API surface.
+
+   `render-models.js` no longer re-exports the table as its lookup path either.
+   `MODEL_TIERS = MODEL_GRADES` read the BUILT-IN table, so a `bench grades`
+   refresh moved the endpoint and left `docs/models.html` behind — the same
+   "curated data in two places" drift the file's own docstring forbids,
+   reintroduced by the very line meant to prevent it. Re-exporting a table is
+   not the same as sharing a lookup: the table is one input to `gradeOf()`, and
+   the refresh is the other. The renderer now calls `gradeOf()`, keeping only
+   its `<provider>:` tail fallback (which `gradeOf()` deliberately lacks —
+   `collectModels()` grades on the bare `entry.id` before the lens goes on).
 
    **The refresh loop was a DEAD END until 0.6.1 and this is worth remembering.**
    `/cc-proxy:bench grades` wrote `~/.claude/cc-proxy/grades.json` and *nothing
    read it* — `gradeOf()` returned the built-in table regardless. So the command
    showed the operator one set of grades while discovery published another, and
    measured on 2026-08-12 they disagreed on **13 of 24 ids** (`qwen3.8-max`
-   Strong vs Flagship, `glm-4.7` Economy vs Specialist, `claude-sonnet-5` Strong
-   vs Specialist, …). cc-operator dispatches on the published field, so it was
+   Strong vs Flagship, `glm-4.7` Economy vs Specialist — Economy being a value
+   the same release then retired, `claude-sonnet-5` Strong vs Specialist, …).
+   cc-operator dispatches on the published field, so it was
    dispatching on the stale half. The lesson generalizes: a refresh command that
    writes a file nobody reads looks exactly like a working feature — the
    observable that catches it is "does a consumer's answer CHANGE after the
@@ -312,30 +322,58 @@ notes referencing "backlog item N" still resolve.
    human command, read once at boot, never on a request path. Invariant 2
    forbids state carried BETWEEN requests, and a running proxy's answers still
    never change for its lifetime. Locked by `test/grades-refresh.test.js`
-   (7 cases, mutation-verified), including the fallbacks that keep discovery
-   answering when the file is missing, truncated mid-write, or hand-edited to
-   junk, and the `constructor` prototype trap this repo has now hit three times.
+   (mutation-verified), including the fallbacks that keep discovery answering
+   when the file is missing, truncated mid-write, or hand-edited to junk, and
+   the `constructor` prototype trap this repo has now hit three times.
 
-   **The live catalogs changed the SCALE of the remaining problem.**
-   Grading was tractable while the catalog was ~27 hand-curated ids. Discovery
-   now publishes ~320 usable models, almost all of them OpenRouter's, and the
-   curated table covers a couple of dozen — so the overwhelming majority of the
-   response ships the `Specialist` default, which reads as a claim and is really
-   an absence. Measured 2026-08-07 against the live proxy: of 320 usable
-   entries, **299 are `Specialist`** (7 Flagship, 9 Strong, 5 Economy). Two
-   consequences to decide on before item 9 is called done:
-   (a) a consumer cannot distinguish "graded Specialist" from "never graded",
-   which argues for OMITTING `grade` when there is no entry, exactly as
-   `context_window` already omits rather than sending `null` — a breaking change
-   for any consumer reading the field unconditionally, so it needs coordinating
-   with cc-operator rather than shipping quietly;
-   (b) grading ~320 models by hand is not going to happen, so the eval harness
-   below is now a prerequisite rather than a refinement — or the field is
-   honestly scoped to the ids someone has actually assessed.
+   The refresh is also VALIDATED as of 0.6.1, per entry. It used to accept any
+   non-empty string, and a live proxy was made to publish `"grade":"SuperDuperMax"`
+   and `"grade":"   "` on `/v1/models` from a hand-edited file — straight into
+   cc-operator's dispatch input. Anything outside the allowed set is skipped and
+   the id falls back to its built-in grade; skipping the ENTRY rather than the
+   file is the house style, because one bad row must not void a refresh of 300
+   good ones. Note the second thing this buys: a stale `grades.json` written
+   before the retirement below cannot smuggle `Economy` back onto the wire.
+
+   **DECIDED 2026-08-12 — the field now means what it says.** Both halves of the
+   question this item held open are answered, and both are breaking changes to a
+   published contract, affordable only because `grade` has no consumer yet
+   (cc-operator reads `/v1/models` for membership only).
+
+   (a) **An unassessed id OMITS `grade`.** `DEFAULT_GRADE` is deleted; `gradeOf()`
+   returns `undefined` and `withGrade()` leaves the key off — never `null`, never
+   an `"Ungraded"` placeholder, exactly the rule `context_window` follows, so a
+   consumer writes `"grade" in entry`. The measurement that forced it, taken
+   2026-08-07 against the live proxy: of 320 usable entries **299 were
+   `Specialist`** (7 Flagship, 9 Strong, 5 Economy) — a field claiming to have
+   assessed 320 models when it had assessed 21. The scale is why the default had
+   to go rather than be filled in: grading ~320 live-catalog ids by hand is not
+   going to happen, so the honest scope is "the ids someone actually assessed",
+   and the eval harness below stays a prerequisite for widening it.
+
+   (b) **`Economy` is retired.** It was a COST class ("cheap and fast") on a
+   CAPABILITY axis, which is the exact conflation the tier/grade split exists to
+   prevent — and the evidence was already in hand: `deepseek-v4-flash` measured
+   equal to `glm-5.2` on implementation work. It was also de-facto gone already,
+   since `scripts/bench-grades.js` emits only Flagship/Strong/Specialist, so any
+   operator who had run `bench grades` held an Economy-free table. The five ids
+   that carried it (`glm-4.7`, `glm-4.6`, `glm-4.5`, `glm-4.5-air`,
+   `qwen3.6-flash`) are `Specialist` — superseded generations still in service,
+   which is a narrow remit. The allowed set is now exactly
+   `Flagship | Strong | Specialist`, exported as `GRADES` and enforced on the
+   refresh path, with `Specialist` keeping its meaning: NARROW, the residual
+   ASSESSED bucket. "Unknown" is no longer a value; it is an absence.
+
+   The renderer needs a word for that absence anyway — a row still has to sort
+   and print something — so `render-models.js` names it `UNGRADED` ("ungraded",
+   lowercase, 0 of 4 dots, sorting below every grade). It is deliberately NOT in
+   `GRADES` and never reaches the wire. An empty scale reads as "no reading
+   taken"; one filled dot would have read as "measured, and weak".
 
    TWO FIELDS, TWO AXES, NEVER READ ONE OFF THE OTHER: `deepseek/deepseek-v4-pro`
-   is tier 4 (expensive, resold) and Flagship (same weights as native); a cheap
-   fast model can be tier 2 and Economy. Collapsing them would make one a lie.
+   is tier 4 (expensive, resold) and Flagship (same weights as native); the plan
+   serves that same Flagship at tier 2. Collapsing them would make one a lie —
+   and letting a cost word onto the capability axis is how `Economy` got there.
 
    **What remains open is the part that actually needed evals** — the grades are
    still one person's read of vendor marketing, now published where another tool

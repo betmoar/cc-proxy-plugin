@@ -1,9 +1,11 @@
 // Runs the "GLM entry coercion" scenario end-to-end inside a subprocess whose
 // HOME is set by the caller, then prints the resulting `glm:x` entry as JSON.
 // Needed because src/models.js reads ~/.claude/cc-proxy/grades.json ONCE at
-// module load (REFRESHED_GRADES) — see src/models.js:100-118 and
-// test/grades-refresh.test.js:18-20 for why an in-process HOME swap can't
-// isolate this from the developer's real grades.json.
+// module load (loadRefreshedGrades / REFRESHED_GRADES) — see the header comment
+// in test/grades-refresh.test.js for why an in-process HOME swap can't isolate
+// this from the developer's real grades.json. The isolation matters more since
+// 0.6.1: the caller asserts `x` carries NO `grade` key, and a real grades.json
+// naming `x` would put one there.
 import http from "node:http";
 import { collectModels } from "../../src/models.js";
 import { buildProviders } from "../../src/providers.js";

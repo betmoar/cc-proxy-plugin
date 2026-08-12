@@ -404,9 +404,11 @@ describe("collectModels fan-out", () => {
 		assert.deepEqual(_errors, [{ provider: "glm", message: "invalid response shape" }]);
 	});
 
-	// This id ("x") is not in MODEL_GRADES, so it grades on the built-in
-	// default unless a hostile ~/.claude/cc-proxy/grades.json overrides it
-	// (src/models.js:100-118 loads that file ONCE at module import). Run in a
+	// This id ("x") is in neither MODEL_GRADES nor (given the throwaway HOME) the
+	// refresh, so it must carry NO `grade` key at all — the 0.6.1 contract that
+	// replaced the `Specialist` default. A hostile ~/.claude/cc-proxy/grades.json
+	// naming `x` would add one (src/models.js loads that file ONCE at module
+	// import), which is what the isolation below is for. Run in a
 	// SUBPROCESS with a throwaway HOME — an in-process env.HOME swap can't
 	// isolate this, the module cache already pinned whatever the first import
 	// read. Same pattern as test/grades-refresh.test.js:18-45.
@@ -430,13 +432,20 @@ describe("collectModels fan-out", () => {
 				display_name: "x",
 				// Unix seconds from the backend, converted to ISO — see coerceCreated.
 				created_at: "2023-11-14T22:13:20.000Z",
-				// Route metadata, attached to every entry: which backend won it, what
-				// that route costs (tier 2 = plan), and how strong the model is. An
-				// uncurated id grades Specialist by default — a shape, not a rung.
+				// Route metadata, attached to every entry: which backend won it and
+				// what that route costs (tier 2 = plan). NO `grade` — nobody has
+				// assessed this id, and deepEqual is what pins the absence: an added
+				// default, an "Ungraded" placeholder, or `grade: null` all fail here.
 				provider: "glm",
 				tier: 2,
-				grade: "Specialist",
 			});
+			// Stated separately too, because deepEqual's failure output does not make
+			// it obvious WHICH key was the point. `in`, not `=== undefined`: the
+			// contract is the key's absence (`"grade" in entry` is how a consumer
+			// tells unassessed from assessed), and an explicit undefined would pass a
+			// value check while breaking that.
+			assert.ok(!("grade" in glmEntries[0]), "an unassessed id must omit grade, not default it");
+			assert.notEqual(glmEntries[0].grade, null, "and must never publish null");
 			assert.ok(!data.some((m) => m.id === ""));
 		} finally {
 			fs.rmSync(home, { recursive: true, force: true });

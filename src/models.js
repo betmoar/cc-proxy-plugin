@@ -21,8 +21,24 @@ import { tierOf } from "./routes.js";
  * (1 oauth-plan … 4 reseller); `grade` is what the model can DO. They are not
  * correlated and must never be read off one another: `deepseek/deepseek-v4-pro`
  * is tier 4 (expensive, resold) and Flagship (same weights as native), while a
- * cheap fast model can be tier 2 and Economy. Publishing them as one field
+ * plan-served flagship is tier 2 and Flagship. Publishing them as one field
  * would make one of those a lie.
+ *
+ * THREE VALUES, AND ONLY THREE: `Flagship` | `Strong` | `Specialist`. An id
+ * absent from this table (and from the refresh) has NO grade — the field is
+ * OMITTED on the wire, never `null` and never a placeholder string. That is the
+ * same rule CONTEXT_WINDOW follows, and for the same reason: a consumer must be
+ * able to tell "never assessed" from "assessed", which `"grade" in entry`
+ * answers and a default value destroys.
+ *
+ * `Economy` was RETIRED in 0.6.1 and must not come back: it is a COST class
+ * ("cheap and fast") sitting on a CAPABILITY axis, which is precisely the
+ * conflation the tier/grade split exists to prevent — `deepseek-v4-flash`
+ * measured equal to `glm-5.2` on implementation work. The five ids that carried
+ * it are now `Specialist`, which is where `scripts/bench-grades.js` already put
+ * them: that script emits only Flagship/Strong/Specialist, so any operator who
+ * has run `/cc-proxy:bench grades` has had an Economy-free table for a while.
+ * `Specialist` means NARROW — the residual ASSESSED bucket, not "unknown".
  *
  * Grade attaches to the MODEL; tier attaches to the (id, backend) pair. That is
  * why the dated plan build below grades as its bare sibling.
@@ -33,7 +49,7 @@ import { tierOf } from "./routes.js";
  * need not appear in discovery at all: `claude-haiku-*` is pinned by invariant
  * 4 and deliberately unlisted, so a lookup must tolerate a miss.
  *
- * @type {Record<string, "Flagship" | "Strong" | "Specialist" | "Economy">}
+ * @type {Record<string, "Flagship" | "Strong" | "Specialist">}
  */
 export const MODEL_GRADES = {
 	// GLM
@@ -41,10 +57,13 @@ export const MODEL_GRADES = {
 	"glm-5.1": "Strong",
 	"glm-5": "Strong",
 	"glm-5-turbo": "Specialist",
-	"glm-4.7": "Economy",
-	"glm-4.6": "Economy",
-	"glm-4.5": "Economy",
-	"glm-4.5-air": "Economy",
+	// Were `Economy` until 0.6.1 retired that value — see the header. Each is a
+	// superseded generation still in service, which is a NARROW remit, not a
+	// cheapness claim.
+	"glm-4.7": "Specialist",
+	"glm-4.6": "Specialist",
+	"glm-4.5": "Specialist",
+	"glm-4.5-air": "Specialist",
 	// DeepSeek (native)
 	"deepseek-v4-pro": "Flagship",
 	"deepseek-v4-flash": "Strong",
@@ -59,7 +78,7 @@ export const MODEL_GRADES = {
 	"qwen3.8-max": "Strong",
 	"qwen3.7-max": "Strong",
 	"qwen3.7-plus": "Specialist",
-	"qwen3.6-flash": "Economy",
+	"qwen3.6-flash": "Specialist",
 	// Plan-served DeepSeek build — graded as its bare sibling deepseek-v4-flash,
 	// which it is a dated snapshot of. Capability, not cost: reaching it through
 	// the plan is cheaper, but that is the tier's business, not the grade's.
@@ -70,8 +89,19 @@ export const MODEL_GRADES = {
 	"claude-sonnet-5": "Strong",
 };
 
-/** Grade of a model id; unknown ids are Specialist (a shape, not a rung). */
-export const DEFAULT_GRADE = "Specialist";
+/**
+ * The complete set of grades that may reach the wire. There is no default and
+ * no "unknown" member: an unassessed id omits the field entirely (see gradeOf).
+ *
+ * Also the VALIDATOR for the refreshed table below. `grades.json` is written by
+ * a command that can be interrupted mid-write and lives in a directory the user
+ * edits by hand, so an arbitrary string there is not a grade — probed on a live
+ * proxy 2026-08-12, a hand-edited file published `"grade":"SuperDuperMax"` and
+ * `"grade":"   "` straight onto `/v1/models`, i.e. straight into cc-operator's
+ * dispatch input. Membership here is the only way in.
+ * @type {ReadonlySet<string>}
+ */
+export const GRADES = new Set(["Flagship", "Strong", "Specialist"]);
 
 /**
  * Grades refreshed by `/cc-proxy:bench grades`, loaded ONCE at startup.
@@ -86,14 +116,16 @@ export const DEFAULT_GRADE = "Specialist";
  * `~/.claude/cc-proxy/grades.json` and NOTHING read it, so `/v1/models` kept
  * publishing the built-in table while the command showed the operator a
  * different one — measured 2026-08-12, they disagreed on 13 of 24 ids
- * (`qwen3.8-max` Strong vs Flagship, `glm-4.7` Economy vs Specialist, …). That
- * is the "same curated data in two places" drift `test/couplings.test.js`
+ * (`qwen3.8-max` Strong vs Flagship, `claude-sonnet-5` Strong vs Specialist, …).
+ * That is the "same curated data in two places" drift `test/couplings.test.js`
  * exists to catch, inside one repo, with cc-operator dispatching on the stale
  * half.
  *
  * Bad JSON, a missing file, or an unreadable one all fall back to the built-in
  * table in silence: discovery must keep answering. A malformed entry is skipped
- * individually rather than voiding the whole file.
+ * individually rather than voiding the whole file — including one whose grade
+ * is not a member of GRADES, which is the difference between a stale answer and
+ * a fabricated one on a published field.
  *
  * @returns {Record<string, string>}
  */
@@ -106,8 +138,11 @@ function loadRefreshedGrades() {
 		/** @type {Record<string, string>} */
 		const out = {};
 		for (const [id, entry] of Object.entries(models)) {
+			// Membership, not truthiness. A non-empty string used to be enough, which
+			// let a hand-edited file put `"SuperDuperMax"` and `"   "` on the wire —
+			// and would let a retired `"Economy"` back in from an old file.
 			const grade = /** @type {any} */ (entry)?.grade;
-			if (typeof grade === "string" && grade) out[id] = grade;
+			if (typeof grade === "string" && GRADES.has(grade)) out[id] = grade;
 		}
 		return out;
 	} catch {
@@ -118,21 +153,42 @@ function loadRefreshedGrades() {
 const REFRESHED_GRADES = loadRefreshedGrades();
 
 /**
- * Refreshed grade first, built-in table second, `Specialist` last.
+ * Refreshed grade first, built-in table second, UNDEFINED last.
  *
- * The default is a known wart, not a claim: of ~320 discovered ids only a
- * couple of dozen are graded, so the overwhelming majority ship `Specialist`
- * and a consumer cannot tell "assessed as Specialist" from "never assessed".
- * Omitting the field instead — the rule `context_window` already follows — is
- * the honest fix and a breaking change for consumers that read it
- * unconditionally. → docs/BACKLOG.md item 9.
+ * There is deliberately no default. Measured 2026-08-07 against the live proxy:
+ * of 320 usable entries, 299 shipped `Specialist` — a value a consumer could
+ * not distinguish from "never assessed", so the field read as a verdict on 299
+ * models nobody had looked at. Returning undefined (and omitting the key, see
+ * withGrade) is the same rule `context_window` already follows, and it is a
+ * BREAKING change for a consumer reading the field unconditionally. Affordable
+ * because `grade` has no consumer in this repo and cc-operator reads
+ * `/v1/models` for membership only. → docs/BACKLOG.md item 9.
+ *
+ * Callers must tolerate undefined: `claude-haiku-*` is unlisted by invariant 4,
+ * and any of ~320 live-catalog ids may simply never have been assessed.
  *
  * @param {string} id
- * @returns {string}
+ * @returns {string | undefined}
  */
 export function gradeOf(id) {
 	if (Object.hasOwn(REFRESHED_GRADES, id)) return REFRESHED_GRADES[id];
-	return Object.hasOwn(MODEL_GRADES, id) ? MODEL_GRADES[id] : DEFAULT_GRADE;
+	return Object.hasOwn(MODEL_GRADES, id) ? MODEL_GRADES[id] : undefined;
+}
+
+/**
+ * Attach `grade` to a discovery entry when the id has one; otherwise return the
+ * entry unchanged — field OMITTED, never `null`, never a placeholder. Exactly
+ * withContextWindow()'s contract, deliberately: `"grade" in entry` is how a
+ * consumer tells assessed from unassessed, and `{...e, grade: undefined}` would
+ * break that for anything reading the in-process object (JSON.stringify drops
+ * the key, but `"grade" in entry` is then true before serialization).
+ * @param {ModelEntry} entry
+ * @param {string} lookupId the BARE vendor id, which is what the table is keyed on
+ * @returns {ModelEntry}
+ */
+export function withGrade(entry, lookupId) {
+	const grade = gradeOf(lookupId);
+	return grade === undefined ? entry : { ...entry, grade };
 }
 
 /**
@@ -771,15 +827,15 @@ export async function collectModels(config) {
 		let at = data.length;
 		while (at > 0 && data[at - 1].provider !== provider) at--;
 		if (at === 0) at = data.length;
+		// Window and grade are looked up on the BARE id, then the (possibly
+		// prefixed) id is applied — both curated tables are keyed by vendor id, and
+		// an alias is the same model reached another way, so it has the same window
+		// and the same grade. `grade` is ABSENT, not null, for an unassessed id.
 		data.splice(at, 0, {
-			// Window is looked up on the BARE id, then the (possibly prefixed) id is
-			// applied — the curated table is keyed by vendor id, and an alias is the
-			// same model reached another way, so it has the same window.
-			...withContextWindow(entry),
+			...withGrade(withContextWindow(entry), entry.id),
 			id,
 			provider,
 			tier: tierOf(provider),
-			grade: gradeOf(entry.id),
 		});
 	}
 }

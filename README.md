@@ -93,13 +93,21 @@ without a curated window (the OpenRouter-prefixed `vendor/model` ids, and
 `claude-*`) **omit the field entirely** rather than sending `null`, so a
 consumer tells "unknown" from "known" with `"context_window" in entry`.
 
-Every entry also carries `provider` (which backend serves it), `tier`, and
-`grade`. **`tier` and `grade` are different axes and must not be read off one
-another:** `tier` is what the route COSTS (`1` Anthropic/OAuth, `2` prepaid plan,
-`3` metered credits, `4` reseller), `grade` is what the model can DO
-(`Flagship` / `Strong` / `Specialist` / `Economy`, unknown ids default
-`Specialist`). A resold Flagship is tier 4 and Flagship; a cheap fast model is
-tier 2 and Economy.
+Every entry also carries `provider` (which backend serves it) and `tier`, plus
+`grade` **when the model has been assessed**. **`tier` and `grade` are different
+axes and must not be read off one another:** `tier` is what the route COSTS
+(`1` Anthropic/OAuth, `2` prepaid plan, `3` metered credits, `4` reseller),
+`grade` is what the model can DO — exactly one of `Flagship`, `Strong`, or
+`Specialist` (NARROW, not weak). A resold Flagship is tier 4 and Flagship; a
+plan-served flagship is tier 2 and Flagship.
+
+An id nobody has assessed **omits `grade` entirely**, the same rule
+`context_window` follows — check with `"grade" in entry`, never a null check,
+and never assume a value. Most of the ~320 discovered ids are unassessed. This
+changed in 0.6.1: they previously all shipped `Specialist`, which read as a
+verdict on models nobody had looked at. `Economy` was retired in the same
+release — it named a *cost* class on a *capability* axis, which is the one thing
+the tier/grade split exists to prevent.
 
 ## Choosing a route
 

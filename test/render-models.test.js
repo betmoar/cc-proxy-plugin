@@ -2,6 +2,7 @@ import { strict as assert } from "node:assert";
 import { execFile as execFileCb } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
+import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -9,12 +10,13 @@ import { promisify } from "node:util";
 
 const execFile = promisify(execFileCb);
 import { CONTEXT_WINDOW } from "../scripts/list-models.js";
-import { MODEL_TIERS, conduitSvg, groupByProvider } from "../scripts/render-models.js";
+import { MODEL_TIERS, UNGRADED, conduitSvg, groupByProvider } from "../scripts/render-models.js";
 import {
 	DEEPSEEK_PRICING,
 	DEFAULT_CLAUDE_MODELS,
 	DEFAULT_OPENROUTER_MODELS,
 	DEFAULT_QWEN_MODELS,
+	GRADES,
 } from "../src/models.js";
 
 // MODEL_TIERS is the display layer's only curated data (like CONTEXT_WINDOW).
@@ -49,11 +51,17 @@ describe("render-models MODEL_TIERS", () => {
 		}
 	});
 
-	it("every tier value is one of the four known labels", () => {
-		const known = new Set(["Flagship", "Strong", "Specialist", "Economy"]);
+	it("every tier value is one of the three known labels", () => {
+		// GRADES is the source of truth, not a copy of the list: it is what
+		// loadRefreshedGrades() validates against, so a value legal in the built-in
+		// table but illegal from a refresh (or vice versa) is impossible by
+		// construction. `Economy` was retired in 0.6.1 — a cost class on a
+		// capability axis — and its absence from GRADES is what keeps it out.
 		for (const v of Object.values(MODEL_TIERS)) {
-			assert.ok(known.has(v), `unknown tier value: ${v}`);
+			assert.ok(GRADES.has(v), `unknown tier value: ${v}`);
 		}
+		assert.ok(!GRADES.has("Economy"), "Economy is retired and must not be re-added");
+		assert.deepEqual([...GRADES].sort(), ["Flagship", "Specialist", "Strong"]);
 	});
 
 	it("every CONTEXT_WINDOW id also has a tier (they must stay in step)", () => {
@@ -82,7 +90,8 @@ describe("render-models derivations", () => {
 			.get("glm")
 			.models.map((m) => m.id);
 		// glm-5.2 Flagship, then the two Strong (5.1 before 5 — numeric collation,
-		// not lexicographic, which would invert them), then Economy newest-first.
+		// not lexicographic, which would invert them), then the two Specialist
+		// (superseded generations; `Economy` until 0.6.1 retired it) newest-first.
 		assert.deepEqual(ids, ["glm-5.2", "glm-5.1", "glm-5", "glm-4.7", "glm-4.5"]);
 	});
 
@@ -342,7 +351,59 @@ describe("route aliases keep their model's grade", () => {
 		// vendor/model is a distinct deployment, not an alias of the bare id.
 		assert.equal(MODEL_TIERS["deepseek/deepseek-v4-pro"], "Flagship", "curated separately");
 		const [card] = groupByProvider([{ id: "vendor/never-seen", provider: "openrouter" }]).values();
-		assert.equal(card.models[0].tier, "Specialist", "unknown slash id falls to the default");
+		// Renders as ungraded, NOT as Specialist: 0.6.1 retired the default, and a
+		// page that printed a grade the API omits would be inventing one. `ungraded`
+		// is this layer's word for the absence, not a fourth grade — it is
+		// deliberately not in GRADES.
+		assert.equal(card.models[0].tier, UNGRADED, "an unassessed slash id renders as ungraded");
+		assert.ok(!GRADES.has(UNGRADED), "the ungraded marker must never be a publishable grade");
+	});
+
+	// Defect (4): the renderer read the built-in MODEL_GRADES table directly
+	// (`MODEL_TIERS = MODEL_GRADES`, then a lookup), so after `bench grades`
+	// wrote ~/.claude/cc-proxy/grades.json the endpoint and docs/models.html
+	// disagreed about the same model — the exact "same curated data in two
+	// places" drift the file's own docstring forbids. It now calls gradeOf(),
+	// which applies the refresh. Subprocess with a throwaway HOME, because both
+	// modules read that file ONCE at import.
+	it("renders the REFRESHED grade, agreeing with gradeOf() — including for an alias", async () => {
+		const home = fs.mkdtempSync(path.join(os.tmpdir(), "ccp-render-grades-"));
+		try {
+			const dir = path.join(home, ".claude", "cc-proxy");
+			fs.mkdirSync(dir, { recursive: true });
+			// deepseek-v4-pro is Flagship built-in; the refresh demotes it to
+			// Specialist, so a stale table read is visible as a wrong answer rather
+			// than an accidental match.
+			fs.writeFileSync(
+				path.join(dir, "grades.json"),
+				JSON.stringify({ models: { "deepseek-v4-pro": { grade: "Specialist" } } }),
+			);
+			const script = path.join(
+				path.dirname(fileURLToPath(import.meta.url)),
+				"./fixtures/render-grade-agreement.mjs",
+			);
+			const { stdout } = await execFile(process.execPath, [script], {
+				env: { ...process.env, HOME: home },
+			});
+			const got = JSON.parse(stdout);
+			assert.deepEqual(
+				got,
+				{
+					bare: { rendered: "Specialist", gradeOf: "Specialist" },
+					// The alias must resolve through the bare tail. gradeOf() has NO tail
+					// fallback (the API grades on entry.id before the lens is applied),
+					// so the renderer keeps that fallback itself — dropping it would
+					// silently render every `<provider>:` row as ungraded.
+					// `null` is the fixture's wire encoding of undefined — JSON drops an
+					// undefined-valued key, which would make the absence unassertable.
+					alias: { rendered: "Specialist", gradeOf: null },
+					unassessed: { rendered: UNGRADED, gradeOf: null },
+				},
+				`renderer and gradeOf disagree: ${stdout}`,
+			);
+		} finally {
+			fs.rmSync(home, { recursive: true, force: true });
+		}
 	});
 });
 
@@ -488,13 +549,13 @@ describe("render-models against a live-shaped proxy", () => {
 	});
 
 	it("orders by grade first, then newest within a grade", async () => {
-		// A fresh Economy model must not displace a Flagship on a capped card —
+		// A fresh weaker model must not displace a Flagship on a capped card —
 		// sorting on date alone was the tempting simplification.
 		const html = await render([
 			{
 				type: "model",
 				id: "glm-4.5",
-				display_name: "old-economy",
+				display_name: "old-specialist",
 				provider: "glm",
 				created_at: "2020-01-01T00:00:00Z",
 			},
@@ -508,15 +569,29 @@ describe("render-models against a live-shaped proxy", () => {
 			{
 				type: "model",
 				id: "glm-4.6",
-				display_name: "new-economy",
+				display_name: "new-specialist",
 				provider: "glm",
 				created_at: "2026-01-01T00:00:00Z",
+			},
+			// Never assessed, and the NEWEST of the four: it must still sort last.
+			// Absence of a grade cannot buy a row the top of the card, which is what
+			// an "unknown sorts first" rank would have done.
+			{
+				type: "model",
+				id: "glm-9.9-unassessed",
+				display_name: "brand-new-unknown",
+				provider: "glm",
+				created_at: "2027-01-01T00:00:00Z",
 			},
 		]);
 		const ids = [...cardFor(html, "GLM").matchAll(/<span class="mname">([^<]+)<\/span>/g)].map(
 			(m) => m[1],
 		);
 		assert.equal(ids[0], "glm-5.2", "Flagship leads despite being the oldest");
-		assert.deepEqual(ids.slice(1), ["glm-4.6", "glm-4.5"], "within Economy, newest first");
+		assert.deepEqual(
+			ids.slice(1),
+			["glm-4.6", "glm-4.5", "glm-9.9-unassessed"],
+			"within Specialist newest first, and the ungraded row sorts below every grade",
+		);
 	});
 });

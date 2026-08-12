@@ -14,13 +14,17 @@
 //
 // NOTHING is curated here any more. The intelligence tier now lives in
 // src/models.js as MODEL_GRADES and is published on /v1/models as `grade`;
-// MODEL_TIERS below is a re-export so this layer keeps its vocabulary while
-// drift stays impossible. That followed CONTEXT_WINDOW's move in 0.5.1, for the
-// same reason: a second consumer (cc-operator, dispatching by model strength)
-// needed it programmatically, and the alternative was the same curated table in
-// two repos. The caveat that reversal carried still stands — a published grade
-// is API surface, so a new model with no entry silently ships "Specialist", and
-// the grades themselves still want evals (docs/BACKLOG.md item 9).
+// this layer keeps its vocabulary but reads through gradeOf(), the SAME
+// function the endpoint calls. Re-exporting the raw MODEL_GRADES table was not
+// enough: gradeOf() also applies the `bench grades` refresh from
+// ~/.claude/cc-proxy/grades.json, so a table read went stale the moment an
+// operator refreshed and the page then disagreed with /v1/models about the same
+// model. That followed CONTEXT_WINDOW's move in 0.5.1, for the same reason: a
+// second consumer (cc-operator, dispatching by model strength) needed it
+// programmatically, and the alternative was the same curated table in two
+// repos. A model nobody has assessed has NO grade — the endpoint omits the
+// field and this page renders it as "ungraded" (0 of 4 dots), sorted last.
+// The grades themselves still want evals (docs/BACKLOG.md item 9).
 //
 // Lookup keys are VENDOR ids. A `<provider>:` route alias is stripped before the
 // lookup (tierFor) — it is the same model reached another way. Pinned by
@@ -28,7 +32,7 @@
 // caught at the test gate.
 
 import { loadEnv } from "../src/env.js";
-import { DEFAULT_GRADE, MODEL_GRADES } from "../src/models.js";
+import { MODEL_GRADES, gradeOf } from "../src/models.js";
 import { buildProviders } from "../src/providers.js";
 import { CONTEXT_WINDOW, DISPLAY, attribute, registeredProviders } from "./list-models.js";
 
@@ -62,30 +66,42 @@ const ROW_LIMIT = (() => {
  * programmatically, exactly as CONTEXT_WINDOW moved in 0.5.1. This re-export
  * keeps the display layer's vocabulary while making drift impossible.
  *
+ * READ-ONLY, and NOT the lookup path — tierFor() below goes through gradeOf(),
+ * which also applies the `bench grades` refresh. This export exists for the
+ * coverage assertions in test/render-models.test.js (every discovery id has a
+ * built-in grade); using it to render would republish the pre-refresh table.
+ *
  * Do not reintroduce a local copy: "the same curated data in two places" is the
  * failure `test/couplings.test.js` exists to catch.
- * @type {Record<string, "Flagship" | "Strong" | "Specialist" | "Economy">}
+ * @type {Record<string, "Flagship" | "Strong" | "Specialist">}
  */
 export const MODEL_TIERS = MODEL_GRADES;
 
-const DEFAULT_TIER = DEFAULT_GRADE;
+/** How an UNASSESSED model renders. Not a grade — `/v1/models` omits the field
+ * for these ids (0.6.1 retired the `Specialist` default, which read as a verdict
+ * on 299 of 320 models nobody had looked at). A row still has to sort and still
+ * has to print something, so the absence gets an explicit name here rather than
+ * inheriting a default the API no longer has. Lowercase deliberately: the three
+ * real grades are proper nouns, this is a statement about our knowledge. */
+export const UNGRADED = "ungraded";
 
-/** The rank of a tier, for ordering rows Flagship → Economy. Unknown ranks below Economy. */
-const TIER_ORDER = { Flagship: 0, Strong: 1, Specialist: 2, Economy: 3 };
+/** The rank of a tier, for ordering rows Flagship → ungraded (last). */
+const TIER_ORDER = { Flagship: 0, Strong: 1, Specialist: 2 };
 const tierRank = (t) => TIER_ORDER[t] ?? 99;
 // Strips a `<provider>:` route selector before the lookup: the grade table is
 // keyed on VENDOR ids, and an alias is the same model reached another way — so
-// `deepseek:deepseek-v4-pro` must grade Flagship like its bare form, not fall to
-// the Specialist default. (Not `/`: an OpenRouter `vendor/model` id is its own
-// key, deliberately — see CONTEXT_WINDOW's "keyed on the EXACT id" note.)
-// `Object.hasOwn`, not a bare lookup — the same trap src/routes.js tierOf() and
-// src/models.js withContextWindow() guard. Ids come from a LIVE upstream
-// catalog, so a vendor id of `constructor`/`toString` inherits from
-// Object.prototype and `??` cannot catch it (a function is neither null nor
-// undefined): the row would render its tier as "function Object() { [native
-// code] }" and sort at rank 99.
-const gradeIn = (id) => (Object.hasOwn(MODEL_TIERS, id) ? MODEL_TIERS[id] : undefined);
-const tierFor = (id) => gradeIn(id) ?? gradeIn(id.slice(id.indexOf(":") + 1)) ?? DEFAULT_TIER;
+// `deepseek:deepseek-v4-pro` must grade Flagship like its bare form, not render
+// as ungraded. (Not `/`: an OpenRouter `vendor/model` id is its own key,
+// deliberately — see CONTEXT_WINDOW's "keyed on the EXACT id" note.)
+//
+// gradeOf() does NOT do this tail fallback — the API never needs it, because
+// collectModels() grades on the bare `entry.id` BEFORE applying the lens, while
+// this page only ever sees the published (already-prefixed) id. So the aliasing
+// lives here, and it is two gradeOf() calls rather than one lookup with a
+// fallback key. The prototype trap the old table lookup had to guard
+// (`constructor` inheriting a function from Object.prototype) is gone with the
+// table read: gradeOf() uses Object.hasOwn internally and returns undefined.
+const tierFor = (id) => gradeOf(id) ?? gradeOf(id.slice(id.indexOf(":") + 1)) ?? UNGRADED;
 
 /** Which provider legs pull their list live vs. ship a curated static list.
  * As of 2026-08-06 only Claude is static: it has no discoverable catalog
@@ -113,8 +129,10 @@ const LIVE_LEGS = new Set(["glm", "deepseek", "openrouter", "qwen"]);
 const QWEN_PLAN_ALSO = new Set(["glm-5.2", "deepseek-v4-pro"]);
 
 // The number of dots a tier fills, of 4. Hue-independent ordinal encoding — a
-// tier never relies on color alone (the dot fill carries it).
-const DOTS = { Flagship: 4, Strong: 3, Specialist: 2, Economy: 1 };
+// tier never relies on color alone (the dot fill carries it). An unassessed row
+// fills NONE: an empty scale reads as "no reading taken", which is the claim,
+// whereas one filled dot would read as "measured, and weak".
+const DOTS = { Flagship: 4, Strong: 3, Specialist: 2, [UNGRADED]: 0 };
 
 /** Monospace glyph, identity colour, and the two ORTHOGONAL facts about how a
  * backend is reached. Neither is derivable from the other, and neither is a
@@ -176,7 +194,7 @@ async function fetchJson(url) {
 	return res.json();
 }
 
-/** Group discovery rows into per-provider cards, ordered Flagship→Economy within.
+/** Group discovery rows into per-provider cards, ordered Flagship→ungraded within.
  * @param {ReturnType<typeof attribute>[] & any[]} rows
  * @param {Map<string, { models: any[], live: boolean }>} acc
  */
@@ -206,7 +224,7 @@ export function groupByProvider(rows) {
 	}
 	// Grade first, then NEWEST within a grade, then id descending as the final
 	// tie-break. Grade leads deliberately: sorting by date alone lets a fresh
-	// Economy model push a Flagship off a capped card, and the reader scanning
+	// superseded model push a Flagship off a capped card, and the reader scanning
 	// for "the good one" wants capability first. Date only orders WITHIN a grade,
 	// where every candidate is equally strong and recency is the useful signal.
 	//
@@ -539,7 +557,7 @@ function renderHtml({ rows, defaultBackend, errors, providerIds }) {
 
     <div class="legend">
       <span class="lk">Intelligence tier</span>
-      ${["Flagship", "Strong", "Specialist", "Economy"].map((t) => `<span class="tk">${tierDots(t)}</span>`).join("")}
+      ${["Flagship", "Strong", "Specialist", UNGRADED].map((t) => `<span class="tk">${tierDots(t)}</span>`).join("")}
     </div>
     <div class="legend">
       <span class="lk">Route</span>
@@ -562,6 +580,7 @@ ${cards}
         <div><dt><span class="tag live">live</span></dt><dd>Model list fetched from the provider at discovery.</dd></div>
         <div><dt><span class="tag">key ✓</span></dt><dd>Static list the plugin ships; the key is present and the leg is routable.</dd></div>
         <div><dt>${tierDots("Strong")}</dt><dd>Qualitative capability tier. Ordinal, hue-independent — the fill carries it, never the color.</dd></div>
+        <div><dt>${tierDots(UNGRADED)}</dt><dd>Nobody has assessed this model. An empty scale is an absence, not a low score — <code>/v1/models</code> omits <code>grade</code> for these ids rather than guessing one.</dd></div>
         <div><dt><span class="win">200K</span></dt><dd>Context window, where the vendor documents one.</dd></div>
         <div><dt><span class="dup">also native</span></dt><dd>Reachable two ways — direct, and via the OpenRouter aggregate.</dd></div>
         <div><dt><span class="dup">also on plan</span></dt><dd>The Qwen plan serves this model too. It still routes to the provider shown — the bare id can't say which account pays, and the plan's gateway injects a preamble, so the two routes are not interchangeable.</dd></div>

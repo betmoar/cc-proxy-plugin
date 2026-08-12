@@ -74,8 +74,10 @@ Steps:
    backend. What is published *bare* is decided by namespace ownership, not by
    who wins the cost rank: ids outside your namespace publish as
    `<provider>:<id>`. Add a `MODEL_GRADES` entry per model in `src/models.js`
-   or discovery silently publishes `Specialist`. `grade` (capability) and
-   `tier` (cost) are separate fields — never derive one from the other.
+   (`Flagship`, `Strong`, or `Specialist` — those three, nothing else) or
+   discovery publishes no `grade` at all for it, which is honest but useless to
+   a consumer dispatching by strength. `grade` (capability) and `tier` (cost)
+   are separate fields — never derive one from the other.
 7. **Add tests** in `test/providers.test.js` (registry shape, auth, `match`),
    `test/router.test.js` (routing), and `test/routes.test.js` (the coherence
    locks pick up new catalog/ROUTES entries automatically). Live integration
