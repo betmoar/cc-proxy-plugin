@@ -20,7 +20,7 @@
 // needed it programmatically, and the alternative was the same curated table in
 // two repos. The caveat that reversal carried still stands — a published grade
 // is API surface, so a new model with no entry silently ships "Specialist", and
-// the grades themselves still want evals (CLAUDE.md backlog item 9).
+// the grades themselves still want evals (docs/BACKLOG.md item 9).
 //
 // Lookup keys are VENDOR ids. A `<provider>:` route alias is stripped before the
 // lookup (tierFor) — it is the same model reached another way. Pinned by
@@ -118,7 +118,7 @@ const DOTS = { Flagship: 4, Strong: 3, Specialist: 2, Economy: 1 };
 
 /** Monospace glyph, identity colour, and the two ORTHOGONAL facts about how a
  * backend is reached. Neither is derivable from the other, and neither is a
- * capability claim (see CLAUDE.md backlog items 8 and 9):
+ * capability claim (see docs/BACKLOG.md items 8 and 9):
  *
  *   `source` — distance from the weights. `native` = the model's own provider;
  *     `plan` = a contracted capacity deal reselling it (the vendor provisions
