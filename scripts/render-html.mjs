@@ -37,6 +37,33 @@ const out = path.join(repo, "docs", "models.html");
 const realHome = os.homedir();
 const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "ccproxy-render-"));
 
+/** Remove the temp home. Idempotent (`force: true`), because both `finally` and
+ * a signal handler can reach it. */
+const cleanup = () => fs.rmSync(tmpHome, { recursive: true, force: true });
+
+// `finally` is not enough: a SIGNAL does not unwind the stack, so Ctrl-C during
+// a slow render walks away from the cleanup exactly the way `process.exit()` did
+// before 02ec139 (measured both). The window is the whole render — seconds of
+// live HTTP to four backends — and what leaks is a directory holding a SYMLINK
+// TO ~/.env. Re-raise after cleaning so the exit status still reads as "killed
+// by a signal" rather than a tidy exit 0 — but REMOVE THE LISTENER FIRST, or the
+// re-raise re-enters this same handler rather than reaching Node's default
+// disposition, and spins (measured: 5 re-entries and still climbing).
+//
+// DELAYED, not instant: execFileSync is SYNCHRONOUS, so it blocks the event loop
+// and no handler runs until the child returns. Measured — Ctrl-C mid-render
+// leaves the process alive until the renderer's own fetch timeout expires, and
+// the directory is removed then. That is a bounded wait (the renderer caps each
+// leg at ~3s), and the alternative is an async rewrite whose only benefit is a
+// faster Ctrl-C. Cleaning late still beats not cleaning.
+for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+	process.on(sig, () => {
+		cleanup();
+		process.removeAllListeners(sig);
+		process.kill(process.pid, sig);
+	});
+}
+
 try {
 	// The one thing the renderer needs from a real home: the API keys that decide
 	// which legs register. Symlinked, not copied — nothing here should be a second
@@ -84,7 +111,19 @@ try {
 	// committed — the reader only learns a backend was missing by opening the file.
 	// Read them back out of the markup rather than re-fetching: this is the exact
 	// page about to be written, so the two can never disagree.
-	const warnings = [...html.matchAll(/<div class="warn">([^<]*)<\/div>/g)].map((m) => m[1]);
+	// The banner text is HTML-escaped (render-models.js esc()), which is what
+	// keeps `[^<]*` safe against a message containing angle brackets — an
+	// ECONNREFUSED naming `<host:443>` arrives as `&lt;host:443&gt;` and cannot
+	// truncate the match. Unescape for the TERMINAL, which is not HTML: printing
+	// the entities raw is both ugly and slightly wrong about what upstream said.
+	const unesc = (s) =>
+		s
+			.replace(/&lt;/g, "<")
+			.replace(/&gt;/g, ">")
+			.replace(/&quot;/g, '"')
+			.replace(/&#39;/g, "'")
+			.replace(/&amp;/g, "&"); // LAST — else `&amp;lt;` would double-decode
+	const warnings = [...html.matchAll(/<div class="warn">([^<]*)<\/div>/g)].map((m) => unesc(m[1]));
 
 	fs.writeFileSync(out, html);
 	console.log(`docs/models.html — ${rows} rows, grades from the repo's MODEL_GRADES table.`);
