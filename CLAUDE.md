@@ -152,6 +152,14 @@ Each is locked by tests; the test names tell you what you broke.
 - **`PROXY_READY_TIMEOUT_MS` vs `hooks/hooks.json` `timeout: 10`** (seconds):
   the hook is killed at 10 s, so a ready-timeout ≥ 10000 ms silently never
   completes. Raise both together. → locked by `test/couplings.test.js`.
+- **`PROVIDER_IDS` (`src/providers.js`) ↔ `buildProviders()`**: the set
+  `parseModelSelector()` strips a `<provider>:` lens for. Deliberately NOT
+  derived from the registry — the strip must work when the backend holds no key
+  (issue #20) — so a new provider must be added in BOTH places. Forgetting has
+  no local symptom: the backend routes fine by predicate while `<new>:<model>`
+  forwards the raw lens upstream as a model id. → `test/couplings.test.js`
+  "PROVIDER_IDS covers every provider buildProviders() can register"
+  (mutation-verified), and `CONTRIBUTING.md` step 1b.
 - **`.env.example` ↔ README env table ↔ `docs/OPERATIONS.md`**: new env vars go
   in all three. → locked by `test/couplings.test.js`.
 - **Scripts must call `loadEnv()` before any module-level `process.env` read.**

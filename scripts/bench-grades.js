@@ -44,16 +44,36 @@ export const ATTRIBUTION = "Capability scores: benchlm.ai";
  *
  * The vendor prefix is stripped from slash ids FIRST, so an OpenRouter id joins
  * the same row as its bare form — they are the same weights and must not get
- * different grades.
+ * different grades. A `<provider>:` lens is stripped for the same reason and by
+ * the same rule `vendorOf()` already applies: `qwen:deepseek-v4-pro` is the
+ * plan's copy of one DeepSeek model, so it must fold onto the bare row rather
+ * than claim a rung of its own (leaving it unstripped pushed the real second
+ * model down a grade — `deepseek-v4-flash` fell from Strong to Specialist).
  *
  * @param {string} s
  * @returns {string}
  */
 export function normalizeName(s) {
 	const tail = String(s).includes("/") ? String(s).split("/").pop() : String(s);
-	return String(tail)
-		.toLowerCase()
-		.replace(/[\s._/-]/g, "");
+	return (
+		String(tail)
+			.replace(/^[a-z]+:/, "")
+			// A DATED build folds onto its bare sibling: `deepseek-v4-flash-0731` is
+			// a snapshot of `deepseek-v4-flash`, which is exactly how src/models.js
+			// grades it ("graded as its bare sibling ... which it is a dated snapshot
+			// of"). Left unfolded it ranked as a THIRD distinct DeepSeek model and
+			// came out Specialist, contradicting the curated Strong this table is
+			// meant to refresh.
+			//
+			// SCOPED TO `deepseek-`, exactly like providers.js DATED_ID and for a
+			// neighbouring reason: this key also indexes the benchlm score and
+			// OpenRouter price maps, so an unscoped `-\d{4}$` would fold every dated
+			// vendor id (`…-sonnet-20240620`) onto its base and hand it another
+			// model's price.
+			.replace(/^(deepseek-.*)-\d{4}(\d{4})?$/i, "$1")
+			.toLowerCase()
+			.replace(/[\s._/-]/g, "")
+	);
 }
 
 /**

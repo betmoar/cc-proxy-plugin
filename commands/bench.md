@@ -30,8 +30,22 @@ $PWD
 EOF
 [ -n "$root" ] || { echo 'cc-proxy: cannot locate plugin root; run /cc-proxy:setup or /resume'; exit 1; }
 
+# Trap 3 (this command's own): a slash-command body has NO real positional
+# parameters — Claude Code substitutes the dollar-N tokens TEXTUALLY before the
+# shell runs. So `shift; "$@"` did not forward anything: `$@` expands against an
+# empty argv, which silently dropped `--report` (turning a read-only report into
+# a full live measurement run against every configured backend), and zsh's
+# `shift` additionally errored with "shift count must be <= $#". Rebuild the
+# argv from the substituted values instead, skipping empties so an absent
+# argument is never passed as a literal "" (bench-speed would read that as a
+# model id to measure).
 case "$1" in
-  speed) shift; node "$root/scripts/bench-speed.js" "$@" ;;
+  speed)
+    set --
+    for a in "$2" "$3"; do
+      [ -n "$a" ] && set -- "$@" "$a"
+    done
+    node "$root/scripts/bench-speed.js" "$@" ;;
   *)     node "$root/scripts/bench-grades.js" ;;
 esac
 ```

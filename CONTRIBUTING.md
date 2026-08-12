@@ -40,6 +40,14 @@ Steps:
 1. **Push an entry** in `buildProviders` (`src/providers.js`). Gate it on its
    key (`if (env.MYPROVIDER_API_KEY)`) so it stays opt-in. Keep `claude` last —
    it is the OAuth-passthrough default.
+1b. **Add the id to `PROVIDER_IDS`** in the same file. That set is what
+   `parseModelSelector()` strips a `<provider>:` lens for, and it is deliberately
+   NOT derived from the registry: the strip must work even when the backend holds
+   no key (issue #20), so a keyless `myprovider:some-model` still resolves
+   instead of forwarding the literal lens string upstream. Forgetting this has no
+   local symptom — the backend routes fine by predicate while its lens leaks
+   upstream as part of the model id and 400s opaquely. Locked by
+   `test/couplings.test.js` "PROVIDER_IDS covers every provider…".
 2. **Pick an auth strategy.** `oauth` passes the inbound `Authorization` through
    (Claude Pro/Max); `apiKey` sets `x-api-key`; `bearer` sets
    `Authorization: Bearer`. New schemes go in `applyAuth`.

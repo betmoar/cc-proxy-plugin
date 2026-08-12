@@ -14,6 +14,33 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (p) => fs.readFileSync(path.join(root, p), "utf8");
 
 describe("cross-file couplings", () => {
+	// COUPLING: PROVIDER_IDS (the set parseModelSelector strips a `<provider>:`
+	// lens for) is a hand-written list that must cover every id buildProviders()
+	// can push. It is deliberately NOT derived from config.providers — the whole
+	// point of 0.6.1's fix is that the strip must not depend on a backend holding
+	// a key (issue #20). But that also means adding a provider without adding it
+	// here has NO local symptom: the new backend routes fine by predicate, while
+	// `<newprovider>:<model>` silently forwards the raw lens string upstream as a
+	// model id and 400s opaquely. Every provider registers when its key is set,
+	// so building with all keys enumerates the full set.
+	it("PROVIDER_IDS covers every provider buildProviders() can register", async () => {
+		const { PROVIDER_IDS, buildProviders } = await import("../src/providers.js");
+		const registrable = buildProviders({
+			GLM_API_KEY: "g",
+			OPENROUTER_API_KEY: "o",
+			DEEPSEEK_API_KEY: "d",
+			DASHSCOPE_API_KEY: "q",
+		}).map((p) => p.id);
+		const missing = registrable.filter((id) => !PROVIDER_IDS.has(id));
+		assert.deepEqual(
+			missing,
+			[],
+			`src/providers.js PROVIDER_IDS is missing ${missing.join(", ")} — the "<provider>:" lens for those would leak upstream unstripped`,
+		);
+		const stale = [...PROVIDER_IDS].filter((id) => !registrable.includes(id));
+		assert.deepEqual(stale, [], `PROVIDER_IDS names providers that no longer exist: ${stale}`);
+	});
+
 	// COUPLING: the PROXY_PORT default is read independently in four files
 	// (deliberately — the hook must not import src/). Change it in all four or
 	// in none; a split default means the proxy binds one port while the hook

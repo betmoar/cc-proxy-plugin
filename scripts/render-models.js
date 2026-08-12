@@ -78,8 +78,14 @@ const tierRank = (t) => TIER_ORDER[t] ?? 99;
 // `deepseek:deepseek-v4-pro` must grade Flagship like its bare form, not fall to
 // the Specialist default. (Not `/`: an OpenRouter `vendor/model` id is its own
 // key, deliberately — see CONTEXT_WINDOW's "keyed on the EXACT id" note.)
-const tierFor = (id) =>
-	MODEL_TIERS[id] ?? MODEL_TIERS[id.slice(id.indexOf(":") + 1)] ?? DEFAULT_TIER;
+// `Object.hasOwn`, not a bare lookup — the same trap src/routes.js tierOf() and
+// src/models.js withContextWindow() guard. Ids come from a LIVE upstream
+// catalog, so a vendor id of `constructor`/`toString` inherits from
+// Object.prototype and `??` cannot catch it (a function is neither null nor
+// undefined): the row would render its tier as "function Object() { [native
+// code] }" and sort at rank 99.
+const gradeIn = (id) => (Object.hasOwn(MODEL_TIERS, id) ? MODEL_TIERS[id] : undefined);
+const tierFor = (id) => gradeIn(id) ?? gradeIn(id.slice(id.indexOf(":") + 1)) ?? DEFAULT_TIER;
 
 /** Which provider legs pull their list live vs. ship a curated static list.
  * As of 2026-08-06 only Claude is static: it has no discoverable catalog
@@ -235,7 +241,9 @@ function providerCard([pid, group]) {
 		.map((m) => {
 			// The context window, when we know it — the same curated map the text
 			// table renders, so the two views can't disagree about a model.
-			const win = CONTEXT_WINDOW[m.id];
+			// Object.hasOwn for the same reason as tierFor above: m.id comes from a
+			// live catalog, and a bare lookup of `constructor` returns a function.
+			const win = Object.hasOwn(CONTEXT_WINDOW, m.id) ? CONTEXT_WINDOW[m.id] : undefined;
 			// A zero-width break opportunity after the namespace slash, so a long
 			// OpenRouter id wraps on the boundary a reader recognizes.
 			const id = esc(m.id).replace("/", "/<wbr>");
