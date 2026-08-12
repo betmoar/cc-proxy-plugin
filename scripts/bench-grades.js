@@ -379,6 +379,15 @@ async function main() {
 	console.log("  score  = cross-vendor capability; `~` marks benchlm's estimate, not a");
 	console.log("           measurement — new models are usually estimated.");
 	console.log("  Two axes: never read one off the other. Price never lowers a grade.");
+	// The file is written; the RUNNING proxy has not read it. `REFRESHED_GRADES`
+	// binds once at module import (src/models.js:162) — a boot-time config read,
+	// not per-request state (invariant 2). Without this line the success table
+	// above reads as "done" while /v1/models keeps publishing the pre-refresh
+	// grades, which is the same stale-process trap `bench speed` records
+	// proxy_pid/proxy_version to catch. docs/OPERATIONS.md:87 says so too, but
+	// whoever just ran this command has no reason to be in that file.
+	console.log("\n  Restart the proxy for this to reach GET /v1/models — it reads");
+	console.log("  grades.json at startup only.");
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
