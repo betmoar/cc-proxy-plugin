@@ -420,7 +420,7 @@ describe("collectModels fan-out", () => {
 			const { stdout } = await execFile(process.execPath, [script], {
 				env: { ...process.env, HOME: home },
 			});
-			const data = JSON.parse(stdout);
+			const { data, gradeKeys } = JSON.parse(stdout);
 			// Published as `glm:x`, not `x`: the id is not in glm's namespace, so the
 			// lens is what says which backend serves it. (A vendor's real ids are
 			// `glm-*` and render bare — this stub id is deliberately foreign.)
@@ -439,12 +439,18 @@ describe("collectModels fan-out", () => {
 				provider: "glm",
 				tier: 2,
 			});
-			// Stated separately too, because deepEqual's failure output does not make
-			// it obvious WHICH key was the point. `in`, not `=== undefined`: the
-			// contract is the key's absence (`"grade" in entry` is how a consumer
-			// tells unassessed from assessed), and an explicit undefined would pass a
-			// value check while breaking that.
-			assert.ok(!("grade" in glmEntries[0]), "an unassessed id must omit grade, not default it");
+			// The absence is asserted from `gradeKeys`, NOT from the parsed entry.
+			// JSON drops a key whose value is undefined, so `{grade: undefined}` and
+			// no `grade` at all arrive here byte-identical — `!("grade" in parsed)`
+			// tests what JSON.stringify did, not what withGrade() did. Measured
+			// 2026-08-12: removing the omission guard (`return {...entry, grade}`)
+			// left the entire suite green. `gradeKeys` is computed in the subprocess
+			// that still holds the real objects, so it survives the wire.
+			assert.ok(
+				!gradeKeys.includes("glm:x"),
+				"an unassessed id must omit grade — not carry it as undefined, which JSON hides",
+			);
+			assert.ok(!("grade" in glmEntries[0]), "and it must be absent on the wire too");
 			assert.notEqual(glmEntries[0].grade, null, "and must never publish null");
 			assert.ok(!data.some((m) => m.id === ""));
 		} finally {

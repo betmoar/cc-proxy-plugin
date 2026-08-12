@@ -47,4 +47,16 @@ const { data } = await collectModels({
 });
 
 server.close();
-process.stdout.write(JSON.stringify(data));
+
+// Key PRESENCE travels beside the data, because JSON cannot carry it: an entry
+// holding `grade: undefined` serializes identically to one with no `grade` at
+// all, so a test asserting `!("grade" in entry)` on the parsed output is
+// checking a key JSON already deleted. Measured 2026-08-12: dropping the
+// omission guard in withGrade() left the whole suite green. `gradeKeys` is
+// computed HERE, in the process that holds the real objects.
+process.stdout.write(
+	JSON.stringify({
+		data,
+		gradeKeys: data.filter((e) => "grade" in e).map((e) => e.id),
+	}),
+);

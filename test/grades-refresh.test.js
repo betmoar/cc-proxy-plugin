@@ -34,21 +34,37 @@ describe("grade refresh (bench grades -> gradeOf)", () => {
 	}
 
 	/** gradeOf(id) as evaluated in a fresh process rooted at `home`.
-	 * JSON round-trip, not a bare write: since 0.6.1 gradeOf() returns UNDEFINED
-	 * for an unassessed id (there is no default), and `process.stdout.write(
-	 * undefined)` throws — which would have turned every absence assertion into a
-	 * subprocess crash indistinguishable from a real one. */
-	async function gradeIn(home, id) {
+	 *
+	 * Reports `typeof` alongside the value, and does NOT route the value through
+	 * JSON.stringify. That serializer maps BOTH `undefined` and a function to the
+	 * JS value `undefined`, so a leaked `Object.prototype` member arrived here
+	 * spelled exactly like a legitimate absence — measured 2026-08-12: dropping
+	 * the `Object.hasOwn` guard in gradeOf() made `gradeOf("constructor")` return
+	 * `function Object() { … }` while the test named for that exact leak still
+	 * passed. A grade is always a string, so anything else is a defect and the
+	 * type is what proves which one. */
+	async function gradeInfo(home, id) {
 		const url = new URL("../src/models.js", import.meta.url).href;
 		const { stdout } = await execFile(
 			process.execPath,
 			[
 				"-e",
-				`import(${JSON.stringify(url)}).then(m => process.stdout.write(JSON.stringify(m.gradeOf(${JSON.stringify(id)})) ?? "undefined"))`,
+				`import(${JSON.stringify(url)}).then(m => { const g = m.gradeOf(${JSON.stringify(id)}); process.stdout.write(JSON.stringify({ type: typeof g, value: typeof g === "string" ? g : String(g) })); })`,
 			],
 			{ env: { ...process.env, HOME: home } },
 		);
-		return JSON.parse(stdout.trim() === "undefined" ? "null" : stdout.trim());
+		return JSON.parse(stdout.trim());
+	}
+
+	/** The grade string, or null when the id is unassessed. Fails loudly on any
+	 * other type rather than flattening it to "no grade" the way JSON did. */
+	async function gradeIn(home, id) {
+		const { type, value } = await gradeInfo(home, id);
+		assert.ok(
+			type === "string" || type === "undefined",
+			`gradeOf(${id}) returned a ${type} (${value}) — a grade is a string or absent`,
+		);
+		return type === "string" ? value : null;
 	}
 
 	after(() => {
@@ -135,11 +151,19 @@ describe("grade refresh (bench grades -> gradeOf)", () => {
 
 	// The prototype trap that already bit CONTEXT_WINDOW (0.5.1) and the renderer
 	// (0.6.1): ids come from a live catalog, and this file is user-writable.
-	it("an id named constructor cannot inherit from Object.prototype", async () => {
-		const home = homeWith(JSON.stringify({ models: { "glm-5.2": { grade: "Strong" } } }));
-		const grade = await gradeIn(home, "constructor");
-		assert.equal(grade, null, `expected no grade, got: ${grade}`);
-	});
+	// Asserts the TYPE, not just "no grade". Both lookups gradeOf() performs are
+	// guarded by Object.hasOwn; drop either and the id inherits a function off
+	// Object.prototype. Through a JSON round-trip that function was spelled
+	// `undefined`, i.e. identical to a legitimate absence — so the guard could be
+	// deleted with the suite still green (measured 2026-08-12). gradeInfo()
+	// reports typeof from inside the subprocess, where the value is still real.
+	for (const id of ["constructor", "__proto__", "toString", "hasOwnProperty"]) {
+		it(`an id named ${id} cannot inherit from Object.prototype`, async () => {
+			const home = homeWith(JSON.stringify({ models: { "glm-5.2": { grade: "Strong" } } }));
+			const { type, value } = await gradeInfo(home, id);
+			assert.equal(type, "undefined", `gradeOf(${id}) leaked a ${type}: ${value}`);
+		});
+	}
 
 	// D3: readFileSync on a FIFO/socket/device BLOCKS waiting for a writer,
 	// which the try/catch around it cannot stop — a stopped throw does not stop
