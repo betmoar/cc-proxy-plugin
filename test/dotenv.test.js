@@ -135,4 +135,50 @@ describe("bin/cc-proxy.js loads ~/.env", () => {
 			assert.match(stderr, /active backends: claude only \(no third-party keys found\)/);
 		},
 	);
+
+	// Issue #30 finding 1: DEFAULT_BACKEND can name a backend that never
+	// registers (keys are opt-in since #20), and then nothing carries isDefault,
+	// defaultProvider() falls through to claude, and the startup line was
+	// BYTE-IDENTICAL to a correct install. skills/setup/SKILL.md recommends
+	// DEFAULT_BACKEND for backends the single /model slot cannot select, so this
+	// is a documented path. Spawned, not unit-tested, because the fallback is
+	// only observable in what the binary PRINTS — providers.test.js pins the
+	// predicate underneath it.
+	it("warns when DEFAULT_BACKEND names a backend that did not register", async () => {
+		fs.rmSync(path.join(home, ".env"), { force: true });
+		const port = await freePort();
+		const childEnv = {
+			PATH: process.env.PATH,
+			HOME: home,
+			PROXY_PORT: String(port),
+			GLM_API_KEY: "k", // glm registers…
+			DEFAULT_BACKEND: "deepseek", // …but the requested default does not
+		};
+		const { stdout, stderr } = await startProxy(childEnv);
+		assert.match(stdout, new RegExp(`cc-proxy listening on http://127.0.0.1:${port}`));
+		assert.match(
+			stderr,
+			/DEFAULT_BACKEND=deepseek did NOT register/,
+			`expected the misconfiguration to be named, got: ${stderr}`,
+		);
+		// And it must say where requests actually go, not merely that something
+		// is wrong — "falling back to claude" is the actionable half.
+		assert.match(stderr, /falling back to claude/);
+	});
+
+	// The mirror image: a SATISFIED DEFAULT_BACKEND must stay quiet, or the
+	// warning becomes noise every correct install learns to ignore.
+	it("stays quiet when DEFAULT_BACKEND did register", async () => {
+		fs.rmSync(path.join(home, ".env"), { force: true });
+		const port = await freePort();
+		const childEnv = {
+			PATH: process.env.PATH,
+			HOME: home,
+			PROXY_PORT: String(port),
+			GLM_API_KEY: "k",
+			DEFAULT_BACKEND: "glm",
+		};
+		const { stderr } = await startProxy(childEnv);
+		assert.doesNotMatch(stderr, /did NOT register/, `expected no warning, got: ${stderr}`);
+	});
 });

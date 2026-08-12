@@ -51,8 +51,16 @@ Steps:
 2. **Pick an auth strategy.** `oauth` passes the inbound `Authorization` through
    (Claude Pro/Max); `apiKey` sets `x-api-key`; `bearer` sets
    `Authorization: Bearer`. New schemes go in `applyAuth`.
-3. **Write `match`.** Keep it disjoint from the other providers — GLM matches
-   `glm-*`, OpenRouter matches slash-namespaced `vendor/model` ids.
+3. **Write `match`.** Prefer a predicate disjoint from the others — GLM matches
+   `glm-*`, OpenRouter matches slash-namespaced `vendor/model` ids. Disjoint is
+   no longer a *rule*: since #19 two predicates deliberately overlap
+   (`deepseek.match("deepseek-v4-pro")` and `qwen.match(...)` are both true,
+   because the Qwen plan really does resell that id), and `rankRoutes()` decides
+   between them before any predicate is consulted. So an overlap is allowed
+   **when `ROUTES` disambiguates it** — the predicate scan is the fallback for
+   ids the route table does not list, and there registry order wins silently.
+   If you overlap without a `ROUTES` entry, the earlier-registered provider
+   takes the id and nothing says so.
 4. **Anthropic-Messages only.** This proxy does no format translation; a
    provider must speak the Anthropic Messages API (or its compatible "skin").
    That is a deliberate constraint — see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) (Invariants).

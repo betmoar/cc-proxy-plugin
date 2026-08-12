@@ -36,6 +36,29 @@ describe("buildProviders", () => {
 		assert.equal(providers.find((p) => p.id === "glm").isDefault, true);
 	});
 
+	// Since keys became opt-in (#20), DEFAULT_BACKEND can name a backend that
+	// never registers — and then NOTHING carries isDefault and defaultProvider()
+	// falls through to claude. That silent fallback is issue #30 finding 1; the
+	// detectable signal bin/cc-proxy.js warns on is exactly this predicate, so
+	// pin it: if `some(p => p.isDefault)` ever became true here (say, by
+	// defaulting the flag onto claude), the startup warning would go quiet again
+	// with nothing else changing.
+	it("a DEFAULT_BACKEND that never registered leaves NO provider marked default", () => {
+		const providers = buildProviders({ GLM_API_KEY: "k" }, "deepseek");
+		assert.deepEqual(
+			providers.map((p) => p.id),
+			["glm", "claude"],
+			"no DeepSeek key → no deepseek provider",
+		);
+		assert.equal(
+			providers.some((p) => p.isDefault),
+			false,
+			"the requested default is absent, so nothing may claim the flag",
+		);
+		// And the fallback really is claude — the thing the user did not ask for.
+		assert.equal(defaultProvider({ providers }).id, "claude");
+	});
+
 	it("glm carries apiKey auth and no quirks", () => {
 		const glm = providerById({ providers: buildProviders({ GLM_API_KEY: "k" }) }, "glm");
 		assert.equal(glm.apiKey, "k");

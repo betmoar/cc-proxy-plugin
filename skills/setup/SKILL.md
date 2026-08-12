@@ -62,7 +62,17 @@ Read the current file, then merge the following into the `env` object (create `e
 ```json
 {
   "env": {
-    "ANTHROPIC_BASE_URL": "http://127.0.0.1:4000",
+    "ANTHROPIC_BASE_URL": "http://127.0.0.1:4000"
+  }
+}
+```
+
+**Then, ONLY if a `GLM_API_KEY` was collected in step 2**, also merge the picker
+entry:
+
+```json
+{
+  "env": {
     "ANTHROPIC_CUSTOM_MODEL_OPTION": "glm-5.2[1m]",
     "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME": "GLM-5.2 (1M)",
     "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION": "Z.ai GLM-5.2 1M-context (routed via cc-proxy)"
@@ -70,7 +80,17 @@ Read the current file, then merge the following into the `env` object (create `e
 }
 ```
 
-This registers `glm-5.2[1m]` in the `/model` picker (Claude Code allows exactly one custom model option). If `ANTHROPIC_CUSTOM_MODEL_OPTION` is already set to a different value, ask the user before overwriting it.
+This registers `glm-5.2[1m]` in the `/model` picker (Claude Code allows exactly
+one custom model option). If `ANTHROPIC_CUSTOM_MODEL_OPTION` is already set to a
+different value, ask the user before overwriting it.
+
+**Why the condition.** The GLM key is skippable (issue #20), and the picker slot
+holds exactly one entry. Writing `glm-5.2[1m]` for a user who skipped it puts a
+model in their picker that cannot route — it resolves to the default backend
+instead, and the only warning was spoken once during setup and never persisted,
+so weeks later the entry fails with nothing on disk explaining why. If the user
+skipped GLM, say plainly that the picker entry was skipped too, and that adding
+`GLM_API_KEY` to `~/.env` and re-running `/cc-proxy:setup` will add it.
 
 Write the file back with 2-space indentation, matching the existing formatting.
 

@@ -46,6 +46,22 @@ if (thirdParty.length === 0) {
 	console.error(`cc-proxy: active backends: ${active.join(", ")}`);
 }
 
+// DEFAULT_BACKEND can name a backend that never registered — keys became opt-in
+// in #20, so `DEFAULT_BACKEND=deepseek` with no DeepSeek key is a live
+// misconfiguration, not a typo the shell would catch. buildProviders() sets
+// `isDefault` only on a provider it actually built, so NOBODY carrying the flag
+// means the requested id is not here and defaultProvider() has quietly fallen
+// through to claude. Before this, that install printed a success line
+// byte-identical to a correct one, and skills/setup/SKILL.md RECOMMENDS
+// DEFAULT_BACKEND for backends the single /model slot cannot select — so this
+// is a documented path, not an exotic one. Say which backend is really serving.
+const requestedDefault = values["default-backend"] || process.env.DEFAULT_BACKEND;
+if (requestedDefault && !config.providers.some((p) => p.isDefault)) {
+	console.error(
+		`cc-proxy: DEFAULT_BACKEND=${requestedDefault} did NOT register (no key?) — falling back to claude. Unmatched ids go to claude, not ${requestedDefault}.`,
+	);
+}
+
 // Fail loud on a bad port instead of letting listen() throw a bare RangeError:
 // a typo'd PROXY_PORT would otherwise leave a cryptic stack in the log while
 // ANTHROPIC_BASE_URL points at the (equally typo'd) dead port.
