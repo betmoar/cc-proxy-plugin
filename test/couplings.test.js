@@ -41,22 +41,36 @@ describe("cross-file couplings", () => {
 		assert.deepEqual(stale, [], `PROVIDER_IDS names providers that no longer exist: ${stale}`);
 	});
 
-	// COUPLING: the PROXY_PORT default is read independently in four files
-	// (deliberately — the hook must not import src/). Change it in all four or
-	// in none; a split default means the proxy binds one port while the hook
-	// and statusline probe another ("proxy down" forever, duplicate spawns).
-	it("PROXY_PORT default (4000) is identical in all four readers", () => {
-		const files = [
-			"src/config.js",
-			"hooks/proxy-lifecycle.js",
-			"scripts/status.js",
-			"scripts/statusline.js",
-		];
-		const defaults = files.map((f) => {
-			const m = /process\.env\.PROXY_PORT \|\| (\d+)/.exec(read(f));
-			assert.ok(m, `${f}: could not locate the PROXY_PORT default — update this coupling test`);
-			return { file: f, value: m[1] };
-		});
+	// COUPLING: the PROXY_PORT default is read independently in several files
+	// (deliberately — the hook must not import src/). Change it everywhere or
+	// nowhere; a split default means the proxy binds one port while the hook and
+	// statusline probe another ("proxy down" forever, duplicate spawns).
+	//
+	// DISCOVERED, not listed. This test named four files by hand and the literal
+	// had since spread to seven — bench-speed.js, list-models.js and
+	// render-models.js each carried their own copy, outside the lock, so a port
+	// change would have passed this assertion while those three probed the old
+	// port. A hand-maintained list of "everywhere X appears" is the same drift
+	// class the lock exists to catch, one level up. Walking the tree cannot go
+	// stale: a new copy joins the assertion the moment it is written.
+	it("the PROXY_PORT default is identical in every file that reads it", () => {
+		const dirs = ["src", "scripts", "hooks", "bin"];
+		/** @type {{file: string, value: string}[]} */
+		const defaults = [];
+		for (const dir of dirs) {
+			for (const name of fs.readdirSync(path.join(root, dir))) {
+				if (!/\.(js|mjs)$/.test(name)) continue;
+				const rel = `${dir}/${name}`;
+				const m = /process\.env\.PROXY_PORT \|\| (\d+)/.exec(read(rel));
+				if (m) defaults.push({ file: rel, value: m[1] });
+			}
+		}
+		// A floor, not a count: it fails if the walk silently matches nothing (a
+		// renamed env var, a changed spelling) rather than passing vacuously.
+		assert.ok(
+			defaults.length >= 4,
+			`expected several PROXY_PORT readers, found ${defaults.length} — has the spelling changed?`,
+		);
 		const distinct = new Set(defaults.map((d) => d.value));
 		assert.equal(
 			distinct.size,

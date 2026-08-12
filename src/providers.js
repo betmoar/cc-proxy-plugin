@@ -33,7 +33,7 @@
  * Deliberately narrow in the other direction too: this is the ONE unambiguous
  * cross-vendor routing signal available today. Bare shared ids
  * (`deepseek-v4-pro`, `glm-5.2`) are served by two backends and need the
- * explicit-prefix scheme instead (CLAUDE.md backlog item 8).
+ * explicit-prefix scheme instead (docs/BACKLOG.md item 8).
  */
 const DATED_ID = /^deepseek-.*-\d{4}(\d{4})?$/;
 
@@ -65,8 +65,8 @@ const DATED_ID = /^deepseek-.*-\d{4}(\d{4})?$/;
  * NOT free of consequence: the plan's gateway injects a preamble, measured at
  * +79 input tokens on `deepseek-v4-pro` and +6 on `glm-5.2` for an identical
  * body (2026-08-04). Same weights, different context — a prompt tuned on the
- * native route can behave differently here. The prefix scheme (CLAUDE.md
- * backlog item 8) shipped in 0.6.0: `deepseek:deepseek-v4-pro` always reaches
+ * native route can behave differently here. The prefix scheme (docs/BACKLOG.md
+ * item 8) shipped in 0.6.0: `deepseek:deepseek-v4-pro` always reaches
  * the native route explicitly, and — since issue #19 — so does the bare id
  * whenever a DeepSeek key is registered; `qwen:deepseek-v4-pro` reaches the
  * plan copy explicitly either way.
@@ -89,16 +89,6 @@ const DATED_ID = /^deepseek-.*-\d{4}(\d{4})?$/;
 const QWEN_PLAN_RESELLS = new Set(["deepseek-v4-pro"]);
 
 /**
- * Build the provider registry from the environment. Order matters: `resolve()`
- * picks the first non-default provider whose `match()` returns true, falling
- * back to the default provider. Adding a backend (e.g. OpenRouter) is one entry
- * here — no changes to the router or server.
- *
- * @param {Record<string, string | undefined>} [env]
- * @param {string} [defaultId] - which provider id is the fallback/default tier.
- * @returns {Provider[]}
- */
-/**
  * Every provider id this proxy knows how to spell, registered or not.
  *
  * `<provider>:` is cc-proxy's LOCAL lens — no backend has heard of it — so it
@@ -114,6 +104,16 @@ const QWEN_PLAN_RESELLS = new Set(["deepseek-v4-pro"]);
  */
 export const PROVIDER_IDS = new Set(["glm", "openrouter", "deepseek", "qwen", "claude"]);
 
+/**
+ * Build the provider registry from the environment. Order matters: `resolve()`
+ * picks the first non-default provider whose `match()` returns true, falling
+ * back to the default provider. Adding a backend (e.g. OpenRouter) is one entry
+ * here — no changes to the router or server.
+ *
+ * @param {Record<string, string | undefined>} [env]
+ * @param {string} [defaultId] - which provider id is the fallback/default tier.
+ * @returns {Provider[]}
+ */
 export function buildProviders(env = process.env, defaultId = env.DEFAULT_BACKEND || "claude") {
 	// "Plan before credits": when the Qwen Token Plan is configured it claims the
 	// bare ids it resells (QWEN_PLAN_RESELLS = {deepseek-v4-pro}), so prepaid
@@ -183,7 +183,7 @@ export function buildProviders(env = process.env, defaultId = env.DEFAULT_BACKEN
 			// and 400s here ("The supported API model names are deepseek-v4-pro or
 			// deepseek-v4-flash"), so claiming it would route a reachable model to a
 			// backend that has never heard of it. The two predicates stay disjoint:
-			// dated → qwen, bare → deepseek. Verified 2026-08-04; see CLAUDE.md item 8.
+			// dated → qwen, bare → deepseek. Verified 2026-08-04; see docs/BACKLOG.md item 8.
 			// NO `!planResells(m)` here — issue #19 (0.6.1) deliberately drops it.
 			// Registry order (glm, openrouter, deepseek, qwen, claude) then makes
 			// this predicate agree with rankRoutes' native-first sort: both this

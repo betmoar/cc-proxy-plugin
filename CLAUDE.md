@@ -74,7 +74,7 @@ there if you forget. The ones marked ⚠ have no test and drift silently.
 | an upstream request option | `upstreamRequestOptions()` only — a 2nd copy shipped the query-string bug twice |
 | a script's `process.env` read | `loadEnv()` directly under the imports, or `~/.env` is ignored |
 | `QWEN_PLAN_RESELLS` (`providers.js`) | `QWEN_PLAN_ALSO` (`render-models.js`) must cover it, or the Qwen card under-reports the plan |
-| ⚠ `MODEL_GRADES` | nothing — it is the ONLY copy; `render-models.js` re-exports it |
+| ⚠ `MODEL_GRADES` | nothing — it is the only copy IN THE REPO, but `gradeOf()` overlays `~/.claude/cc-proxy/grades.json` on top of it, so a reader is not reading this table alone. `render-models.js` re-exports it for coverage assertions only — rendering goes through `gradeOf()` |
 | ⚠ a static catalog | confirm the id has a `ROUTES` entry |
 | ⚠ the `/v1/models` wire shape | README + OPERATIONS + ARCHITECTURE, by hand |
 

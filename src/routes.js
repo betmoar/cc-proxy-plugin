@@ -10,8 +10,7 @@
  *
  * The table is COMPLETE, not curated: non-200 probes are recorded rather than
  * omitted, so a route that is known-unavailable is documented and re-probing is
- * a diff instead of a rediscovery. Probed 2026-08-04 (see CLAUDE.md backlog
- * item 8 for the raw matrix).
+ * a diff instead of a rediscovery. Probed 2026-08-04 (see docs/BACKLOG.md item 8 for the raw matrix).
  *
  * It is also NOT authoritative. An id absent here falls through to the provider
  * `match()` predicates and still routes — never a hard failure. That matters
