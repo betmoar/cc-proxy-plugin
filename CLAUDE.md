@@ -88,10 +88,14 @@ way.** cc-proxy publishes curated model facts; downstream plugins consume them.
 against the real window instead of hard-coding its own id table; `grade` exists
 so `cc-operator` can dispatch by model strength instead of guessing. Both moved
 out of a display layer into `src/models.js` for exactly that reason, and both
-are therefore **API surface, not a local opinion** — a new model with no entry
-silently ships `Specialist`, and an id with no window OMITS the field rather
-than sending `null` (`"context_window" in entry` is the check, so a consumer can
-tell "unknown" from "known"). Never read a consumer's file back to decide
+are therefore **API surface, not a local opinion** — and both OMIT their field
+rather than inventing a value: an id with no curated window has no
+`context_window`, an id nobody assessed has no `grade`. `"grade" in entry` and
+`"context_window" in entry` are the checks, so a consumer can tell "unknown"
+from "known", and neither key is ever `null`. (Until 0.6.1 an unassessed id
+shipped `Specialist`, which read as a verdict where it was an absence — 299 of
+320. `Economy` was retired in the same change: a cost class has no business on
+the capability axis.) Never read a consumer's file back to decide
 anything here: that inverts the arrow and makes neither plugin installable
 alone. Adding a field means updating the three docs that describe the shape —
 no test enforces that.
@@ -170,8 +174,9 @@ Open work, closed items with their evidence, and reversed decisions live in
 [`docs/BACKLOG.md`](docs/BACKLOG.md); item numbers are stable and never reused.
 Worth knowing exist: **1** thinking-strip vs Claude tool-use loops (the fix to
 apply *if* it fires); **8** the `<provider>:` selector, the cross-host probe
-matrix, and the measured +79-token plan preamble; **9** grades — 299 of 320
-models carry the `Specialist` default, which reads as a claim and is an absence;
+matrix, and the measured +79-token plan preamble; **9** grades — the
+`Specialist` default and `Economy` are gone as of 0.6.1 (an unassessed id now
+omits `grade`); what remains open is where assessments come from at all;
 **12** `ROUTES` is hand-probed and rots silently, and no test can catch it.
 
 ## Operator
