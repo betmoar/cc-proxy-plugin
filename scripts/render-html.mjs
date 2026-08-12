@@ -42,7 +42,16 @@ try {
 	// which legs register. Symlinked, not copied — nothing here should be a second
 	// copy of a credential file, however short-lived.
 	const realEnv = path.join(realHome, ".env");
-	if (fs.existsSync(realEnv)) fs.symlinkSync(realEnv, path.join(tmpHome, ".env"));
+	if (fs.existsSync(realEnv)) {
+		fs.symlinkSync(realEnv, path.join(tmpHome, ".env"));
+	} else {
+		// Say it HERE, where it is known for certain. Without the symlink no key
+		// loads, so no third-party leg registers and the page is Claude-only — the
+		// row floor below does catch that, but it reports the symptom several steps
+		// downstream and invites a hunt for a down proxy that is running fine.
+		console.error(`render-html: no ${realEnv} — no API keys will load, so live legs`);
+		console.error("  will not register. Expect a Claude-only page below.");
+	}
 
 	const html = execFileSync(process.execPath, [path.join(here, "render-models.js")], {
 		env: { ...process.env, HOME: tmpHome },
@@ -68,8 +77,23 @@ try {
 		throw new Error(`refusing to write a ${rows}-row page`);
 	}
 
+	// A leg that failed is recorded in the page as a warn banner (render-models.js
+	// errorLines, from /v1/models's non-standard `_errors`). Baked into the HTML is
+	// not the same as TOLD to the operator: a partially-degraded page clears the
+	// row floor, prints the same cheerful summary as a healthy one, and gets
+	// committed — the reader only learns a backend was missing by opening the file.
+	// Read them back out of the markup rather than re-fetching: this is the exact
+	// page about to be written, so the two can never disagree.
+	const warnings = [...html.matchAll(/<div class="warn">([^<]*)<\/div>/g)].map((m) => m[1]);
+
 	fs.writeFileSync(out, html);
 	console.log(`docs/models.html — ${rows} rows, grades from the repo's MODEL_GRADES table.`);
+	if (warnings.length > 0) {
+		console.error(`render-html: ${warnings.length} leg(s) FAILED — the page is incomplete:`);
+		for (const w of warnings) console.error(`  ${w}`);
+		console.error("  Fix the leg and re-run before committing, or the artifact ships a gap.");
+		process.exitCode = 1;
+	}
 } catch (e) {
 	// The renderer's own failure (proxy down, non-zero exit) lands here too.
 	// execFileSync forwards the child's stderr to ours by default (verified), so
