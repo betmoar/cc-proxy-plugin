@@ -231,7 +231,9 @@ async function fetchJson(url) {
  * @param {Map<string, { models: any[], live: boolean }>} acc
  */
 export function groupByProvider(rows) {
-	/** @type {Map<string, { live: boolean, total?: number, isDefault?: boolean, models: Array<{ id: string, dup?: boolean, plan?: boolean, tier: string, created?: string | null }> }>} */
+	/** `context_window` is OPTIONAL and absent-not-undefined, mirroring the wire
+	 * contract it is carried from: a row has the key only when the API published
+	 * one. @type {Map<string, { live: boolean, total?: number, isDefault?: boolean, models: Array<{ id: string, dup?: boolean, plan?: boolean, tier: string, created?: string | null, context_window?: number }> }>} */
 	const acc = new Map();
 	// Native ids (non-openrouter) — an OpenRouter row whose bare form is reachable
 	// natively gets an "also native" tag (it's the same model, two ways).
