@@ -124,7 +124,12 @@ const windowFor = (id, published) => {
 	// carry a real `context_length` that only the API knows. Re-deriving from the
 	// table alone rendered all 20 OpenRouter rows blank while /v1/models had the
 	// number in hand.
-	if (typeof published === "number" && published > 0) return formatContextWindow(published);
+	// >= 1000, not > 0: formatContextWindow rounds to the nearest K, so anything
+	// under 500 renders "0K" and 500-999 renders "1K". "0K" reads as "no context"
+	// — worse than the blank this fix exists to remove. A sub-1K window is not a
+	// real model anyway, so it falls through to the curated table and then to no
+	// column at all, which states the truth: we have nothing useful to show.
+	if (typeof published === "number" && published >= 1000) return formatContextWindow(published);
 	if (Object.hasOwn(CONTEXT_WINDOW, id)) return CONTEXT_WINDOW[id];
 	const bare = id.slice(id.indexOf(":") + 1);
 	return Object.hasOwn(CONTEXT_WINDOW, bare) ? CONTEXT_WINDOW[bare] : undefined;

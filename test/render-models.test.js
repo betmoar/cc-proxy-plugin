@@ -556,6 +556,35 @@ describe("render-models against a live-shaped proxy", () => {
 		);
 	});
 
+	// formatContextWindow rounds to the nearest K, so a published window under 500
+	// formats as "0K" — which reads as "no context", strictly worse than the blank
+	// the published-window fix exists to remove. Preferring the published integer
+	// opened this path: before it, the field was discarded and a junk value could
+	// not reach the page at all. The guard is `>= 1000`, not `> 0`.
+	it("ignores a sub-1K published window rather than rendering 0K", async () => {
+		const html = await render(
+			[
+				{
+					type: "model",
+					id: "vendor/tiny",
+					display_name: "T",
+					provider: "openrouter",
+					tier: 4,
+					context_window: 400,
+				},
+			],
+			{ OPENROUTER_API_KEY: "or" },
+			["openrouter"],
+		);
+		const card = cardFor(html, "OpenRouter");
+		assert.doesNotMatch(card, /class="win">0K</, 'a rounded-to-zero window must not render "0K"');
+		assert.doesNotMatch(
+			card,
+			/vendor\/<wbr>tiny[\s\S]{0,120}?class="win"/,
+			"it must render no window column at all",
+		);
+	});
+
 	// Both ids the Qwen plan resells carry the "also on plan" tag on their NATIVE
 	// card, for the same reason: the plan serves them but does not route them.
 	// `deepseek-v4-pro` was missing from QWEN_PLAN_ALSO (caught in review on

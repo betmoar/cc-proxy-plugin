@@ -60,11 +60,24 @@ try {
 		console.error(
 			"Is the proxy running (lsof -nP -iTCP:4000 -sTCP:LISTEN) and are keys in ~/.env?",
 		);
-		process.exit(1);
+		// THROW, never process.exit() — exit skips finally, and finally is what
+		// removes a temp dir holding a SYMLINK TO ~/.env. Measured: exit(1) from
+		// inside a try leaves the directory on disk. This is the path that fires
+		// repeatedly while someone debugs a down proxy, so it is the last place
+		// that should litter /tmp with credential-adjacent links.
+		throw new Error(`refusing to write a ${rows}-row page`);
 	}
 
 	fs.writeFileSync(out, html);
 	console.log(`docs/models.html — ${rows} rows, grades from the repo's MODEL_GRADES table.`);
+} catch (e) {
+	// The renderer's own failure (proxy down, non-zero exit) lands here too.
+	// execFileSync forwards the child's stderr to ours by default (verified), so
+	// its diagnosis is already on screen; this adds the one fact its message does
+	// not carry — that the committed artifact was left alone.
+	console.error(`render-html: ${e.message}`);
+	console.error(`${out} is UNCHANGED.`);
+	process.exitCode = 1;
 } finally {
 	fs.rmSync(tmpHome, { recursive: true, force: true });
 }
