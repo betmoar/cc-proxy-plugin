@@ -38,7 +38,10 @@ describe("grade refresh (bench grades -> gradeOf)", () => {
 		const url = new URL("../src/models.js", import.meta.url).href;
 		const { stdout } = await execFile(
 			process.execPath,
-			["-e", `import(${JSON.stringify(url)}).then(m => process.stdout.write(m.gradeOf(${JSON.stringify(id)})))`],
+			[
+				"-e",
+				`import(${JSON.stringify(url)}).then(m => process.stdout.write(m.gradeOf(${JSON.stringify(id)})))`,
+			],
 			{ env: { ...process.env, HOME: home } },
 		);
 		return stdout.trim();
@@ -73,7 +76,10 @@ describe("grade refresh (bench grades -> gradeOf)", () => {
 	});
 
 	it("a valid file with a junk shape falls back", async () => {
-		assert.equal(await gradeIn(homeWith(JSON.stringify({ models: "nope" })), "glm-5.2"), "Flagship");
+		assert.equal(
+			await gradeIn(homeWith(JSON.stringify({ models: "nope" })), "glm-5.2"),
+			"Flagship",
+		);
 	});
 
 	it("a single malformed entry is skipped, not the whole file", async () => {
