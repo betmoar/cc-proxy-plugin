@@ -77,7 +77,8 @@ hook or by an explicitly-invoked command — never on a request path.
 | `cc-proxy.log` | SessionStart hook (spawn stdio) | routing lines; rotated to `.1` past `PROXY_LOG_MAX_BYTES` |
 | `grades.json` | `/cc-proxy:bench grades` | model capability + price. **Read by the proxy at startup** and published as `grade` on `/v1/models`; absent or malformed = the built-in `MODEL_GRADES` applies. An entry whose grade is not one of `Flagship`/`Strong`/`Specialist` is skipped individually (this file is hand-editable and feeds a published field). Restart the proxy for a refresh to take effect |
 | `speed.jsonl` | `/cc-proxy:bench speed` | append-only route timings, one JSON object per line |
-| `*_cache.json` | statusline | 60 s quota/credit caches + the 1 s proxy-liveness probe |
+| `*_cache.json` | statusline | 60 s quota/credit caches + the 1 s proxy-liveness probe. Past the TTL the value is still SERVED (marked `!`) and refreshed in the background — the render path never makes a network call |
+| `refresh.lock` | statusline | single-flight guard for that background refresh. Held for one refresh (~2 s); a lock older than 10 s is treated as abandoned and reclaimed. Safe to delete |
 
 Nothing here is required: delete any of it and the proxy still starts and
 routes. `grades.json` and `speed.jsonl` are written only when you run the

@@ -74,6 +74,7 @@ there if you forget. The ones marked ⚠ have no test and drift silently.
 | an upstream request option | `upstreamRequestOptions()` only — a 2nd copy shipped the query-string bug twice |
 | a script's `process.env` read | `loadEnv()` directly under the imports, or `~/.env` is ignored |
 | `QWEN_PLAN_RESELLS` (`providers.js`) | `QWEN_PLAN_ALSO` (`render-models.js`) must cover it, or the Qwen card under-reports the plan |
+| a statusline gauge | the `GAUGES` table in `statusline.js` — the render path and the background refresher both read it; adding to one only means the gauge shows but never refreshes (or refreshes but never shows) |
 | ⚠ `MODEL_GRADES` | nothing — it is the only copy IN THE REPO, but `gradeOf()` overlays `~/.claude/cc-proxy/grades.json` on top of it, so a reader is not reading this table alone. `render-models.js` re-exports it for coverage assertions only — rendering goes through `gradeOf()` |
 | ⚠ a static catalog | confirm the id has a `ROUTES` entry |
 | ⚠ the `/v1/models` wire shape | README + OPERATIONS + ARCHITECTURE, by hand |
@@ -129,6 +130,21 @@ no test enforces that.
   the file, or probe with a signature only the new version has), then `/exit`
   and relaunch. For anything billed, pick an observable that separates the paths
   first: `bench speed --report` is read-only, a live run appends.
+- **The statusline render path must never touch the network.** cc-status kills
+  a renderer at `CC_STATUS_TIMEOUT` (default 2s) and a killed renderer emits
+  ZERO bytes, so the segment vanishes from the bar entirely. Measured: serial
+  fetches made a cold render 1478–2216ms, 5/15 over the kill. An expired cache
+  is SERVED and refreshed by a DETACHED child — `detached:true` is load-bearing,
+  because the composer kills the whole process GROUP and an ordinary child dies
+  with it (probe: cache written YES detached / NO non-detached). The
+  single-flight `refresh.lock` is the other half: without it every render in the
+  ~2s window spawns its own refresher (measured 5 fetch rounds per expiry, vs 1).
+- **A test that kills a subprocess must kill it UNCONDITIONALLY.** A watchdog
+  cancelled after `wait` returns never fires once the thing under test gets
+  fast, so the test passes for the wrong reason — `detached:false` survived the
+  first version of the group-kill test. Sleep past the fast path's exit, then
+  kill outright. → `statusline.test.js` "refresh survives the composer's
+  process-group kill"
 - **CC internals may drift**: `[1m]` suffix, `claude-haiku-*` ids,
   `ANTHROPIC_CUSTOM_MODEL_OPTION` (one slot) are not public API — check these
   first when routing looks wrong after a CC update.

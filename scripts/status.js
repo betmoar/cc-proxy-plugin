@@ -8,7 +8,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { loadEnv } from "../src/env.js";
-import { fetchGlmQuota, fetchOpenRouterCredits } from "./quota.js";
+import { fetchGlmQuota, fetchOpenRouterCredits, formatDuration } from "./quota.js";
 
 // Load API keys from ~/.env (+ repo .env in dev) so the quota/credit fetches
 // below work once keys move out of settings.json `env`. process.env still wins.
@@ -47,7 +47,7 @@ export function parseRoutingLines(logText, limit = 8) {
  * Render the assembled status into a plain-text report.
  * @param {object} data
  * @param {{ up: boolean, port?: number, version?: string, defaultBackend?: string, providers?: string[] }} data.status
- * @param {{ level?: string, pct?: number, resetMs?: number, stale?: boolean } | null} [data.glm]
+ * @param {{ level?: string, pct?: number, resetMs?: number, skewMs?: number, stale?: boolean } | null} [data.glm]
  * @param {{ remaining?: number, usedPct?: number, stale?: boolean } | null} [data.openrouter]
  * @param {string[]} [data.routing]
  * @returns {string}
@@ -73,12 +73,29 @@ export function formatStatusReport(data) {
 	if (glm) {
 		const stale = glm.stale ? " (stale)" : "";
 		const pct = typeof glm.pct === "number" ? `${glm.pct}% used` : "n/a";
+		// Backlog item 10: the absolute UTC stamp made a reader in any other zone
+		// do the arithmetic, while the statusline showed a relative countdown for
+		// the same fact. Both are now relative, from the same resetMs this already
+		// had. Not a timezone bug — there was never one — purely a format change.
+		// The UTC stamp is kept alongside it: this is a one-shot diagnostic report
+		// that may be pasted into an issue, where an absolute time still helps.
+		//
 		// Number.isFinite, not typeof === "number": a NaN resetMs would pass the
 		// looser check and throw a RangeError from Date#toISOString.
 		const reset = Number.isFinite(glm.resetMs)
-			? ` (resets ${new Date(glm.resetMs).toISOString().replace(/\.\d{3}Z$/, "Z")})`
+			? ` (resets in ${formatDuration(glm.resetMs - Date.now())}, ${new Date(glm.resetMs)
+					.toISOString()
+					.replace(/\.\d{3}Z$/, "Z")})`
 			: "";
-		lines.push(`glm[${glm.level || "?"}]:     ${pct} of 5h coding quota${stale}${reset}`);
+		// A clock disagreeing with the vendor's by more than a minute makes the
+		// countdown above wrong by exactly that much (backlog item 11). The
+		// statusline marks this with `?`; here there is room to name it.
+		const skew = Number.isFinite(glm.skewMs)
+			? `\n              WARNING: local clock is ${formatDuration(Math.abs(glm.skewMs))} ${
+					glm.skewMs > 0 ? "ahead of" : "behind"
+				} the vendor's — the reset time above is off by that much`
+			: "";
+		lines.push(`glm[${glm.level || "?"}]:     ${pct} of 5h coding quota${stale}${reset}${skew}`);
 	}
 	if (openrouter) {
 		const stale = openrouter.stale ? " (stale)" : "";
@@ -127,6 +144,9 @@ async function loadGlm() {
 			level: data.level,
 			pct: tok ? tok.percentage : undefined,
 			resetMs: tok ? tok.nextResetTime : undefined,
+			// Present only when the fetcher measured a skew past its threshold —
+			// absent means "checked and fine", not "unknown". See CLOCK_SKEW_THRESHOLD_MS.
+			skewMs: data._skewMs,
 		};
 	} catch {
 		return { level: undefined, pct: undefined, stale: true };

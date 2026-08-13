@@ -201,6 +201,10 @@ cc 5h:2% | glm 5h:14% | or:$$$ | ds:$$ | qw:on
 - **`ds:`** — DeepSeek balance remaining (when `DEEPSEEK_API_KEY` is set), same `$`-tier gauge as `or:`. Reports total balance (DeepSeek exposes no used figure).
 - **`qw:`** — Qwen presence marker (when `DASHSCOPE_API_KEY` is set). Deliberately not a gauge: QwenCloud exposes no quota API reachable with an API key — the console's own remaining-percentage figure is authenticated by a browser login session. So the marker carries no number rather than fabricating one.
 - **`proxy down`** in bold red when the local proxy is unreachable.
+- **`!`** after a gauge — the number is older than its 60 s cache: either a fetch failed, or a background refresh is still in flight. The value shown is the last good one.
+- **`?`** after the `glm` gauge — the local clock disagrees with the vendor's by more than a minute, so the reset countdown is off by that much. `/cc-proxy:status` names the offset and direction.
+
+**The bar never waits on the network.** Every render reads only local cache files; when something is past its 60 s TTL the stale value is served immediately and a detached background process refreshes it for the next render. One expiry costs exactly one round of API calls no matter how often the bar redraws.
 
 When the [cc-status](https://github.com/betmoar/cc-status-plugin) composer is the active statusLine, this segment is discovered and composed automatically via `.claude-plugin/statusline.json` — no manual wiring needed.
 

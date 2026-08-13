@@ -23,6 +23,27 @@
 // is exactly the bug that made the statusline ignore a ~/.env PROXY_PORT. Keys
 // are passed in by the caller; DEEPSEEK_BALANCE_URL is read at call time.
 
+/**
+ * Human duration for a millisecond span: `2h15m`, `45m`, `now`.
+ *
+ * Shared because both tools render the SAME fact and used to disagree about it
+ * (backlog item 10): the statusline showed a relative countdown while the CLI
+ * showed an absolute UTC stamp, which made a reader in any other zone do the
+ * arithmetic. Timezone-independent by construction — it is a difference of two
+ * epoch values, never a wall-clock reading.
+ *
+ * Negative and sub-minute spans both collapse to "now": a quota window that has
+ * already rolled over and one about to are the same actionable fact.
+ * @param {number} ms
+ * @returns {string}
+ */
+export function formatDuration(ms) {
+	if (!Number.isFinite(ms) || ms <= 0) return "now";
+	const hours = Math.floor(ms / 3_600_000);
+	const mins = Math.floor((ms % 3_600_000) / 60_000);
+	return hours > 0 ? `${hours}h${mins > 0 ? `${mins}m` : ""}` : `${mins}m`;
+}
+
 export const QUOTA_URL = "https://api.z.ai/api/monitor/usage/quota/limit";
 export const OPENROUTER_CREDITS_URL = "https://openrouter.ai/api/v1/credits";
 export const DEEPSEEK_BALANCE_URL_DEFAULT = "https://api.deepseek.com/user/balance";
@@ -42,13 +63,58 @@ export function deepseekBalanceUrl() {
 	return process.env.DEEPSEEK_BALANCE_URL || DEEPSEEK_BALANCE_URL_DEFAULT;
 }
 
-async function fetchJson(url, headers) {
+/**
+ * Clock-skew threshold (backlog item 11). Every reset countdown assumes the
+ * local clock agrees with the vendor's; when it doesn't, the gauge is wrong by
+ * exactly that offset and nothing says so.
+ *
+ * The reference clock is free: both quota endpoints already return a `Date`
+ * header on the calls these fetchers ALREADY make (verified 2026-08-04 —
+ * api.z.ai and openrouter.ai both send one). So this costs no extra request.
+ *
+ * The threshold stays deliberately loose. Request latency inflates apparent
+ * skew by up to the round-trip time, and the GLM endpoint's p50 is ~1.1s with a
+ * measured max near 1.9s — a 5s threshold would false-positive on any slow
+ * network. 60s is far outside RTT while still catching a clock wrong enough to
+ * mislead a 5-hour countdown.
+ *
+ * This belongs here and NOT in src/: these are diagnostic calls the statusline
+ * makes on its own. Doing it on the proxy's forwarding path would mean
+ * inspecting responses to accumulate state, which is invariant 2.
+ */
+export const CLOCK_SKEW_THRESHOLD_MS = 60_000;
+
+/**
+ * Signed skew in ms between the local clock and a response's `Date` header:
+ * positive = local clock is AHEAD of the server. Returns null when the header
+ * is absent or unparseable, which is "unknown", never 0 — a false "clocks
+ * agree" is exactly the reassurance this is meant to withhold.
+ * @param {Headers} headers
+ * @returns {number|null}
+ */
+export function clockSkewMs(headers) {
+	const raw = headers?.get?.("date");
+	if (!raw) return null;
+	const serverMs = Date.parse(raw);
+	if (!Number.isFinite(serverMs)) return null;
+	return Date.now() - serverMs;
+}
+
+// Returns the parsed body plus the skew observed on that same response, so a
+// caller can attach it without a second request. The skew rides ALONGSIDE the
+// body rather than being merged into it: these bodies are vendor payloads, and
+// a synthetic key added here could collide with a real field later.
+async function fetchJsonWithSkew(url, headers) {
 	const res = await fetch(url, {
 		headers,
 		signal: AbortSignal.timeout(QUOTA_FETCH_TIMEOUT_MS),
 	});
 	if (!res.ok) throw new Error(`HTTP ${res.status}`);
-	return res.json();
+	return { json: await res.json(), skewMs: clockSkewMs(res.headers) };
+}
+
+async function fetchJson(url, headers) {
+	return (await fetchJsonWithSkew(url, headers)).json;
 }
 
 /**
@@ -60,8 +126,14 @@ async function fetchJson(url, headers) {
  * @returns {Promise<object>} throws on network/HTTP failure
  */
 export async function fetchGlmQuota(apiKey) {
-	const json = await fetchJson(QUOTA_URL, { Authorization: apiKey });
-	return json.data || {};
+	const { json, skewMs } = await fetchJsonWithSkew(QUOTA_URL, { Authorization: apiKey });
+	const data = json.data || {};
+	// Only attach when the skew is big enough to mislead the countdown. Below
+	// the threshold the key is absent, so `_skewMs in data` distinguishes "clock
+	// checked and fine" from "never measured" — the same omit-don't-invent rule
+	// the /v1/models contract follows.
+	if (skewMs !== null && Math.abs(skewMs) > CLOCK_SKEW_THRESHOLD_MS) data._skewMs = skewMs;
+	return data;
 }
 
 /**
