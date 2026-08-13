@@ -2,6 +2,16 @@
 
 All notable changes to cc-proxy are recorded here. Versions follow [semver](https://semver.org/); `package.json` is the single source of truth and propagates to `.claude-plugin/plugin.json` via `scripts/sync-version.mjs`.
 
+## [Unreleased]
+
+### Fixed
+- **The statusline segment vanished from the bar for one frame, roughly once a minute.** The three quota gauges were fetched *serially on the render path*, so the render that found the 60 s cache expired took 1478–2216 ms — against cc-status's 2 s renderer kill, which reaps the whole process group. A killed renderer emits **zero** bytes (output is a single `stdout.write` at the end) and the composer drops empty segments, so the whole thing disappeared: measured 5 of 15 cold renders over the threshold. Because ~200 of every 201 renders hit a warm cache, it read as a rare flicker rather than a reproducible defect.
+- **One cache expiry cost ~5 rounds of API calls instead of 1.** The cache was written only *after* all three fetches returned, so every render launched during that ~2 s window saw a stale file and started its own round. Measured at the real endpoint latency, six renders 300 ms apart across ONE expiry issued five fetch rounds; now one. The render path no longer makes network calls at all — an expired value is served immediately (marked `!`) and refreshed by a **detached** background process, with a `refresh.lock` making it single-flight. `detached` is load-bearing rather than tidiness: the composer's group-kill reaps an ordinary child, so a non-detached refresher would die before writing and the gauge would go permanently blank — strictly worse than the flicker. Verified by probe (cache written: YES detached / NO non-detached) and locked by a test that reproduces the composer's exact kill sequence.
+- **The two tools spelled the same reset time differently (backlog item 10).** `/cc-proxy:status` rendered an absolute UTC stamp while the statusline rendered a relative countdown, making a reader in any other zone do the arithmetic. `formatDuration()` now lives in `scripts/quota.js` and both call it; the CLI shows `(resets in 2h15m, <UTC>)`, keeping the absolute form because that report gets pasted into issues. Never a timezone bug — both were already timezone-independent.
+
+### Added
+- **Clock-drift detection on the quota gauges (backlog item 11).** Every reset countdown assumed the local clock agreed with the vendor's; when it doesn't, the gauge is wrong by exactly that offset and looks perfectly plausible. The reference clock was already free — both quota endpoints return a `Date` header on calls the fetchers make anyway — so past a deliberately loose 60 s threshold (request latency inflates apparent skew by up to the round-trip time) the statusline marks the gauge `?` and `/cc-proxy:status` names the offset and direction. Absent means "checked and fine", never `0`.
+
 ## [0.6.1] — 2026-08-13
 
 ### Added

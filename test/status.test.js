@@ -56,14 +56,20 @@ describe("status.js formatStatusReport", () => {
 				defaultBackend: "claude",
 				providers: ["glm", "openrouter", "claude"],
 			},
-			glm: { level: "pro", pct: 37, resetMs: Date.UTC(2026, 5, 26, 12, 0) },
+			// Relative to NOW, not a fixed date: the report renders a countdown
+			// (backlog item 10), so a hard-coded past timestamp would always read
+			// "resets in now" and assert nothing about the arithmetic.
+			glm: { level: "pro", pct: 37, resetMs: Date.now() + 2 * 3_600_000 + 15 * 60_000 },
 			openrouter: { remaining: 4.2, usedPct: 16 },
 			routing: ["[t] glm-5.2[1m] -> glm"],
 		});
 		assert.match(out, /proxy:\s+UP on port 4000 \(v0\.4\.2\)/);
 		assert.match(out, /providers:\s+glm, openrouter, claude/);
 		assert.match(out, /glm\[pro\]:\s+37% used/);
-		assert.match(out, /resets 2026-06-26T12:00:00Z/);
+		// Both forms: the relative countdown the statusline also shows, and the
+		// absolute stamp kept for pasting into an issue.
+		assert.match(out, /resets in 2h1[45]m/);
+		assert.match(out, /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z/);
 		assert.match(out, /openrouter:\s+\$4\.20 remaining/);
 		assert.match(out, /glm-5\.2\[1m\] -> glm/);
 	});
@@ -84,6 +90,33 @@ describe("status.js formatStatusReport", () => {
 			glm: { stale: true },
 		});
 		assert.match(out, /\(stale\)/);
+	});
+
+	it("warns when the local clock disagrees with the vendor's", () => {
+		// Backlog item 11. A skewed clock makes the countdown wrong by exactly the
+		// offset while looking perfectly plausible — the failure mode is silent
+		// confidence, so the report has to say it out loud.
+		const out = formatStatusReport({
+			status: { up: true, port: 4000, defaultBackend: "claude", providers: ["glm"] },
+			glm: {
+				level: "pro",
+				pct: 20,
+				resetMs: Date.now() + 3_600_000,
+				skewMs: 5 * 60_000, // local clock 5 minutes ahead
+			},
+		});
+		assert.match(out, /WARNING: local clock is 5m ahead of the vendor's/);
+	});
+
+	it("says nothing about the clock when no skew was measured", () => {
+		// Absent skewMs means "checked and within threshold", or "not measured" —
+		// neither is a problem, and a warning either way would train the reader to
+		// ignore the line that matters.
+		const out = formatStatusReport({
+			status: { up: true, port: 4000, defaultBackend: "claude", providers: ["glm"] },
+			glm: { level: "pro", pct: 20, resetMs: Date.now() + 3_600_000 },
+		});
+		assert.doesNotMatch(out, /WARNING: local clock/);
 	});
 
 	it("omits the reset stamp for a NaN resetMs without throwing", () => {

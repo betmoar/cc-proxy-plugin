@@ -408,7 +408,15 @@ notes referencing "backlog item N" still resolve.
    Qwen are plan capacity (effectively free to re-run), DeepSeek and OpenRouter
    are metered — so a full-matrix sweep has a real cost that a
    rank-within-provider approach mostly avoids.
-10. **Reset-time display is inconsistent between the two tools** (cosmetic).
+10. ~~**Reset-time display is inconsistent between the two tools**~~ — DONE
+    (fix/statusline-stampede). `formatDuration()` moved into `scripts/quota.js`
+    and both tools call it; the CLI now renders `(resets in 2h15m, <UTC>)`,
+    keeping the absolute stamp because that report gets pasted into issues.
+    Locked by `test/quota.test.js` ("is the single spelling shared by..."),
+    which also fails if the statusline regrows its own arithmetic. Original
+    note kept below for the reasoning.
+
+    ORIGINAL:
     `scripts/status.js` renders the GLM quota reset as an absolute UTC stamp
     (`resets 2026-08-04T20:43:41Z`) while `scripts/statusline.js` renders a
     relative countdown (`⏱2h15m`, via `formatResetTime`). Same fact, two
@@ -418,7 +426,16 @@ notes referencing "backlog item N" still resolve.
     values (a pure duration, timezone-independent). So this is a formatting
     change only — render `(resets in 2h15m)` in the CLI too, from the same
     `resetMs` it already has. Do not "fix" it as a timezone bug; there isn't one.
-11. **No clock-drift check on the quota gauges.** Every countdown assumes the
+11. ~~**No clock-drift check on the quota gauges.**~~ — DONE
+    (fix/statusline-stampede). `clockSkewMs()` reads the `Date` header off the
+    response the fetcher ALREADY makes; past `CLOCK_SKEW_THRESHOLD_MS` (60s)
+    `fetchGlmQuota` attaches `_skewMs`. The statusline marks the gauge `?`, and
+    `/cc-proxy:status` names the offset and direction. Both constraints from the
+    original note were honoured: it lives in `scripts/quota.js`, never `src/`
+    (invariant 2), and the threshold stayed loose because RTT inflates apparent
+    skew. Absent `_skewMs` means "checked and fine", never 0. Original below.
+
+    ORIGINAL: Every countdown assumes the
     local clock agrees with the vendor's. If the machine clock is off, the
     gauge is wrong by exactly that offset and nothing says so — the reset looks
     plausible and is silently late or early.

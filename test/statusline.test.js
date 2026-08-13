@@ -208,20 +208,28 @@ describe("statusline.js", () => {
 			});
 			await new Promise((r) => server.listen(0, "127.0.0.1", r));
 			const url = `http://127.0.0.1:${server.address().port}/user/balance`;
-			// A fresh empty dir: no seeded cache, so the fetch path runs. The
-			// loader writes its result here rather than into a shared location.
+			// A fresh empty dir. The render path never fetches, so the FIRST render
+			// only triggers the detached refresher and omits the gauge (there is
+			// nothing cached to show); the currency selection this test is about
+			// happens in that refresher and shows from the second render on. The
+			// wait is for the cache FILE, not a fixed sleep, so a slow machine
+			// doesn't turn into a flake.
 			const dir = fs.mkdtempSync(path.join(os.tmpdir(), "statusline-test-"));
 			try {
-				const { stdout } = await run(
-					{},
-					{
-						GLM_API_KEY: "",
-						OPENROUTER_API_KEY: "",
-						DEEPSEEK_API_KEY: "dummy",
-						DEEPSEEK_BALANCE_URL: url,
-						CLAUDE_PLUGIN_DATA: dir,
-					},
-				);
+				const env = {
+					GLM_API_KEY: "",
+					OPENROUTER_API_KEY: "",
+					DEEPSEEK_API_KEY: "dummy",
+					DEEPSEEK_BALANCE_URL: url,
+					CLAUDE_PLUGIN_DATA: dir,
+				};
+				await run({}, env);
+				const cacheFile = path.join(dir, "deepseek_balance_cache.json");
+				for (let i = 0; i < 100 && !fs.existsSync(cacheFile); i += 1) {
+					await new Promise((r) => setTimeout(r, 50));
+				}
+				assert.ok(fs.existsSync(cacheFile), `${name}: refresher never wrote ${cacheFile}`);
+				const { stdout } = await run({}, env);
 				assert.ok(
 					plain(stdout).includes(`ds:${expected} `) || plain(stdout).endsWith(`ds:${expected}`),
 					`${name}: expected ds:${expected}, got: ${plain(stdout)}`,
@@ -348,6 +356,243 @@ describe("statusline.js", () => {
 
 		const off = await run({}, { GLM_API_KEY: "", OPENROUTER_API_KEY: "", DASHSCOPE_API_KEY: "" });
 		assert.ok(!plain(off.stdout).includes("qw:"), `Expected no qw section, got: ${off.stdout}`);
+	});
+
+	// --- stale-while-revalidate: the render path never touches the network ----
+	//
+	// These drive the real script against a LOCAL counting stub, because the
+	// defect they lock is about how many upstream requests one cache expiry
+	// costs — something no unit test of a pure function can observe. Measured
+	// before the fix, at the p50 latency of the real GLM endpoint: six renders
+	// 300ms apart across ONE expiry issued FIVE rounds of fetches, and cold
+	// renders ran 1478–2216ms against cc-status's 2s kill.
+
+	// A stub that counts requests and answers slowly enough that several renders
+	// overlap one refresh window. Returns { url, count(), close() }.
+	async function countingBalanceStub(delayMs = 600) {
+		const http = await import("node:http");
+		let count = 0;
+		const server = http.createServer((_req, res) => {
+			count += 1;
+			setTimeout(() => {
+				res.setHeader("content-type", "application/json");
+				res.end(JSON.stringify({ balance_infos: [{ currency: "USD", total_balance: "42.00" }] }));
+			}, delayMs);
+		});
+		await new Promise((r) => server.listen(0, "127.0.0.1", r));
+		return {
+			url: `http://127.0.0.1:${server.address().port}/user/balance`,
+			count: () => count,
+			close: () => new Promise((r) => server.close(r)),
+		};
+	}
+
+	// Render N times at Claude Code's real ~300ms cadence, all sharing one cache
+	// dir, and resolve once every render has exited.
+	async function renderBurst(n, env, gapMs = 300) {
+		const running = [];
+		for (let i = 0; i < n; i += 1) {
+			running.push(run({}, env));
+			if (i < n - 1) await new Promise((r) => setTimeout(r, gapMs));
+		}
+		return Promise.all(running);
+	}
+
+	it("one cache expiry costs ONE upstream fetch, not one per render", async () => {
+		const stub = await countingBalanceStub();
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "statusline-swr-"));
+		try {
+			const env = {
+				CLAUDE_PLUGIN_DATA: dir,
+				DEEPSEEK_BALANCE_URL: stub.url,
+				DEEPSEEK_API_KEY: "stub-key",
+				GLM_API_KEY: "",
+				OPENROUTER_API_KEY: "",
+				DASHSCOPE_API_KEY: "",
+			};
+			await renderBurst(6, env);
+			// Let the detached refresher finish before counting.
+			await new Promise((r) => setTimeout(r, 1500));
+			assert.equal(
+				stub.count(),
+				1,
+				`6 renders across one expiry must issue exactly 1 fetch, got ${stub.count()}`,
+			);
+		} finally {
+			await stub.close();
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("never blocks the render on a slow provider", async () => {
+		// The renderer must return well inside cc-status's 2s kill even when the
+		// upstream would take longer than that window on its own.
+		const stub = await countingBalanceStub(3000);
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "statusline-swr-"));
+		try {
+			const env = {
+				CLAUDE_PLUGIN_DATA: dir,
+				DEEPSEEK_BALANCE_URL: stub.url,
+				DEEPSEEK_API_KEY: "stub-key",
+				GLM_API_KEY: "",
+				OPENROUTER_API_KEY: "",
+				DASHSCOPE_API_KEY: "",
+			};
+			const started = Date.now();
+			await run({}, env);
+			const elapsed = Date.now() - started;
+			assert.ok(elapsed < 1000, `Render must not wait on the fetch; took ${elapsed}ms`);
+		} finally {
+			await stub.close();
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("serves an expired value marked stale instead of dropping the segment", async () => {
+		// The old code re-fetched inline on expiry and, when that overran the
+		// composer's kill, emitted NOTHING — the segment vanished from the bar.
+		// An expired cache must still render, with "!" saying the number is old.
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "statusline-swr-"));
+		try {
+			fs.writeFileSync(
+				path.join(dir, "deepseek_balance_cache.json"),
+				JSON.stringify({ remaining: 42, currency: "USD", _ts: Date.now() - 120_000 }),
+			);
+			const { stdout } = await run(
+				{},
+				{
+					CLAUDE_PLUGIN_DATA: dir,
+					// Unreachable: proves the render does not depend on the fetch.
+					DEEPSEEK_BALANCE_URL: "http://127.0.0.1:1/user/balance",
+					DEEPSEEK_API_KEY: "stub-key",
+					GLM_API_KEY: "",
+					OPENROUTER_API_KEY: "",
+					DASHSCOPE_API_KEY: "",
+				},
+			);
+			assert.match(plain(stdout), /ds:\$\$!/, `Expected a stale-marked ds gauge, got: ${stdout}`);
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("holds the refresh lock so a concurrent render does not spawn a second refresher", async () => {
+		// MUTATION GUARD for takeRefreshLock(): with the lock removed, every render
+		// in the window spawns its own refresher and the fetch count rises with the
+		// render count. A fresh lock file must therefore suppress the spawn.
+		const stub = await countingBalanceStub();
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "statusline-swr-"));
+		try {
+			fs.writeFileSync(path.join(dir, "refresh.lock"), "999999");
+			await run(
+				{},
+				{
+					CLAUDE_PLUGIN_DATA: dir,
+					DEEPSEEK_BALANCE_URL: stub.url,
+					DEEPSEEK_API_KEY: "stub-key",
+					GLM_API_KEY: "",
+					OPENROUTER_API_KEY: "",
+					DASHSCOPE_API_KEY: "",
+				},
+			);
+			await new Promise((r) => setTimeout(r, 1200));
+			assert.equal(stub.count(), 0, `A held lock must suppress the refresh, got ${stub.count()}`);
+		} finally {
+			await stub.close();
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("refresh survives the composer's process-group kill", async () => {
+		// THE load-bearing property. cc-status's `_run_bounded` kills the renderer's
+		// whole process GROUP (`kill -TERM -- -$pid`) at CC_STATUS_TIMEOUT. An
+		// ordinary child is reaped by that kill, so a non-detached refresher would
+		// die before writing and the cache would never fill — the gauge would go
+		// permanently blank instead of merely flickering. `detached: true` puts the
+		// refresher in its own group, out of the kill's reach.
+		//
+		// Reproduces the composer's kill exactly: setsid-equivalent via `set -m`,
+		// then the same `kill -TERM -- -$pid` against the render's group.
+		const stub = await countingBalanceStub(700);
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "statusline-kill-"));
+		try {
+			// The kill is UNCONDITIONAL and inline — not a watchdog racing `wait`.
+			// The render now exits in ~150ms, so a watchdog cancelled after `wait`
+			// returns would never fire and the test would pass for the wrong reason
+			// (it did, on the first attempt: `detached: false` survived it).
+			// Sleeping past the render's exit but well inside the 700ms fetch means
+			// the kill lands while ONLY the refresher is still running.
+			const script = [
+				"set -m",
+				`( printf '{}' | node ${JSON.stringify(SCRIPT)} ) >/dev/null 2>&1 &`,
+				"pid=$!",
+				"sleep 0.4",
+				"kill -TERM -- -$pid 2>/dev/null",
+				"wait $pid 2>/dev/null",
+				"true",
+			].join("\n");
+			await new Promise((resolve) => {
+				const child = execFile(
+					"bash",
+					["-c", script],
+					{
+						env: {
+							...process.env,
+							CLAUDE_PLUGIN_DATA: dir,
+							DEEPSEEK_BALANCE_URL: stub.url,
+							DEEPSEEK_API_KEY: "stub-key",
+							GLM_API_KEY: "",
+							OPENROUTER_API_KEY: "",
+							DASHSCOPE_API_KEY: "",
+						},
+					},
+					() => resolve(),
+				);
+				child.stdin?.end();
+			});
+			const cacheFile = path.join(dir, "deepseek_balance_cache.json");
+			for (let i = 0; i < 60 && !fs.existsSync(cacheFile); i += 1) {
+				await new Promise((r) => setTimeout(r, 50));
+			}
+			assert.ok(
+				fs.existsSync(cacheFile),
+				"Refresher was reaped by the group kill — it must be detached, or the gauge never refreshes",
+			);
+		} finally {
+			await stub.close();
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("reclaims an abandoned lock instead of wedging the gauge forever", async () => {
+		// A refresher killed by the composer's group-kill leaves its lock behind.
+		// Without the mtime reclaim the gauge would never refresh again — a
+		// permanent freeze, strictly worse than the flicker this replaces.
+		const stub = await countingBalanceStub();
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "statusline-swr-"));
+		try {
+			const lock = path.join(dir, "refresh.lock");
+			fs.writeFileSync(lock, "999999");
+			// Backdate past REFRESH_LOCK_STALE_MS (10s).
+			const old = Date.now() - 30_000;
+			fs.utimesSync(lock, old / 1000, old / 1000);
+			await run(
+				{},
+				{
+					CLAUDE_PLUGIN_DATA: dir,
+					DEEPSEEK_BALANCE_URL: stub.url,
+					DEEPSEEK_API_KEY: "stub-key",
+					GLM_API_KEY: "",
+					OPENROUTER_API_KEY: "",
+					DASHSCOPE_API_KEY: "",
+				},
+			);
+			await new Promise((r) => setTimeout(r, 1500));
+			assert.equal(stub.count(), 1, `An abandoned lock must be reclaimed, got ${stub.count()}`);
+		} finally {
+			await stub.close();
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
 	});
 
 	// Integration test — only runs when OPENROUTER_API_KEY is set
