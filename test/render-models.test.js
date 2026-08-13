@@ -2,6 +2,7 @@ import { strict as assert } from "node:assert";
 import { execFile as execFileCb } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
+import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -9,12 +10,13 @@ import { promisify } from "node:util";
 
 const execFile = promisify(execFileCb);
 import { CONTEXT_WINDOW } from "../scripts/list-models.js";
-import { MODEL_TIERS, conduitSvg, groupByProvider } from "../scripts/render-models.js";
+import { MODEL_TIERS, UNGRADED, conduitSvg, groupByProvider } from "../scripts/render-models.js";
 import {
 	DEEPSEEK_PRICING,
 	DEFAULT_CLAUDE_MODELS,
 	DEFAULT_OPENROUTER_MODELS,
 	DEFAULT_QWEN_MODELS,
+	GRADES,
 } from "../src/models.js";
 
 // MODEL_TIERS is the display layer's only curated data (like CONTEXT_WINDOW).
@@ -49,11 +51,17 @@ describe("render-models MODEL_TIERS", () => {
 		}
 	});
 
-	it("every tier value is one of the four known labels", () => {
-		const known = new Set(["Flagship", "Strong", "Specialist", "Economy"]);
+	it("every tier value is one of the three known labels", () => {
+		// GRADES is the source of truth, not a copy of the list: it is what
+		// loadRefreshedGrades() validates against, so a value legal in the built-in
+		// table but illegal from a refresh (or vice versa) is impossible by
+		// construction. `Economy` was retired in 0.6.1 — a cost class on a
+		// capability axis — and its absence from GRADES is what keeps it out.
 		for (const v of Object.values(MODEL_TIERS)) {
-			assert.ok(known.has(v), `unknown tier value: ${v}`);
+			assert.ok(GRADES.has(v), `unknown tier value: ${v}`);
 		}
+		assert.ok(!GRADES.has("Economy"), "Economy is retired and must not be re-added");
+		assert.deepEqual([...GRADES].sort(), ["Flagship", "Specialist", "Strong"]);
 	});
 
 	it("every CONTEXT_WINDOW id also has a tier (they must stay in step)", () => {
@@ -70,20 +78,27 @@ describe("render-models MODEL_TIERS", () => {
 // diagram overlapped "OpenRouter" with "Qwen", and the GLM card listed glm-5
 // above glm-5.1. A screenshot found them; these assertions keep them found.
 describe("render-models derivations", () => {
-	it("orders models by tier, then by version descending within a tier", () => {
-		const rows = [
-			{ id: "glm-5", provider: "glm" },
-			{ id: "glm-5.2", provider: "glm" },
-			{ id: "glm-5.1", provider: "glm" },
-			{ id: "glm-4.5", provider: "glm" },
-			{ id: "glm-4.7", provider: "glm" },
-		];
-		const ids = groupByProvider(rows)
-			.get("glm")
-			.models.map((m) => m.id);
-		// glm-5.2 Flagship, then the two Strong (5.1 before 5 — numeric collation,
-		// not lexicographic, which would invert them), then Economy newest-first.
-		assert.deepEqual(ids, ["glm-5.2", "glm-5.1", "glm-5", "glm-4.7", "glm-4.5"]);
+	// SUBPROCESS with a throwaway HOME, not an in-process call: groupByProvider
+	// sorts by grade, grades come from gradeOf(), and gradeOf() overlays
+	// ~/.claude/cc-proxy/grades.json — bound once at module import, so swapping
+	// env.HOME inside this process is already too late. Read the developer's real
+	// file until now; verified by pinning a HOME whose grades.json calls glm-5.2
+	// "Specialist" and glm-4.5 "Flagship", which inverted this order and failed.
+	it("orders models by tier, then by version descending within a tier", async () => {
+		const home = fs.mkdtempSync(path.join(os.tmpdir(), "ccp-order-"));
+		try {
+			const script = new URL("./fixtures/group-order-subprocess.mjs", import.meta.url).pathname;
+			const { stdout } = await execFile(process.execPath, [script], {
+				env: { ...process.env, HOME: home },
+			});
+			const { ids } = JSON.parse(stdout);
+			// glm-5.2 Flagship, then the two Strong (5.1 before 5 — numeric collation,
+			// not lexicographic, which would invert them), then the two Specialist
+			// (superseded generations; `Economy` until 0.6.1 retired it) newest-first.
+			assert.deepEqual(ids, ["glm-5.2", "glm-5.1", "glm-5", "glm-4.7", "glm-4.5"]);
+		} finally {
+			fs.rmSync(home, { recursive: true, force: true });
+		}
 	});
 
 	it("draws one diagram leg per provider, with no overlapping labels", () => {
@@ -342,7 +357,59 @@ describe("route aliases keep their model's grade", () => {
 		// vendor/model is a distinct deployment, not an alias of the bare id.
 		assert.equal(MODEL_TIERS["deepseek/deepseek-v4-pro"], "Flagship", "curated separately");
 		const [card] = groupByProvider([{ id: "vendor/never-seen", provider: "openrouter" }]).values();
-		assert.equal(card.models[0].tier, "Specialist", "unknown slash id falls to the default");
+		// Renders as ungraded, NOT as Specialist: 0.6.1 retired the default, and a
+		// page that printed a grade the API omits would be inventing one. `ungraded`
+		// is this layer's word for the absence, not a fourth grade — it is
+		// deliberately not in GRADES.
+		assert.equal(card.models[0].tier, UNGRADED, "an unassessed slash id renders as ungraded");
+		assert.ok(!GRADES.has(UNGRADED), "the ungraded marker must never be a publishable grade");
+	});
+
+	// Defect (4): the renderer read the built-in MODEL_GRADES table directly
+	// (`MODEL_TIERS = MODEL_GRADES`, then a lookup), so after `bench grades`
+	// wrote ~/.claude/cc-proxy/grades.json the endpoint and docs/models.html
+	// disagreed about the same model — the exact "same curated data in two
+	// places" drift the file's own docstring forbids. It now calls gradeOf(),
+	// which applies the refresh. Subprocess with a throwaway HOME, because both
+	// modules read that file ONCE at import.
+	it("renders the REFRESHED grade, agreeing with gradeOf() — including for an alias", async () => {
+		const home = fs.mkdtempSync(path.join(os.tmpdir(), "ccp-render-grades-"));
+		try {
+			const dir = path.join(home, ".claude", "cc-proxy");
+			fs.mkdirSync(dir, { recursive: true });
+			// deepseek-v4-pro is Flagship built-in; the refresh demotes it to
+			// Specialist, so a stale table read is visible as a wrong answer rather
+			// than an accidental match.
+			fs.writeFileSync(
+				path.join(dir, "grades.json"),
+				JSON.stringify({ models: { "deepseek-v4-pro": { grade: "Specialist" } } }),
+			);
+			const script = path.join(
+				path.dirname(fileURLToPath(import.meta.url)),
+				"./fixtures/render-grade-agreement.mjs",
+			);
+			const { stdout } = await execFile(process.execPath, [script], {
+				env: { ...process.env, HOME: home },
+			});
+			const got = JSON.parse(stdout);
+			assert.deepEqual(
+				got,
+				{
+					bare: { rendered: "Specialist", gradeOf: "Specialist" },
+					// The alias must resolve through the bare tail. gradeOf() has NO tail
+					// fallback (the API grades on entry.id before the lens is applied),
+					// so the renderer keeps that fallback itself — dropping it would
+					// silently render every `<provider>:` row as ungraded.
+					// `null` is the fixture's wire encoding of undefined — JSON drops an
+					// undefined-valued key, which would make the absence unassertable.
+					alias: { rendered: "Specialist", gradeOf: null },
+					unassessed: { rendered: UNGRADED, gradeOf: null },
+				},
+				`renderer and gradeOf disagree: ${stdout}`,
+			);
+		} finally {
+			fs.rmSync(home, { recursive: true, force: true });
+		}
 	});
 });
 
@@ -353,15 +420,17 @@ describe("route aliases keep their model's grade", () => {
 // run the renderer as a subprocess against a fake /_status + /v1/models, so a
 // regression fails the gate instead of waiting for someone to regenerate.
 describe("render-models against a live-shaped proxy", () => {
-	/** Serve the two endpoints the renderer fetches, then run it and return stdout. */
-	async function render(modelsData, env = {}) {
+	/** Serve the two endpoints the renderer fetches, then run it and return stdout.
+	 * `providers` overrides the /_status leg list — a card is dropped entirely
+	 * for a provider the proxy does not report, so an openrouter row needs it. */
+	async function render(modelsData, env = {}, providers = ["glm", "deepseek", "qwen", "claude"]) {
 		const server = http.createServer((req, res) => {
 			const body = req.url.startsWith("/_status")
 				? JSON.stringify({
 						port: 0,
 						version: "test",
 						defaultBackend: "claude",
-						providers: ["glm", "deepseek", "qwen", "claude"],
+						providers,
 					})
 				: JSON.stringify({ object: "list", data: modelsData });
 			res.writeHead(200, { "content-type": "application/json" });
@@ -369,6 +438,14 @@ describe("render-models against a live-shaped proxy", () => {
 		});
 		await new Promise((r) => server.listen(0, "127.0.0.1", r));
 		const { port } = server.address();
+		// Throwaway HOME, same pattern as test/models.test.js:415 and
+		// grades-refresh.test.js. The renderer grades through gradeOf(), which
+		// overlays ~/.claude/cc-proxy/grades.json at module load — so inheriting
+		// the real HOME made these assertions depend on whatever the developer
+		// last benched. Verified: a HOME whose grades.json calls glm-5.2
+		// "Specialist" and glm-4.5 "Flagship" fails the two ordering tests here.
+		// 9ac2bf2 fixed exactly this for models.test.js; this layer was missed.
+		const home = fs.mkdtempSync(path.join(os.tmpdir(), "ccp-render-"));
 		try {
 			const script = path.join(
 				path.dirname(fileURLToPath(import.meta.url)),
@@ -378,6 +455,7 @@ describe("render-models against a live-shaped proxy", () => {
 				env: {
 					...process.env,
 					...env,
+					HOME: home,
 					PROXY_PORT: String(port),
 					GLM_API_KEY: "g",
 					DEEPSEEK_API_KEY: "d",
@@ -387,6 +465,7 @@ describe("render-models against a live-shaped proxy", () => {
 			});
 			return stdout;
 		} finally {
+			fs.rmSync(home, { recursive: true, force: true });
 			server.close();
 		}
 	}
@@ -398,26 +477,158 @@ describe("render-models against a live-shaped proxy", () => {
 	};
 
 	// Discovery publishes BOTH spellings; the bare one is owned by DeepSeek while
-	// the plan's copy carries the qwen: lens. Re-deriving the provider through the
-	// cost-ranked router (the defect) collapses both onto Qwen and deletes the
-	// DeepSeek card entirely.
+	// the plan's copy carries the qwen: lens. Re-deriving the provider through
+	// attribute()/rankRoutes (the defect this guards) is a MOVING TARGET across
+	// router changes — pre-#19 it collapsed both onto Qwen (cheapest tier); this
+	// stub still asserts the published `provider` field wins regardless of what
+	// the router would derive, so the card is stable even if a future routing
+	// change flips the derived answer back.
 	const DUAL = [
 		{ type: "model", id: "deepseek-v4-pro", display_name: "P", provider: "deepseek", tier: 3 },
 		{ type: "model", id: "qwen:deepseek-v4-pro", display_name: "P", provider: "qwen", tier: 2 },
 		{ type: "model", id: "qwen3.8-max", display_name: "M", provider: "qwen", tier: 2 },
 	];
 
-	it("files each row under the provider DISCOVERY published, not the cheapest route", async () => {
+	it("files each row under the provider DISCOVERY published, not a re-derived route", async () => {
 		const html = await render(DUAL);
 		assert.ok(
 			cardFor(html, "DeepSeek").includes(">deepseek-v4-pro<"),
-			"the owning vendor must keep its bare id — re-deriving sends it to the cheaper plan",
+			"the owning vendor must keep its bare id regardless of what re-deriving would pick",
 		);
 		const qwen = cardFor(html, "Qwen");
 		assert.ok(qwen.includes("qwen:deepseek-v4-pro"), "the plan's copy renders under its lens");
 		assert.ok(
 			!qwen.includes(">deepseek-v4-pro<"),
 			"the bare id must not ALSO appear on Qwen — that is the duplicate row",
+		);
+	});
+
+	// CONTEXT_WINDOW is keyed by the BARE vendor id, but this page only ever sees
+	// the PUBLISHED id, which may carry a `<provider>:` lens. Without the same
+	// alias fallback tierFor uses, a lensed row rendered blank beside an
+	// identical bare row showing 1M — the same model answering two ways. Caught
+	// by an external review of PR #32 after five internal lenses missed it: they
+	// were all pointed at `grade`, and this is the lookup on the next line of the
+	// same .map(). Three such rows shipped in docs/models.html.
+	it("renders the context window for a lensed id, not just the bare one", async () => {
+		const html = await render([
+			{ type: "model", id: "glm-5.2", display_name: "G", provider: "glm", tier: 2 },
+			{ type: "model", id: "qwen:glm-5.2", display_name: "G", provider: "qwen", tier: 2 },
+		]);
+		assert.match(
+			cardFor(html, "GLM"),
+			/glm-5\.2[\s\S]{0,200}?class="win">1M</,
+			"the bare id has a curated window and must render it",
+		);
+		assert.match(
+			cardFor(html, "Qwen"),
+			/qwen:glm-5\.2[\s\S]{0,200}?class="win">1M</,
+			"the SAME model under a lens must render the SAME window, not a blank",
+		);
+	});
+
+	// The renderer used to re-derive every window from the curated CONTEXT_WINDOW
+	// table, which covers only the ids this repo curates. OpenRouter's ~300 carry
+	// a real `context_length` that only the API knows, so ALL 20 OpenRouter rows
+	// in the committed docs/models.html rendered blank while /v1/models had the
+	// number in hand — the same "re-derivation beats the published field" defect
+	// class as the provider mix-up and the lensed-row window (c243b74).
+	it("renders the PUBLISHED context_window for an id the curated table does not cover", async () => {
+		const html = await render(
+			[
+				{
+					type: "model",
+					id: "moonshotai/kimi-k3",
+					display_name: "K",
+					provider: "openrouter",
+					tier: 4,
+					context_window: 262144,
+				},
+			],
+			{ OPENROUTER_API_KEY: "or" },
+			["openrouter"],
+		);
+		assert.match(
+			cardFor(html, "OpenRouter"),
+			/kimi-k3[\s\S]{0,200}?class="win">262K</,
+			"an uncurated id must render the window the API published, not a blank",
+		);
+	});
+
+	// An id with no curated window AND no published one still renders no window
+	// column — the omission survives to the page, it does not become "0K".
+	it("renders no window when neither the table nor the API has one", async () => {
+		const html = await render(
+			[{ type: "model", id: "vendor/unknown", display_name: "U", provider: "openrouter", tier: 4 }],
+			{ OPENROUTER_API_KEY: "or" },
+			["openrouter"],
+		);
+		const card = cardFor(html, "OpenRouter");
+		assert.match(card, /vendor\/<wbr>unknown/, "the row must render at all");
+		assert.doesNotMatch(
+			card,
+			/vendor\/<wbr>unknown[\s\S]{0,120}?class="win"/,
+			"no curated and no published window must render no window column",
+		);
+	});
+
+	// formatContextWindow rounds to the nearest K, so a published window under 500
+	// formats as "0K" — which reads as "no context", strictly worse than the blank
+	// the published-window fix exists to remove. Preferring the published integer
+	// opened this path: before it, the field was discarded and a junk value could
+	// not reach the page at all. The guard is `>= 1000`, not `> 0`.
+	it("ignores a sub-1K published window rather than rendering 0K", async () => {
+		const html = await render(
+			[
+				{
+					type: "model",
+					id: "vendor/tiny",
+					display_name: "T",
+					provider: "openrouter",
+					tier: 4,
+					context_window: 400,
+				},
+			],
+			{ OPENROUTER_API_KEY: "or" },
+			["openrouter"],
+		);
+		const card = cardFor(html, "OpenRouter");
+		assert.doesNotMatch(card, /class="win">0K</, 'a rounded-to-zero window must not render "0K"');
+		assert.doesNotMatch(
+			card,
+			/vendor\/<wbr>tiny[\s\S]{0,120}?class="win"/,
+			"it must render no window column at all",
+		);
+	});
+
+	// Both ids the Qwen plan resells carry the "also on plan" tag on their NATIVE
+	// card, for the same reason: the plan serves them but does not route them.
+	// `deepseek-v4-pro` was missing from QWEN_PLAN_ALSO (caught in review on
+	// PR #21) — the set had been narrowed to glm-5.2 on the theory that a
+	// natively-routed id isn't a "dup", which is exactly backwards: native
+	// routing is the PRECONDITION for the tag. Without it the Qwen card
+	// under-reports the entitlement.
+	it("tags a natively-routed id that the Qwen plan also serves", async () => {
+		const html = await render([
+			...DUAL,
+			{ type: "model", id: "glm-5.2", display_name: "G", provider: "glm", tier: 2 },
+		]);
+		const deepseekCard = cardFor(html, "DeepSeek");
+		assert.match(
+			deepseekCard,
+			/deepseek-v4-pro[\s\S]{0,400}?also on plan/,
+			"deepseek-v4-pro routes native but the plan serves it — it must carry the tag",
+		);
+		assert.match(
+			cardFor(html, "GLM"),
+			/glm-5\.2[\s\S]{0,400}?also on plan/,
+			"glm-5.2 is the other resold id and must carry the tag too",
+		);
+		// The tag marks the plan's reach, not a second route: the id still files
+		// under its owner, never onto the Qwen card.
+		assert.ok(
+			!cardFor(html, "Qwen").includes(">deepseek-v4-pro<"),
+			"tagging must not move the row onto the plan's card",
 		);
 	});
 
@@ -454,13 +665,13 @@ describe("render-models against a live-shaped proxy", () => {
 	});
 
 	it("orders by grade first, then newest within a grade", async () => {
-		// A fresh Economy model must not displace a Flagship on a capped card —
+		// A fresh weaker model must not displace a Flagship on a capped card —
 		// sorting on date alone was the tempting simplification.
 		const html = await render([
 			{
 				type: "model",
 				id: "glm-4.5",
-				display_name: "old-economy",
+				display_name: "old-specialist",
 				provider: "glm",
 				created_at: "2020-01-01T00:00:00Z",
 			},
@@ -474,15 +685,29 @@ describe("render-models against a live-shaped proxy", () => {
 			{
 				type: "model",
 				id: "glm-4.6",
-				display_name: "new-economy",
+				display_name: "new-specialist",
 				provider: "glm",
 				created_at: "2026-01-01T00:00:00Z",
+			},
+			// Never assessed, and the NEWEST of the four: it must still sort last.
+			// Absence of a grade cannot buy a row the top of the card, which is what
+			// an "unknown sorts first" rank would have done.
+			{
+				type: "model",
+				id: "glm-9.9-unassessed",
+				display_name: "brand-new-unknown",
+				provider: "glm",
+				created_at: "2027-01-01T00:00:00Z",
 			},
 		]);
 		const ids = [...cardFor(html, "GLM").matchAll(/<span class="mname">([^<]+)<\/span>/g)].map(
 			(m) => m[1],
 		);
 		assert.equal(ids[0], "glm-5.2", "Flagship leads despite being the oldest");
-		assert.deepEqual(ids.slice(1), ["glm-4.6", "glm-4.5"], "within Economy, newest first");
+		assert.deepEqual(
+			ids.slice(1),
+			["glm-4.6", "glm-4.5", "glm-9.9-unassessed"],
+			"within Specialist newest first, and the ungraded row sorts below every grade",
+		);
 	});
 });

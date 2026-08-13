@@ -1,6 +1,6 @@
 ---
 name: setup
-description: One-time setup for the cc-proxy plugin. Writes API keys (GLM_API_KEY, optionally OPENROUTER_API_KEY) to ~/.env, and configures ANTHROPIC_BASE_URL and the glm-5.2[1m] custom model option in ~/.claude/settings.json so the SessionStart hook can auto-start the proxy and /model can route to GLM. Invoke via /cc-proxy:setup.
+description: One-time setup for the cc-proxy plugin. Writes API keys (all optional — GLM_API_KEY, OPENROUTER_API_KEY, DEEPSEEK_API_KEY, DASHSCOPE_API_KEY) to ~/.env, and configures ANTHROPIC_BASE_URL and the glm-5.2[1m] custom model option in ~/.claude/settings.json so the SessionStart hook can auto-start the proxy and /model can route to GLM. Invoke via /cc-proxy:setup.
 ---
 
 # cc-proxy setup
@@ -28,9 +28,14 @@ API keys live in `~/.env` — the single source of truth the proxy reads at star
 
 Read `~/.env` first (create the file if absent). For each key, reuse a value already present rather than re-asking.
 
-**Z.ai / GLM — required.** This is the model wired into the `/model` picker. If `GLM_API_KEY` is missing or empty in `~/.env`, **ask explicitly**:
+**Z.ai / GLM — optional, but the one this plugin is built around.** It is the model wired into the `/model` picker, so without it that picker entry routes nowhere useful. If `GLM_API_KEY` is missing or empty in `~/.env`, **ask explicitly**:
 
-> "Enter your Z.ai API key (https://z.ai → Dashboard → API Keys). It will be stored in ~/.env:"
+> "Enter your Z.ai API key (https://z.ai → Dashboard → API Keys), or press Enter to skip. It will be stored in ~/.env:"
+
+If the user skips, continue setup — do not stop and do not re-ask. The proxy
+starts without it and routes to Claude; a backend with no key is simply not
+registered. Say once that `glm-5.2[1m]` will appear in `/model` but won't route
+until a key is added, then move on.
 
 **OpenRouter — optional.** Ask the user whether they also want OpenRouter routing. If yes and `OPENROUTER_API_KEY` is missing or empty in `~/.env`, ask:
 
@@ -57,7 +62,17 @@ Read the current file, then merge the following into the `env` object (create `e
 ```json
 {
   "env": {
-    "ANTHROPIC_BASE_URL": "http://127.0.0.1:4000",
+    "ANTHROPIC_BASE_URL": "http://127.0.0.1:4000"
+  }
+}
+```
+
+**Then, ONLY if a `GLM_API_KEY` was collected in step 2**, also merge the picker
+entry:
+
+```json
+{
+  "env": {
     "ANTHROPIC_CUSTOM_MODEL_OPTION": "glm-5.2[1m]",
     "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME": "GLM-5.2 (1M)",
     "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION": "Z.ai GLM-5.2 1M-context (routed via cc-proxy)"
@@ -65,7 +80,17 @@ Read the current file, then merge the following into the `env` object (create `e
 }
 ```
 
-This registers `glm-5.2[1m]` in the `/model` picker (Claude Code allows exactly one custom model option). If `ANTHROPIC_CUSTOM_MODEL_OPTION` is already set to a different value, ask the user before overwriting it.
+This registers `glm-5.2[1m]` in the `/model` picker (Claude Code allows exactly
+one custom model option). If `ANTHROPIC_CUSTOM_MODEL_OPTION` is already set to a
+different value, ask the user before overwriting it.
+
+**Why the condition.** The GLM key is skippable (issue #20), and the picker slot
+holds exactly one entry. Writing `glm-5.2[1m]` for a user who skipped it puts a
+model in their picker that cannot route — it resolves to the default backend
+instead, and the only warning was spoken once during setup and never persisted,
+so weeks later the entry fails with nothing on disk explaining why. If the user
+skipped GLM, say plainly that the picker entry was skipped too, and that adding
+`GLM_API_KEY` to `~/.env` and re-running `/cc-proxy:setup` will add it.
 
 Write the file back with 2-space indentation, matching the existing formatting.
 

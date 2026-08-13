@@ -14,13 +14,17 @@
 //
 // NOTHING is curated here any more. The intelligence tier now lives in
 // src/models.js as MODEL_GRADES and is published on /v1/models as `grade`;
-// MODEL_TIERS below is a re-export so this layer keeps its vocabulary while
-// drift stays impossible. That followed CONTEXT_WINDOW's move in 0.5.1, for the
-// same reason: a second consumer (cc-operator, dispatching by model strength)
-// needed it programmatically, and the alternative was the same curated table in
-// two repos. The caveat that reversal carried still stands — a published grade
-// is API surface, so a new model with no entry silently ships "Specialist", and
-// the grades themselves still want evals (CLAUDE.md backlog item 9).
+// this layer keeps its vocabulary but reads through gradeOf(), the SAME
+// function the endpoint calls. Re-exporting the raw MODEL_GRADES table was not
+// enough: gradeOf() also applies the `bench grades` refresh from
+// ~/.claude/cc-proxy/grades.json, so a table read went stale the moment an
+// operator refreshed and the page then disagreed with /v1/models about the same
+// model. That followed CONTEXT_WINDOW's move in 0.5.1, for the same reason: a
+// second consumer (cc-operator, dispatching by model strength) needed it
+// programmatically, and the alternative was the same curated table in two
+// repos. A model nobody has assessed has NO grade — the endpoint omits the
+// field and this page renders it as "ungraded" (0 of 4 dots), sorted last.
+// The grades themselves still want evals (docs/BACKLOG.md item 9).
 //
 // Lookup keys are VENDOR ids. A `<provider>:` route alias is stripped before the
 // lookup (tierFor) — it is the same model reached another way. Pinned by
@@ -28,9 +32,15 @@
 // caught at the test gate.
 
 import { loadEnv } from "../src/env.js";
-import { DEFAULT_GRADE, MODEL_GRADES } from "../src/models.js";
+import { MODEL_GRADES, gradeOf } from "../src/models.js";
 import { buildProviders } from "../src/providers.js";
-import { CONTEXT_WINDOW, DISPLAY, attribute, registeredProviders } from "./list-models.js";
+import {
+	CONTEXT_WINDOW,
+	DISPLAY,
+	attribute,
+	formatContextWindow,
+	registeredProviders,
+} from "./list-models.js";
 
 // MUST stay directly under the imports — see list-models.js / CLAUDE.md.
 loadEnv();
@@ -62,24 +72,68 @@ const ROW_LIMIT = (() => {
  * programmatically, exactly as CONTEXT_WINDOW moved in 0.5.1. This re-export
  * keeps the display layer's vocabulary while making drift impossible.
  *
+ * READ-ONLY, and NOT the lookup path — tierFor() below goes through gradeOf(),
+ * which also applies the `bench grades` refresh. This export exists for the
+ * coverage assertions in test/render-models.test.js (every discovery id has a
+ * built-in grade); using it to render would republish the pre-refresh table.
+ *
  * Do not reintroduce a local copy: "the same curated data in two places" is the
  * failure `test/couplings.test.js` exists to catch.
- * @type {Record<string, "Flagship" | "Strong" | "Specialist" | "Economy">}
+ * @type {Record<string, "Flagship" | "Strong" | "Specialist">}
  */
 export const MODEL_TIERS = MODEL_GRADES;
 
-const DEFAULT_TIER = DEFAULT_GRADE;
+/** How an UNASSESSED model renders. Not a grade — `/v1/models` omits the field
+ * for these ids (0.6.1 retired the `Specialist` default, which read as a verdict
+ * on 299 of 320 models nobody had looked at). A row still has to sort and still
+ * has to print something, so the absence gets an explicit name here rather than
+ * inheriting a default the API no longer has. Lowercase deliberately: the three
+ * real grades are proper nouns, this is a statement about our knowledge. */
+export const UNGRADED = "ungraded";
 
-/** The rank of a tier, for ordering rows Flagship → Economy. Unknown ranks below Economy. */
-const TIER_ORDER = { Flagship: 0, Strong: 1, Specialist: 2, Economy: 3 };
+/** The rank of a tier, for ordering rows Flagship → ungraded (last). */
+const TIER_ORDER = { Flagship: 0, Strong: 1, Specialist: 2 };
 const tierRank = (t) => TIER_ORDER[t] ?? 99;
 // Strips a `<provider>:` route selector before the lookup: the grade table is
 // keyed on VENDOR ids, and an alias is the same model reached another way — so
-// `deepseek:deepseek-v4-pro` must grade Flagship like its bare form, not fall to
-// the Specialist default. (Not `/`: an OpenRouter `vendor/model` id is its own
-// key, deliberately — see CONTEXT_WINDOW's "keyed on the EXACT id" note.)
-const tierFor = (id) =>
-	MODEL_TIERS[id] ?? MODEL_TIERS[id.slice(id.indexOf(":") + 1)] ?? DEFAULT_TIER;
+// `deepseek:deepseek-v4-pro` must grade Flagship like its bare form, not render
+// as ungraded. (Not `/`: an OpenRouter `vendor/model` id is its own key,
+// deliberately — see CONTEXT_WINDOW's "keyed on the EXACT id" note.)
+//
+// gradeOf() does NOT do this tail fallback — the API never needs it, because
+// collectModels() grades on the bare `entry.id` BEFORE applying the lens, while
+// this page only ever sees the published (already-prefixed) id. So the aliasing
+// lives here, and it is two gradeOf() calls rather than one lookup with a
+// fallback key. The prototype trap the old table lookup had to guard
+// (`constructor` inheriting a function from Object.prototype) is gone with the
+// table read: gradeOf() uses Object.hasOwn internally and returns undefined.
+const tierFor = (id) => gradeOf(id) ?? gradeOf(id.slice(id.indexOf(":") + 1)) ?? UNGRADED;
+
+/** Curated context window for a published id, or undefined.
+ *
+ * Same aliasing as tierFor, and for the same reason: CONTEXT_WINDOW is keyed by
+ * the BARE vendor id, but this page sees the published one, which may carry a
+ * `<provider>:` lens. Without the fallback `qwen:glm-5.2` rendered a blank
+ * window beside a bare `glm-5.2` showing 1M — the same model, two answers.
+ * Object.hasOwn on both reads: ids come from live catalogs, so `constructor`
+ * would otherwise inherit a function off Object.prototype. */
+const windowFor = (id, published) => {
+	// The PUBLISHED integer wins when the API sent one. `provider` above already
+	// learned this lesson ("use the published field, not a re-derivation"): the
+	// curated table covers the ids this repo curates, while OpenRouter's ~300
+	// carry a real `context_length` that only the API knows. Re-deriving from the
+	// table alone rendered all 20 OpenRouter rows blank while /v1/models had the
+	// number in hand.
+	// >= 1000, not > 0: formatContextWindow rounds to the nearest K, so anything
+	// under 500 renders "0K" and 500-999 renders "1K". "0K" reads as "no context"
+	// — worse than the blank this fix exists to remove. A sub-1K window is not a
+	// real model anyway, so it falls through to the curated table and then to no
+	// column at all, which states the truth: we have nothing useful to show.
+	if (typeof published === "number" && published >= 1000) return formatContextWindow(published);
+	if (Object.hasOwn(CONTEXT_WINDOW, id)) return CONTEXT_WINDOW[id];
+	const bare = id.slice(id.indexOf(":") + 1);
+	return Object.hasOwn(CONTEXT_WINDOW, bare) ? CONTEXT_WINDOW[bare] : undefined;
+};
 
 /** Which provider legs pull their list live vs. ship a curated static list.
  * As of 2026-08-06 only Claude is static: it has no discoverable catalog
@@ -94,18 +148,27 @@ const LIVE_LEGS = new Set(["glm", "deepseek", "openrouter", "qwen"]);
  * injects a preamble: +6 input tokens on `glm-5.2`). Tagged rather than
  * re-homed, so the plan's true scope is visible without implying cc-proxy will
  * route there. 200-verified against the plan host 2026-08-04; re-probe before a
- * release. Only glm-5.2 qualifies: `deepseek-v4-pro` now ROUTES to the plan
- * (its native route is credit-billed — see providers.js QWEN_PLAN_RESELLS), and
- * `deepseek-v4-flash-0731` is plan-only. */
-const QWEN_PLAN_ALSO = new Set(["glm-5.2"]);
+ * release.
+ *
+ * Both ids the plan resells qualify, and for the SAME reason — each keeps its
+ * native route while the plan also serves it. `glm-5.2` routes to Z.ai (a
+ * native plan outranks a resold one) and `deepseek-v4-pro` routes to DeepSeek
+ * since issue #19 (0.6.1, native-first ranking). Excluding the DeepSeek id
+ * would under-report the plan's scope on the Qwen card — exactly what the tag
+ * exists to prevent. `deepseek-v4-flash-0731` is NOT here: it is plan-ONLY (no
+ * native route exists), so the plan is its one true home and it renders on the
+ * Qwen card bare, with nothing to cross-reference. */
+const QWEN_PLAN_ALSO = new Set(["glm-5.2", "deepseek-v4-pro"]);
 
 // The number of dots a tier fills, of 4. Hue-independent ordinal encoding — a
-// tier never relies on color alone (the dot fill carries it).
-const DOTS = { Flagship: 4, Strong: 3, Specialist: 2, Economy: 1 };
+// tier never relies on color alone (the dot fill carries it). An unassessed row
+// fills NONE: an empty scale reads as "no reading taken", which is the claim,
+// whereas one filled dot would read as "measured, and weak".
+const DOTS = { Flagship: 4, Strong: 3, Specialist: 2, [UNGRADED]: 0 };
 
 /** Monospace glyph, identity colour, and the two ORTHOGONAL facts about how a
  * backend is reached. Neither is derivable from the other, and neither is a
- * capability claim (see CLAUDE.md backlog items 8 and 9):
+ * capability claim (see docs/BACKLOG.md items 8 and 9):
  *
  *   `source` — distance from the weights. `native` = the model's own provider;
  *     `plan` = a contracted capacity deal reselling it (the vendor provisions
@@ -120,11 +183,11 @@ const DOTS = { Flagship: 4, Strong: 3, Specialist: 2, Economy: 1 };
  * provider's quota/balance endpoint 2026-08-04 (Z.ai reports level=pro;
  * DeepSeek reports a topped-up USD balance). */
 const PROVIDER_META = {
-	glm: { glyph: "G", color: "#eb6834", source: "native", billing: "plan" },
-	deepseek: { glyph: "DS", color: "#1baf7a", source: "native", billing: "credits" },
-	openrouter: { glyph: "OR", color: "#eda100", source: "reseller", billing: "credits" },
-	qwen: { glyph: "Q", color: "#e87ba4", source: "plan", billing: "plan" },
-	claude: { glyph: "C", color: "#2a78d6", source: "native", billing: "plan" },
+	glm: { glyph: "G", color: "#c0c0c0", source: "native", billing: "plan" },
+	deepseek: { glyph: "DS", color: "#4d6bfe", source: "native", billing: "credits" },
+	openrouter: { glyph: "OR", color: "#c8ff00", source: "reseller", billing: "credits" },
+	qwen: { glyph: "Q", color: "#653aff", source: "plan", billing: "plan" },
+	claude: { glyph: "C", color: "#c96442", source: "native", billing: "plan" },
 };
 
 /** Rank a provider by route quality for display order: native → plan → credits
@@ -163,12 +226,14 @@ async function fetchJson(url) {
 	return res.json();
 }
 
-/** Group discovery rows into per-provider cards, ordered Flagship→Economy within.
+/** Group discovery rows into per-provider cards, ordered Flagship→ungraded within.
  * @param {ReturnType<typeof attribute>[] & any[]} rows
  * @param {Map<string, { models: any[], live: boolean }>} acc
  */
 export function groupByProvider(rows) {
-	/** @type {Map<string, { live: boolean, total?: number, isDefault?: boolean, models: Array<{ id: string, dup?: boolean, plan?: boolean, tier: string, created?: string | null }> }>} */
+	/** `context_window` is OPTIONAL and absent-not-undefined, mirroring the wire
+	 * contract it is carried from: a row has the key only when the API published
+	 * one. @type {Map<string, { live: boolean, total?: number, isDefault?: boolean, models: Array<{ id: string, dup?: boolean, plan?: boolean, tier: string, created?: string | null, context_window?: number }> }>} */
 	const acc = new Map();
 	// Native ids (non-openrouter) — an OpenRouter row whose bare form is reachable
 	// natively gets an "also native" tag (it's the same model, two ways).
@@ -189,11 +254,16 @@ export function groupByProvider(rows) {
 			plan,
 			tier: tierFor(r.id),
 			created: r.created_at || null,
+			// Carried through, not re-derived downstream: this rebuild is where a
+			// published `context_window` would otherwise be dropped, leaving the row
+			// renderer with only the curated table — which is how all 20 OpenRouter
+			// rows shipped blank. Omitted when absent, so the key stays the test.
+			...("context_window" in r ? { context_window: r.context_window } : {}),
 		});
 	}
 	// Grade first, then NEWEST within a grade, then id descending as the final
 	// tie-break. Grade leads deliberately: sorting by date alone lets a fresh
-	// Economy model push a Flagship off a capped card, and the reader scanning
+	// superseded model push a Flagship off a capped card, and the reader scanning
 	// for "the good one" wants capability first. Date only orders WITHIN a grade,
 	// where every candidate is equally strong and recency is the useful signal.
 	//
@@ -228,7 +298,13 @@ function providerCard([pid, group]) {
 		.map((m) => {
 			// The context window, when we know it — the same curated map the text
 			// table renders, so the two views can't disagree about a model.
-			const win = CONTEXT_WINDOW[m.id];
+			// Object.hasOwn for the same reason as tierFor above: m.id comes from a
+			// live catalog, and a bare lookup of `constructor` returns a function.
+			// And the same `<provider>:` fallback tierFor uses: the map is keyed by
+			// the BARE vendor id, so `qwen:glm-5.2` must fall back to `glm-5.2` or
+			// the lensed row renders blank next to an identical bare row that does
+			// not (measured: 3 such rows shipped in docs/models.html).
+			const win = windowFor(m.id, m.context_window);
 			// A zero-width break opportunity after the namespace slash, so a long
 			// OpenRouter id wraps on the boundary a reader recognizes.
 			const id = esc(m.id).replace("/", "/<wbr>");
@@ -300,7 +376,7 @@ export function conduitSvg(ids) {
 	const paths = legs
 		.map(
 			(l) =>
-				`<path d="M${l.x} ${SPINE_Y} V${l.node + (l.node < SPINE_Y ? 8 : -8)}" stroke="var(--rail)"/>` +
+				`<path d="M${l.x} ${SPINE_Y} V${l.node + (l.node < SPINE_Y ? 8 : -8)}" stroke="#5fa8a8"/>` +
 				`<circle cx="${l.x}" cy="${l.node}" r="7" fill="var(--surface-2)" stroke="${l.color}"/>`,
 		)
 		.join("");
@@ -311,13 +387,13 @@ export function conduitSvg(ids) {
 		)
 		.join("");
 	return `<svg viewBox="0 0 ${Math.round(overhang) + 16} 200" role="img">
-          <path d="M44 ${SPINE_Y} H104" stroke="var(--rail)" stroke-width="2" stroke-linecap="round" fill="none"/>
-          <circle cx="44" cy="${SPINE_Y}" r="5" fill="none" stroke="var(--ink-2)" stroke-width="1.6"/>
+          <path d="M44 ${SPINE_Y} H104" stroke="#5fa8a8" stroke-width="2" stroke-linecap="round" fill="none"/>
+          <circle cx="44" cy="${SPINE_Y}" r="5" fill="none" stroke="#c96442" stroke-width="1.6"/>
           <text x="44" y="32" class="cnode" fill="var(--ink-2)" text-anchor="middle">Claude Code</text>
           <text x="44" y="52" class="clabel" fill="var(--muted)" text-anchor="middle">request</text>
-          <rect x="104" y="56" width="118" height="36" rx="9" fill="var(--surface-2)" stroke="#3987e5" stroke-width="1.5"/>
-          <text x="163" y="79" class="cnode" fill="var(--ink)" text-anchor="middle" font-weight="650">cc-proxy</text>
-          <path d="M222 ${SPINE_Y} H${spineEnd}" stroke="var(--rail)" stroke-width="2" stroke-linecap="round" fill="none"/>
+          <rect x="104" y="56" width="118" height="36" rx="9" fill="var(--surface-2)" stroke="#5fa8a8" stroke-width="1.5"/>
+          <text x="163" y="79" class="cnode" fill="#c96442" text-anchor="middle" font-weight="650">cc<tspan fill="var(--ink)">-proxy</tspan></text>
+          <path d="M222 ${SPINE_Y} H${spineEnd}" stroke="#5fa8a8" stroke-width="2" stroke-linecap="round" fill="none"/>
           <g stroke-width="1.6" stroke-linecap="round" fill="none">${paths}</g>
           ${labels}
         </svg>`;
@@ -401,12 +477,12 @@ function renderHtml({ rows, defaultBackend, errors, providerIds }) {
   .topbar { display:flex; align-items:center; justify-content:space-between; gap:16px; margin-bottom:46px; }
   .brand { display:flex; align-items:center; gap:12px; }
   .brandmark { width:34px; height:34px; border-radius:9px; background:var(--surface-2); border:1px solid var(--hairline); display:grid; place-items:center; }
-  .brand .bname { font-family:var(--mono); font-weight:600; font-size:15px; color:var(--ink); letter-spacing:-0.01em; }
-  .brand .bname b { color:#3987e5; font-weight:600; }
+  .brand .bname { font-family:var(--mono); font-weight:600; font-size:15px; color:#c96442; letter-spacing:-0.01em; }
+  .brand .bname b { color:var(--ink); font-weight:600; }
   .brand .btag { font-family:var(--mono); font-size:10.5px; color:var(--muted); letter-spacing:.14em; text-transform:uppercase; }
   .topbar .ver { font-family:var(--mono); font-size:11px; color:var(--muted); letter-spacing:.08em; }
   .hero { display:grid; grid-template-columns:1.05fr 1fr; gap:40px; align-items:center; margin-bottom:44px; }
-  .hero-eyebrow { font-family:var(--mono); font-size:11px; color:#3987e5; letter-spacing:.18em; text-transform:uppercase; margin:0 0 16px; }
+  .hero-eyebrow { font-family:var(--mono); font-size:11px; color:#5fa8a8; letter-spacing:.18em; text-transform:uppercase; margin:0 0 16px; }
   .hero h1 { font-size:clamp(34px,4.4vw,52px); line-height:1.04; font-weight:720; letter-spacing:-0.022em; color:var(--ink); margin:0 0 18px; }
   .hero h1 .rule { color:var(--ink-2); font-weight:500; }
   .hero .lede { font-size:16px; line-height:1.6; color:var(--ink-2); max-width:46ch; margin:0 0 26px; }
@@ -500,7 +576,7 @@ function renderHtml({ rows, defaultBackend, errors, providerIds }) {
   <div class="wrap">
     <div class="topbar">
       <div class="brand"><span class="brandmark" aria-hidden="true">
-        <svg width="18" height="18" viewBox="0 0 18 18"><circle cx="3.5" cy="9" r="2.4" fill="none" stroke="var(--rail)" stroke-width="1.6"/><circle cx="14.5" cy="4.5" r="2.4" fill="#eb6834"/><circle cx="14.5" cy="13.5" r="2.4" fill="#3987e5"/><path d="M5.6 9 H12 M12 5 L14 5 M12 13 L14 13" stroke="var(--rail)" stroke-width="1.6" stroke-linecap="round"/></svg>
+        <svg width="18" height="18" viewBox="0 0 18 18"><circle cx="3.5" cy="9" r="2.4" fill="none" stroke="#c96442" stroke-width="1.6"/><circle cx="14.5" cy="4.5" r="2.4" fill="#c96442"/><circle cx="14.5" cy="13.5" r="2.4" fill="#5fa8a8"/><path d="M5.6 9 H12 M12 5 L14 5 M12 13 L14 13" stroke="#5fa8a8" stroke-width="1.6" stroke-linecap="round"/></svg>
       </span><span><span class="bname">cc<b>-proxy</b></span><br><span class="btag">model router</span></span></div>
       <span class="ver">reachable · ${providers} providers</span>
     </div>
@@ -511,7 +587,7 @@ function renderHtml({ rows, defaultBackend, errors, providerIds }) {
         <h1>One proxy.<br>Every model.<span class="rule"> Routed by name.</span></h1>
         <p class="lede">cc-proxy sits in front of Claude Code and dispatches each call to the model it deserves — ${esc(lede)}, in a single session. Nothing leaves the machine but the upstream call itself. The route is <code>model name</code>.</p>
         <ul class="stats">
-          <li><span class="dot" style="background:#3987e5"></span><span class="n">${providers}</span><span class="k">provider${providers === 1 ? "" : "s"}</span></li>
+          <li><span class="dot" style="background:#5fa8a8"></span><span class="n">${providers}</span><span class="k">provider${providers === 1 ? "" : "s"}</span></li>
           <li><span class="n">${rows.length}</span><span class="k">models</span></li>
           <li><span class="n">${liveCount}</span><span class="k">live leg${liveCount === 1 ? "" : "s"}</span></li>
           <li><span class="dot" style="background:var(--good)"></span><span class="k">loopback&nbsp;only</span></li>
@@ -524,7 +600,7 @@ function renderHtml({ rows, defaultBackend, errors, providerIds }) {
 
     <div class="legend">
       <span class="lk">Intelligence tier</span>
-      ${["Flagship", "Strong", "Specialist", "Economy"].map((t) => `<span class="tk">${tierDots(t)}</span>`).join("")}
+      ${["Flagship", "Strong", "Specialist", UNGRADED].map((t) => `<span class="tk">${tierDots(t)}</span>`).join("")}
     </div>
     <div class="legend">
       <span class="lk">Route</span>
@@ -547,6 +623,7 @@ ${cards}
         <div><dt><span class="tag live">live</span></dt><dd>Model list fetched from the provider at discovery.</dd></div>
         <div><dt><span class="tag">key ✓</span></dt><dd>Static list the plugin ships; the key is present and the leg is routable.</dd></div>
         <div><dt>${tierDots("Strong")}</dt><dd>Qualitative capability tier. Ordinal, hue-independent — the fill carries it, never the color.</dd></div>
+        <div><dt>${tierDots(UNGRADED)}</dt><dd>Nobody has assessed this model. An empty scale is an absence, not a low score — <code>/v1/models</code> omits <code>grade</code> for these ids rather than guessing one.</dd></div>
         <div><dt><span class="win">200K</span></dt><dd>Context window, where the vendor documents one.</dd></div>
         <div><dt><span class="dup">also native</span></dt><dd>Reachable two ways — direct, and via the OpenRouter aggregate.</dd></div>
         <div><dt><span class="dup">also on plan</span></dt><dd>The Qwen plan serves this model too. It still routes to the provider shown — the bare id can't say which account pays, and the plan's gateway injects a preamble, so the two routes are not interchangeable.</dd></div>
@@ -588,9 +665,12 @@ async function main() {
 	// it through the router. Those are different questions and they disagree: the
 	// API publishes `deepseek-v4-pro` (provider deepseek, its owning namespace)
 	// AND `qwen:deepseek-v4-pro` (provider qwen, the plan that also serves it),
-	// while attribute() resolves BOTH to the cheapest route — so the bare id used
-	// to land on the Qwen card next to its own alias, and DeepSeek's card lost the
-	// model it owns. attribute() is kept only as a fallback for an entry from a
+	// while attribute() resolves BOTH through rankRoutes (native provider first,
+	// then cheapest tier) — pre-issue-#19 that meant the bare id landed on the
+	// Qwen card next to its own alias, and DeepSeek's card lost the model it
+	// owns; post-#19 attribute() would put it back on DeepSeek for this id, but
+	// still diverges from `provider` for any id where ownership and the ranked
+	// route disagree. attribute() is kept only as a fallback for an entry from a
 	// proxy too old to publish the field.
 	//
 	// Unusable entries (multimodal ids wanting another request schema, `:batch`
@@ -602,6 +682,9 @@ async function main() {
 			id: m.id,
 			provider: m.provider || attribute(m.id, providers),
 			created_at: m.created_at ?? null,
+			// Carried, not re-derived: OMITTED for an id with no curated window, so
+			// `"context_window" in entry` stays the test all the way to the page.
+			...("context_window" in m ? { context_window: m.context_window } : {}),
 		}))
 		.filter((r) => providerSet.has(r.provider));
 

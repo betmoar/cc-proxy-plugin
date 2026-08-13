@@ -110,20 +110,75 @@ describe("bin/cc-proxy.js loads ~/.env", () => {
 		);
 	});
 
+	// Issue #20: GLM is opt-in like every other third-party backend. A zero-key
+	// install is a VALID install (Claude/OAuth needs no key) — the old exit-1
+	// guard is gone. Startup must still succeed and must still say something
+	// loud enough that a user who MEANT to configure GLM notices it's missing.
 	it(
-		"still exits 1 when GLM_API_KEY is absent everywhere",
+		"starts with a claude-only notice when GLM_API_KEY is absent everywhere",
 		{ skip: repoEnvHasGlmKey() },
 		async () => {
 			// The positive test above wrote <home>/.env with a key; remove it so this
 			// case genuinely has no key in ~/.env or process.env.
 			fs.rmSync(path.join(home, ".env"), { force: true });
 			const port = await freePort();
-			// No ~/.env, no key in process.env. The guard at the top of bin/cc-proxy.js
-			// must still fire so a misconfigured install fails loudly, not silently.
+			// No ~/.env, no key in process.env. Must still start (exit code never
+			// reached — startProxy resolves on the listening line), and must print
+			// a notice naming the active backends.
 			const childEnv = { PATH: process.env.PATH, HOME: home, PROXY_PORT: String(port) };
-			const { code, stderr } = await startProxy(childEnv).catch((e) => e);
-			assert.equal(code, 1);
-			assert.match(stderr, /GLM_API_KEY is not set/);
+			const { stdout, stderr } = await startProxy(childEnv);
+			assert.match(
+				stdout,
+				new RegExp(`cc-proxy listening on http://127.0.0.1:${port}`),
+				`Expected proxy to start with no third-party keys, got: ${stdout}`,
+			);
+			assert.match(stderr, /active backends: claude only \(no third-party keys found\)/);
 		},
 	);
+
+	// Issue #30 finding 1: DEFAULT_BACKEND can name a backend that never
+	// registers (keys are opt-in since #20), and then nothing carries isDefault,
+	// defaultProvider() falls through to claude, and the startup line was
+	// BYTE-IDENTICAL to a correct install. skills/setup/SKILL.md recommends
+	// DEFAULT_BACKEND for backends the single /model slot cannot select, so this
+	// is a documented path. Spawned, not unit-tested, because the fallback is
+	// only observable in what the binary PRINTS — providers.test.js pins the
+	// predicate underneath it.
+	it("warns when DEFAULT_BACKEND names a backend that did not register", async () => {
+		fs.rmSync(path.join(home, ".env"), { force: true });
+		const port = await freePort();
+		const childEnv = {
+			PATH: process.env.PATH,
+			HOME: home,
+			PROXY_PORT: String(port),
+			GLM_API_KEY: "k", // glm registers…
+			DEFAULT_BACKEND: "deepseek", // …but the requested default does not
+		};
+		const { stdout, stderr } = await startProxy(childEnv);
+		assert.match(stdout, new RegExp(`cc-proxy listening on http://127.0.0.1:${port}`));
+		assert.match(
+			stderr,
+			/DEFAULT_BACKEND=deepseek did NOT register/,
+			`expected the misconfiguration to be named, got: ${stderr}`,
+		);
+		// And it must say where requests actually go, not merely that something
+		// is wrong — "falling back to claude" is the actionable half.
+		assert.match(stderr, /falling back to claude/);
+	});
+
+	// The mirror image: a SATISFIED DEFAULT_BACKEND must stay quiet, or the
+	// warning becomes noise every correct install learns to ignore.
+	it("stays quiet when DEFAULT_BACKEND did register", async () => {
+		fs.rmSync(path.join(home, ".env"), { force: true });
+		const port = await freePort();
+		const childEnv = {
+			PATH: process.env.PATH,
+			HOME: home,
+			PROXY_PORT: String(port),
+			GLM_API_KEY: "k",
+			DEFAULT_BACKEND: "glm",
+		};
+		const { stderr } = await startProxy(childEnv);
+		assert.doesNotMatch(stderr, /did NOT register/, `expected no warning, got: ${stderr}`);
+	});
 });

@@ -40,19 +40,38 @@ Steps:
 1. **Push an entry** in `buildProviders` (`src/providers.js`). Gate it on its
    key (`if (env.MYPROVIDER_API_KEY)`) so it stays opt-in. Keep `claude` last —
    it is the OAuth-passthrough default.
+1b. **Add the id to `PROVIDER_IDS`** in the same file. That set is what
+   `parseModelSelector()` strips a `<provider>:` lens for, and it is deliberately
+   NOT derived from the registry: the strip must work even when the backend holds
+   no key (issue #20), so a keyless `myprovider:some-model` still resolves
+   instead of forwarding the literal lens string upstream. Forgetting this has no
+   local symptom — the backend routes fine by predicate while its lens leaks
+   upstream as part of the model id and 400s opaquely. Locked by
+   `test/couplings.test.js` "PROVIDER_IDS covers every provider…".
 2. **Pick an auth strategy.** `oauth` passes the inbound `Authorization` through
    (Claude Pro/Max); `apiKey` sets `x-api-key`; `bearer` sets
    `Authorization: Bearer`. New schemes go in `applyAuth`.
-3. **Write `match`.** Keep it disjoint from the other providers — GLM matches
-   `glm-*`, OpenRouter matches slash-namespaced `vendor/model` ids.
+3. **Write `match`.** Prefer a predicate disjoint from the others — GLM matches
+   `glm-*`, OpenRouter matches slash-namespaced `vendor/model` ids. Disjoint is
+   no longer a *rule*: since #19 two predicates deliberately overlap
+   (`deepseek.match("deepseek-v4-pro")` and `qwen.match(...)` are both true,
+   because the Qwen plan really does resell that id), and `rankRoutes()` decides
+   between them before any predicate is consulted. So an overlap is allowed
+   **when `ROUTES` disambiguates it** — the predicate scan is the fallback for
+   ids the route table does not list, and there registry order wins silently.
+   If you overlap without a `ROUTES` entry, the earlier-registered provider
+   takes the id and nothing says so.
 4. **Anthropic-Messages only.** This proxy does no format translation; a
    provider must speak the Anthropic Messages API (or its compatible "skin").
    That is a deliberate constraint — see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) (Invariants).
 5. **Probe every id you claim, and record it in `ROUTES`** (`src/routes.js`).
    One entry per (id, backend) pair with the status the host actually returned
    and a cost tier: `1` OAuth/Anthropic, `2` prepaid plan, `3` metered credits,
-   `4` reseller. `rankRoutes()` makes the bare id resolve to the cheapest `200`
-   route, so a missing entry means your backend silently never wins one.
+   `4` reseller. `rankRoutes()` orders the `200` routes **native first, then by
+   tier**, so the bare id resolves to the native backend when one is registered
+   and otherwise to the cheapest one — a missing entry means your backend
+   silently never wins one. (Native-over-tier is the issue-#19 rule: a resold
+   route may inject a preamble, so the bare id prefers the weights it names.)
    **Probe, never read a vendor page** — both QwenCloud's public model list and
    the account's own plan page omit ids their gateway genuinely serves.
    A shared id is then also reachable explicitly as `<provider>:<id>`; the
@@ -63,8 +82,10 @@ Steps:
    backend. What is published *bare* is decided by namespace ownership, not by
    who wins the cost rank: ids outside your namespace publish as
    `<provider>:<id>`. Add a `MODEL_GRADES` entry per model in `src/models.js`
-   or discovery silently publishes `Specialist`. `grade` (capability) and
-   `tier` (cost) are separate fields — never derive one from the other.
+   (`Flagship`, `Strong`, or `Specialist` — those three, nothing else) or
+   discovery publishes no `grade` at all for it, which is honest but useless to
+   a consumer dispatching by strength. `grade` (capability) and `tier` (cost)
+   are separate fields — never derive one from the other.
 7. **Add tests** in `test/providers.test.js` (registry shape, auth, `match`),
    `test/router.test.js` (routing), and `test/routes.test.js` (the coherence
    locks pick up new catalog/ROUTES entries automatically). Live integration

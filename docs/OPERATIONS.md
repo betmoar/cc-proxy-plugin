@@ -64,8 +64,32 @@ QwenCloud's public model list and the account's own plan page omit ids the
 gateway actually serves (`glm-5.2`, `deepseek-v4-flash-0731` both 200). Probe
 the live endpoint; treat the docs as context, not as the catalog.
 
-- **`/v1/models`** (GET; other methods 405) returns a merged, best-effort Anthropic-format model list — GLM + DeepSeek + Qwen + OpenRouter live (each with a curated offline fallback), Claude static. Each live leg is bounded by a ~3 s timeout (`modelsTimeoutMs`, not env-configurable); a failed leg is named in a non-standard `_errors` array and the response is still `200`. Synthesized, not forwarded; `/v1/models/<id>` still forwards. Entries also carry a non-standard `context_window` (integer tokens, e.g. `1000000`) when the id has a curated window; ids without one **omit** the field rather than sending `null` — check with `"context_window" in entry`. Every entry additionally carries `provider`, `tier` (route cost: `1` OAuth/Anthropic, `2` prepaid plan, `3` metered credits, `4` reseller) and `grade` (model capability: `Flagship`/`Strong`/`Specialist`/`Economy`). Cost and capability are independent — do not derive one from the other. Spelling follows **namespace ownership, not cost**: a backend publishes ids in its own namespace bare and every foreign id it serves under the `<provider>:<id>` lens, so `deepseek-v4-pro` is bare on DeepSeek and `qwen:deepseek-v4-pro` on the plan that also serves it. Routing is separate and cost-ranked — the bare id resolves to the CHEAPEST route, which need not be the owning vendor. Entries this proxy cannot actually use (multimodal ids wanting another request schema, `:batch` variants, `~latest` aliases) carry `usable: false`; the field is absent when the entry is usable, so test `entry.usable !== false`.
+- **`/v1/models`** (GET; other methods 405) returns a merged, best-effort Anthropic-format model list — GLM + DeepSeek + Qwen + OpenRouter live (each with a curated offline fallback), Claude static. Each live leg is bounded by a ~3 s timeout (`modelsTimeoutMs`, not env-configurable); a failed leg is named in a non-standard `_errors` array and the response is still `200`. Synthesized, not forwarded; `/v1/models/<id>` still forwards. Entries also carry a non-standard `context_window` (integer tokens, e.g. `1000000`) when the id has a curated window; ids without one **omit** the field rather than sending `null` — check with `"context_window" in entry`. Every entry additionally carries `provider` and `tier` (route cost: `1` OAuth/Anthropic, `2` prepaid plan, `3` metered credits, `4` reseller), plus `grade` (model capability: exactly one of `Flagship`, `Strong`, `Specialist`) **when the model has been assessed** — an unassessed id **omits** `grade`, the same way it omits an unknown `context_window`, so check with `"grade" in entry` and never expect a value (most of the ~320 discovered ids have none). Since 0.6.1: unassessed ids used to ship a `Specialist` default, and `Economy` — a cost class on a capability axis — was retired. Cost and capability are independent — do not derive one from the other. Spelling follows **namespace ownership, not cost**: a backend publishes ids in its own namespace bare and every foreign id it serves under the `<provider>:<id>` lens, so `deepseek-v4-pro` is bare on DeepSeek and `qwen:deepseek-v4-pro` on the plan that also serves it. Routing is separate — the bare id resolves to the NATIVE route when one is registered, otherwise the cheapest route serving it, which need not be the owning vendor. Entries this proxy cannot actually use (multimodal ids wanting another request schema, `:batch` variants, `~latest` aliases) carry `usable: false`; the field is absent when the entry is usable, so test `entry.usable !== false`.
 - **Orphan log inode trap:** `rm -f $PROXY_LOG && touch $PROXY_LOG` while the proxy runs leaves it writing to the deleted inode — output "disappears". Truncate in place (`truncate -s 0`) or restart the proxy; never `rm && touch` a file a live process holds open.
+
+## State on disk (`~/.claude/cc-proxy/`)
+
+The proxy itself is stateless (invariant 2). Everything here is written by the
+hook or by an explicitly-invoked command — never on a request path.
+
+| File | Written by | Notes |
+| --- | --- | --- |
+| `cc-proxy.log` | SessionStart hook (spawn stdio) | routing lines; rotated to `.1` past `PROXY_LOG_MAX_BYTES` |
+| `grades.json` | `/cc-proxy:bench grades` | model capability + price. **Read by the proxy at startup** and published as `grade` on `/v1/models`; absent or malformed = the built-in `MODEL_GRADES` applies. An entry whose grade is not one of `Flagship`/`Strong`/`Specialist` is skipped individually (this file is hand-editable and feeds a published field). Restart the proxy for a refresh to take effect |
+| `speed.jsonl` | `/cc-proxy:bench speed` | append-only route timings, one JSON object per line |
+| `*_cache.json` | statusline | 60 s quota/credit caches + the 1 s proxy-liveness probe |
+
+Nothing here is required: delete any of it and the proxy still starts and
+routes. `grades.json` and `speed.jsonl` are written only when you run the
+command. `grades.json` is the one file the proxy READS — at startup only, which
+is why it is config rather than state (invariant 2 forbids state carried
+between requests; a boot-time config read is the `~/.env` posture). A refresh
+therefore needs a proxy restart to reach `GET /v1/models`.
+
+**`bench speed` records `proxy_pid` and `proxy_version` per row on purpose.** A
+series that spans a proxy restart is measuring two different binaries; without
+those fields the medians silently blend. That is issue #24's failure mode in
+measurement form — the reason the fields exist.
 
 ## Context-overflow handling
 
@@ -74,6 +98,14 @@ A **non-streaming** GLM overflow comes back as `200` with empty content and `sto
 There is no automatic replay. Recovery: switch model with `/model`, `/clear`, or `/compact`. With `glm-5.2[1m]` (1M window) overflow is rare.
 
 ## Environment variables
+
+**Every backend key is optional, GLM included** (issue #20). `buildProviders()`
+registers a third-party backend only when its key is present, so an absent key
+means that backend is simply not available — never a startup failure. Claude is
+OAuth and needs no key, so a proxy with zero keys starts fine and routes
+everything there. At startup the proxy prints one stderr line naming the active
+backends; when GLM is the only one missing it says so, because an unset
+`GLM_API_KEY` is more often a typo than a choice.
 
 | Variable | Effect |
 | --- | --- |

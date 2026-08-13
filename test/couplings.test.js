@@ -14,22 +14,63 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (p) => fs.readFileSync(path.join(root, p), "utf8");
 
 describe("cross-file couplings", () => {
-	// COUPLING: the PROXY_PORT default is read independently in four files
-	// (deliberately — the hook must not import src/). Change it in all four or
-	// in none; a split default means the proxy binds one port while the hook
-	// and statusline probe another ("proxy down" forever, duplicate spawns).
-	it("PROXY_PORT default (4000) is identical in all four readers", () => {
-		const files = [
-			"src/config.js",
-			"hooks/proxy-lifecycle.js",
-			"scripts/status.js",
-			"scripts/statusline.js",
-		];
-		const defaults = files.map((f) => {
-			const m = /process\.env\.PROXY_PORT \|\| (\d+)/.exec(read(f));
-			assert.ok(m, `${f}: could not locate the PROXY_PORT default — update this coupling test`);
-			return { file: f, value: m[1] };
-		});
+	// COUPLING: PROVIDER_IDS (the set parseModelSelector strips a `<provider>:`
+	// lens for) is a hand-written list that must cover every id buildProviders()
+	// can push. It is deliberately NOT derived from config.providers — the whole
+	// point of 0.6.1's fix is that the strip must not depend on a backend holding
+	// a key (issue #20). But that also means adding a provider without adding it
+	// here has NO local symptom: the new backend routes fine by predicate, while
+	// `<newprovider>:<model>` silently forwards the raw lens string upstream as a
+	// model id and 400s opaquely. Every provider registers when its key is set,
+	// so building with all keys enumerates the full set.
+	it("PROVIDER_IDS covers every provider buildProviders() can register", async () => {
+		const { PROVIDER_IDS, buildProviders } = await import("../src/providers.js");
+		const registrable = buildProviders({
+			GLM_API_KEY: "g",
+			OPENROUTER_API_KEY: "o",
+			DEEPSEEK_API_KEY: "d",
+			DASHSCOPE_API_KEY: "q",
+		}).map((p) => p.id);
+		const missing = registrable.filter((id) => !PROVIDER_IDS.has(id));
+		assert.deepEqual(
+			missing,
+			[],
+			`src/providers.js PROVIDER_IDS is missing ${missing.join(", ")} — the "<provider>:" lens for those would leak upstream unstripped`,
+		);
+		const stale = [...PROVIDER_IDS].filter((id) => !registrable.includes(id));
+		assert.deepEqual(stale, [], `PROVIDER_IDS names providers that no longer exist: ${stale}`);
+	});
+
+	// COUPLING: the PROXY_PORT default is read independently in several files
+	// (deliberately — the hook must not import src/). Change it everywhere or
+	// nowhere; a split default means the proxy binds one port while the hook and
+	// statusline probe another ("proxy down" forever, duplicate spawns).
+	//
+	// DISCOVERED, not listed. This test named four files by hand and the literal
+	// had since spread to seven — bench-speed.js, list-models.js and
+	// render-models.js each carried their own copy, outside the lock, so a port
+	// change would have passed this assertion while those three probed the old
+	// port. A hand-maintained list of "everywhere X appears" is the same drift
+	// class the lock exists to catch, one level up. Walking the tree cannot go
+	// stale: a new copy joins the assertion the moment it is written.
+	it("the PROXY_PORT default is identical in every file that reads it", () => {
+		const dirs = ["src", "scripts", "hooks", "bin"];
+		/** @type {{file: string, value: string}[]} */
+		const defaults = [];
+		for (const dir of dirs) {
+			for (const name of fs.readdirSync(path.join(root, dir))) {
+				if (!/\.(js|mjs)$/.test(name)) continue;
+				const rel = `${dir}/${name}`;
+				const m = /process\.env\.PROXY_PORT \|\| (\d+)/.exec(read(rel));
+				if (m) defaults.push({ file: rel, value: m[1] });
+			}
+		}
+		// A floor, not a count: it fails if the walk silently matches nothing (a
+		// renamed env var, a changed spelling) rather than passing vacuously.
+		assert.ok(
+			defaults.length >= 4,
+			`expected several PROXY_PORT readers, found ${defaults.length} — has the spelling changed?`,
+		);
 		const distinct = new Set(defaults.map((d) => d.value));
 		assert.equal(
 			distinct.size,
@@ -163,6 +204,58 @@ describe("cross-file couplings", () => {
 			offenders,
 			[],
 			`scripts/quota.js reads process.env at module level (${offenders.join(", ")}) — imports are hoisted above the consumers' loadEnv(), so ~/.env would be ignored`,
+		);
+	});
+
+	// COUPLING: `QWEN_PLAN_ALSO` (scripts/render-models.js, the "also on plan" tag)
+	// must cover every id in `QWEN_PLAN_RESELLS` (src/providers.js, the routing
+	// predicate). Two hand-written copies of the same curated fact — which ids the
+	// Qwen Token Plan resells — in files that never import each other.
+	//
+	// Direction matters, and only ONE direction is an error. Every routed reseller
+	// must be tagged, or the Qwen card under-reports what the plan entitles you to:
+	// `deepseek-v4-pro` renders on the DeepSeek card (native-first since issue #19)
+	// and would appear nowhere on Qwen's without the tag. The reverse is legitimate
+	// — `glm-5.2` is in the display set but NOT in the predicate. Adding it there
+	// would change the PREDICATES without changing where anything routes, because
+	// `resolve()` consults `rankRoutes()` (router.js:90) BEFORE the predicate scan
+	// (router.js:96), and `ROUTES["glm-5.2"]` lists glm first. Measured, with
+	// `glm-5.2` added to the set and both keys present:
+	//
+	//   glm.match  true → false      qwen.match  false → true
+	//   resolve("glm-5.2").provider.id → "glm"   (unchanged)
+	//
+	// So it is latent, not inert: the predicates disagree with the route table,
+	// and the day `glm-5.2` loses its ROUTES entry the fallback lands on qwen
+	// instead of glm — reversing "a native plan outranks a resold one" with
+	// nothing to catch it. The display set has no such power: it only decides
+	// whether a tag is drawn. Two sets, one shared fact, asymmetric consequences
+	// — which is why this asserts containment and equality would fail on correct
+	// code. (An earlier version of this comment said "dead code", and its
+	// correction said routing moves. Both were wrong; these numbers are from
+	// running it — `resolve()` returns `{provider, upstreamModel}`, and reading a
+	// `.id` off that is what produced the second wrong answer.)
+	//
+	// They have drifted before: `deepseek-v4-pro` was dropped from the display set
+	// on the theory that a natively-routed id is not a "dup", which is exactly
+	// backwards — native routing is the PRECONDITION for the tag (caught in review
+	// on PR #21, recorded in CHANGELOG). Neither file imports the other, so the
+	// next drift is silent again: routing keeps working and the page just quietly
+	// tells the reader less than the truth.
+	it("QWEN_PLAN_ALSO (renderer) covers every id in QWEN_PLAN_RESELLS (router)", () => {
+		const parse = (src, name) => {
+			const m = new RegExp(`${name} = new Set\\(\\[([^\\]]*)\\]\\)`).exec(src);
+			assert.ok(m, `could not parse ${name} — the coupling test needs updating, not deleting`);
+			return [...m[1].matchAll(/"([^"]+)"/g)].map((x) => x[1]);
+		};
+		const resells = parse(read("src/providers.js"), "QWEN_PLAN_RESELLS");
+		const tagged = parse(read("scripts/render-models.js"), "QWEN_PLAN_ALSO");
+		assert.ok(resells.length > 0, "parsed QWEN_PLAN_RESELLS as empty — the regex has rotted");
+		const untagged = resells.filter((id) => !tagged.includes(id));
+		assert.deepEqual(
+			untagged,
+			[],
+			`src/providers.js QWEN_PLAN_RESELLS has ${untagged.join(", ")} but scripts/render-models.js QWEN_PLAN_ALSO does not — the Qwen card will under-report the plan's scope for those ids`,
 		);
 	});
 

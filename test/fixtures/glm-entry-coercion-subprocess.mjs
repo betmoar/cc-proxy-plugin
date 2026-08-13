@@ -1,0 +1,62 @@
+// Runs the "GLM entry coercion" scenario end-to-end inside a subprocess whose
+// HOME is set by the caller, then prints the resulting `glm:x` entry as JSON.
+// Needed because src/models.js reads ~/.claude/cc-proxy/grades.json ONCE at
+// module load (loadRefreshedGrades / REFRESHED_GRADES) — see the header comment
+// in test/grades-refresh.test.js for why an in-process HOME swap can't isolate
+// this from the developer's real grades.json. The isolation matters more since
+// 0.6.1: the caller asserts `x` carries NO `grade` key, and a real grades.json
+// naming `x` would put one there.
+import http from "node:http";
+import { collectModels } from "../../src/models.js";
+import { buildProviders } from "../../src/providers.js";
+
+function startBackend(handler) {
+	const server = http.createServer((req, res) => {
+		const chunks = [];
+		req.on("data", (c) => chunks.push(c));
+		req.on("end", () => {
+			const { status, headers, body } = handler();
+			res.writeHead(status, headers);
+			res.end(body);
+		});
+	});
+	return new Promise((resolve) => {
+		server.listen(0, "127.0.0.1", () => {
+			const { port } = server.address();
+			resolve({ server, baseUrl: `http://127.0.0.1:${port}` });
+		});
+	});
+}
+
+const { server, baseUrl } = await startBackend(() => ({
+	status: 200,
+	headers: { "content-type": "application/json" },
+	body: JSON.stringify({ data: [{}, { id: "x", created: 1700000000 }, { id: "" }] }),
+}));
+
+const providers = buildProviders({ GLM_API_KEY: "glm-test" }, "claude");
+providers.find((p) => p.id === "glm").baseUrl = baseUrl;
+
+const { data } = await collectModels({
+	providers,
+	claudeModels: [],
+	qwenModels: [],
+	openRouterModels: [],
+	openRouterModelsExplicit: true,
+	modelsTimeoutMs: 2000,
+});
+
+server.close();
+
+// Key PRESENCE travels beside the data, because JSON cannot carry it: an entry
+// holding `grade: undefined` serializes identically to one with no `grade` at
+// all, so a test asserting `!("grade" in entry)` on the parsed output is
+// checking a key JSON already deleted. Measured 2026-08-12: dropping the
+// omission guard in withGrade() left the whole suite green. `gradeKeys` is
+// computed HERE, in the process that holds the real objects.
+process.stdout.write(
+	JSON.stringify({
+		data,
+		gradeKeys: data.filter((e) => "grade" in e).map((e) => e.id),
+	}),
+);

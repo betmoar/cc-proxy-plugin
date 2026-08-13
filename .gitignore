@@ -46,3 +46,7 @@ Thumbs.db
 
 # Implementation plans / specs (kept local, not shipped)
 docs/superpowers/
+
+# Generated brand artifacts (regenerate: python3 docs/brand/generate-cc-plugin-family-draft.py)
+output/
+/cc-plugin-family-visual-identity-draft.pdf

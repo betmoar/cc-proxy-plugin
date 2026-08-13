@@ -1,5 +1,5 @@
 // @ts-check
-import { defaultProvider, providerById } from "./providers.js";
+import { PROVIDER_IDS, defaultProvider, providerById } from "./providers.js";
 import { rankRoutes } from "./routes.js";
 
 /**
@@ -14,8 +14,9 @@ import { rankRoutes } from "./routes.js";
  * COLON ONLY, deliberately. `/` belongs to OpenRouter's `includes("/")`
  * predicate and keeps meaning OpenRouter forever. A slash selector was
  * considered and dropped because it buys nothing: the bare id already resolves
- * to the cheapest route and the slash form already resolves to the most
- * expensive one (`qwen3.7-max` → qwen plan, `qwen/qwen3.7-max` → OpenRouter).
+ * to the native backend when one is registered, otherwise the cheapest route
+ * serving it — and the slash form already resolves to the most expensive one
+ * (`qwen3.7-max` → qwen plan, `qwen/qwen3.7-max` → OpenRouter).
  * Its one unique job — naming a plan-resold id under a foreign vendor name —
  * is served identically by `qwen:deepseek-v4-pro`, without touching the
  * aggregator's namespace and without breaking the collision-lock tests.
@@ -28,18 +29,26 @@ import { rankRoutes } from "./routes.js";
  * predicates — which is what keeps a future vendor id containing a colon safe.
  *
  * @param {string | undefined} model
- * @param {Config} config
+ * @param {Config} [_config] Unused since the strip moved off registration onto
+ *   PROVIDER_IDS (see below). Kept so the signature stays stable for callers
+ *   and tests that already pass a config.
  * @returns {{ providerId: string | null, model: string | undefined }}
  */
-export function parseModelSelector(model, config) {
+export function parseModelSelector(model, _config) {
 	if (typeof model !== "string") return { providerId: null, model };
 	const colon = model.indexOf(":");
 	if (colon <= 0) return { providerId: null, model };
 	const head = model.slice(0, colon);
 	const tail = model.slice(colon + 1);
 	if (!tail) return { providerId: null, model };
-	const known = config.providers?.some((p) => p.id === head);
-	return known ? { providerId: head, model: tail } : { providerId: null, model };
+	// KNOWN, not REGISTERED. The lens is cc-proxy's own spelling, so it must be
+	// stripped whenever it names a provider this proxy can spell — even one
+	// holding no key today. Testing `config.providers` instead leaked the raw
+	// string upstream the moment GLM became opt-in (issue #20): with no GLM key
+	// `glm:glm-5.2` went unrecognized, the tail was never stripped, and the
+	// literal lens reached Anthropic as a model id. `resolve()` then routes the
+	// stripped tail exactly as a bare id, which is the documented fallback.
+	return PROVIDER_IDS.has(head) ? { providerId: head, model: tail } : { providerId: null, model };
 }
 
 /**
@@ -48,7 +57,9 @@ export function parseModelSelector(model, config) {
  *   0. strip a `<provider>:` selector       → the lens never leaves the proxy
  *   1. claude-haiku-*                       → Claude (internal ops, pinned)
  *   2. explicit selector, if registered     → that provider
- *   3. cheapest probed route (src/routes.js)
+ *   3. ranked probed route (src/routes.js)  → native provider first, then
+ *                                              cheapest tier, among REGISTERED
+ *                                              providers only
  *   4. first matching predicate             → glm-* → GLM, vendor/model → OpenRouter
  *   5. no match                             → default backend
  *

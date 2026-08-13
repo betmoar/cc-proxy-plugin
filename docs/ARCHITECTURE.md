@@ -108,24 +108,36 @@ ids with no curated window — the OpenRouter-prefixed `vendor/model` ids and
 distinguishable from "known" via `"context_window" in entry`. This is a
 published contract with a named downstream consumer (cc-reload budgets a
 session against it), which is why the table lives in `src/` rather than in the
-display layer — see CLAUDE.md "Reversed decisions".
+display layer — see [`docs/BACKLOG.md`](BACKLOG.md) "Reversed decisions".
 
 Entries also carry `provider`, `tier` (cost, from `src/routes.js` `tierOf()`),
-and `grade` (capability, from `src/models.js` `MODEL_GRADES`). Two fields
-because they are two axes: a resold model is expensive to reach and just as
-capable as its native twin. Collapsing them would force one of the two claims
-to be false.
+and — for an assessed model only — `grade` (capability, from `src/models.js`
+`gradeOf()`: the built-in `MODEL_GRADES` table overlaid with the `bench grades`
+refresh). Two fields because they are two axes: a resold model is expensive to
+reach and just as capable as its native twin. Collapsing them would force one of
+the two claims to be false, which is also why `Economy` was retired in 0.6.1 —
+it was a cost word living on the capability axis.
+
+`grade` follows `context_window`'s omission rule: three values (`Flagship`,
+`Strong`, `Specialist`) and no fourth for "unknown", because an unassessed id
+simply has no `grade` key. Most of the ~320 discovered ids are unassessed, and
+a default made the field claim otherwise about every one of them.
 
 ## Route selection
 
 A model id does not name a backend. `deepseek-v4-pro` is served by three of
 them at three prices; `glm-5.2` by two. `src/routes.js` records the probed
 matrix (`ROUTES` — complete, including the 403/400 rows, so a known-unavailable
-route is documented rather than merely absent) and ranks the usable ones by
-cost: prepaid plan capacity is sunk, metered credits are marginal spend, an
-aggregator is last. Ties break toward the native provider, which is how "a
-native plan outranks a resold plan" (`glm-5.2` stays on Z.ai) falls out of the
-ordering instead of needing a special case.
+route is documented rather than merely absent) and ranks the usable ones. The
+sort is **native first, then cost**: the native provider wins outright over a
+cheaper resold route (prepaid plan capacity is sunk, metered credits are
+marginal spend, an aggregator is last), because a resold gateway may inject a
+preamble that makes the routes behaviourally non-interchangeable, and the bare
+id is the one `/model` sets. This is the issue-#19 rule; before it, native only
+broke cost ties (which is still how `glm-5.2` stays on Z.ai). When the native
+backend is not registered, `resolve()` skips it and falls to the next-ranked
+route — so a plan-holder without a native DeepSeek key still reaches
+`deepseek-v4-pro` through the plan.
 
 The table is deliberately **not authoritative**: an id absent from it falls
 through to the provider `match()` predicates and still routes. Vendor ids
@@ -137,7 +149,7 @@ To name a route explicitly, `<provider>:<model>` — a **local lens**. Only
 id before forwarding, so no backend ever sees cc-proxy's spelling. Colon only:
 `/` belongs to OpenRouter's `includes("/")` predicate. A slash selector was
 considered and dropped because it buys nothing — the bare id already resolves to
-the cheapest route and the slash form already resolves to the most expensive one.
+the native route and the slash form already resolves to the reseller.
 
 Two ordering constraints in `resolve()`, both load-bearing:
 

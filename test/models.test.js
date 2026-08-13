@@ -1,6 +1,11 @@
 import { strict as assert } from "node:assert";
+import { execFile as execFileCb } from "node:child_process";
+import fs from "node:fs";
 import http from "node:http";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, describe, it } from "node:test";
+import { promisify } from "node:util";
 import {
 	CONTEXT_WINDOW,
 	DEEPSEEK_PRICING,
@@ -15,6 +20,8 @@ import {
 import { buildProviders } from "../src/providers.js";
 import { resolve as resolve2 } from "../src/router.js";
 import { createServer } from "../src/server.js";
+
+const execFile = promisify(execFileCb);
 
 describe("models.js pure helpers", () => {
 	it("DEFAULT_CLAUDE_MODELS holds only reachable Claude ids (no haiku, no mythos)", () => {
@@ -101,10 +108,11 @@ describe("models.js pure helpers", () => {
 		// The invariant is that every advertised id is REACHABLE on the plan — via
 		// the `qwen:` lens, which is what discovery publishes for the foreign ones.
 		// NOT that the bare id routes there: `glm-5.2` bare goes to Z.ai (a native
-		// plan outranks a resold one) and `deepseek-v4-pro` bare goes to the plan
-		// (prepaid beats DeepSeek's metered credits). Both are correct, and both
-		// are the ROUTER's business, not the catalog's — which is exactly why the
-		// lens exists.
+		// plan outranks a resold one) and, since issue #19, `deepseek-v4-pro` bare
+		// goes to native DeepSeek when a DeepSeek key is registered (as it is
+		// below) — the plan is only the bare id's fallback when no native key
+		// exists. Both are correct, and both are the ROUTER's business, not the
+		// catalog's — which is exactly why the lens exists.
 		const providers = buildProviders(
 			{ DASHSCOPE_API_KEY: "q", DEEPSEEK_API_KEY: "d", GLM_API_KEY: "g" },
 			"claude",
@@ -396,33 +404,58 @@ describe("collectModels fan-out", () => {
 		assert.deepEqual(_errors, [{ provider: "glm", message: "invalid response shape" }]);
 	});
 
+	// This id ("x") is in neither MODEL_GRADES nor (given the throwaway HOME) the
+	// refresh, so it must carry NO `grade` key at all — the 0.6.1 contract that
+	// replaced the `Specialist` default. A hostile ~/.claude/cc-proxy/grades.json
+	// naming `x` would add one (src/models.js loads that file ONCE at module
+	// import), which is what the isolation below is for. Run in a
+	// SUBPROCESS with a throwaway HOME — an in-process env.HOME swap can't
+	// isolate this, the module cache already pinned whatever the first import
+	// read. Same pattern as test/grades-refresh.test.js:18-45.
 	it("GLM entry coercion: drops no-id, converts numeric created, defaults display_name", async () => {
-		glm = await startBackend(() => ({
-			status: 200,
-			headers: { "content-type": "application/json" },
-			body: JSON.stringify({ data: [{}, { id: "x", created: 1700000000 }, { id: "" }] }),
-		}));
-		const config = wireConfig(glm.baseUrl);
-		const { data } = await collectModels(config);
-		// Published as `glm:x`, not `x`: the id is not in glm's namespace, so the
-		// lens is what says which backend serves it. (A vendor's real ids are
-		// `glm-*` and render bare — this stub id is deliberately foreign.)
-		const glmEntries = data.filter((m) => m.id === "glm:x");
-		assert.equal(glmEntries.length, 1);
-		assert.deepEqual(glmEntries[0], {
-			type: "model",
-			id: "glm:x",
-			display_name: "x",
-			// Unix seconds from the backend, converted to ISO — see coerceCreated.
-			created_at: "2023-11-14T22:13:20.000Z",
-			// Route metadata, attached to every entry: which backend won it, what
-			// that route costs (tier 2 = plan), and how strong the model is. An
-			// uncurated id grades Specialist by default — a shape, not a rung.
-			provider: "glm",
-			tier: 2,
-			grade: "Specialist",
-		});
-		assert.ok(!data.some((m) => m.id === ""));
+		const home = fs.mkdtempSync(path.join(os.tmpdir(), "ccp-models-"));
+		try {
+			const script = new URL("./fixtures/glm-entry-coercion-subprocess.mjs", import.meta.url)
+				.pathname;
+			const { stdout } = await execFile(process.execPath, [script], {
+				env: { ...process.env, HOME: home },
+			});
+			const { data, gradeKeys } = JSON.parse(stdout);
+			// Published as `glm:x`, not `x`: the id is not in glm's namespace, so the
+			// lens is what says which backend serves it. (A vendor's real ids are
+			// `glm-*` and render bare — this stub id is deliberately foreign.)
+			const glmEntries = data.filter((m) => m.id === "glm:x");
+			assert.equal(glmEntries.length, 1);
+			assert.deepEqual(glmEntries[0], {
+				type: "model",
+				id: "glm:x",
+				display_name: "x",
+				// Unix seconds from the backend, converted to ISO — see coerceCreated.
+				created_at: "2023-11-14T22:13:20.000Z",
+				// Route metadata, attached to every entry: which backend won it and
+				// what that route costs (tier 2 = plan). NO `grade` — nobody has
+				// assessed this id, and deepEqual is what pins the absence: an added
+				// default, an "Ungraded" placeholder, or `grade: null` all fail here.
+				provider: "glm",
+				tier: 2,
+			});
+			// The absence is asserted from `gradeKeys`, NOT from the parsed entry.
+			// JSON drops a key whose value is undefined, so `{grade: undefined}` and
+			// no `grade` at all arrive here byte-identical — `!("grade" in parsed)`
+			// tests what JSON.stringify did, not what withGrade() did. Measured
+			// 2026-08-12: removing the omission guard (`return {...entry, grade}`)
+			// left the entire suite green. `gradeKeys` is computed in the subprocess
+			// that still holds the real objects, so it survives the wire.
+			assert.ok(
+				!gradeKeys.includes("glm:x"),
+				"an unassessed id must omit grade — not carry it as undefined, which JSON hides",
+			);
+			assert.ok(!("grade" in glmEntries[0]), "and it must be absent on the wire too");
+			assert.notEqual(glmEntries[0].grade, null, "and must never publish null");
+			assert.ok(!data.some((m) => m.id === ""));
+		} finally {
+			fs.rmSync(home, { recursive: true, force: true });
+		}
 	});
 
 	it("GLM not configured (no key) → GLM absent, not an error", async () => {

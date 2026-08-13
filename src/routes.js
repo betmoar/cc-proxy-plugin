@@ -10,8 +10,7 @@
  *
  * The table is COMPLETE, not curated: non-200 probes are recorded rather than
  * omitted, so a route that is known-unavailable is documented and re-probing is
- * a diff instead of a rediscovery. Probed 2026-08-04 (see CLAUDE.md backlog
- * item 8 for the raw matrix).
+ * a diff instead of a rediscovery. Probed 2026-08-04 (see docs/BACKLOG.md item 8 for the raw matrix).
  *
  * It is also NOT authoritative. An id absent here falls through to the provider
  * `match()` predicates and still routes — never a hard failure. That matters
@@ -70,8 +69,20 @@ const DEFAULT_TIER = 3;
  * @returns {number} 1..4
  */
 export function tierOf(providerId, route) {
-	const billing = route?.billing || PROVIDER_BILLING[providerId];
-	return BILLING_TIER[billing] ?? DEFAULT_TIER;
+	// `Object.hasOwn` on BOTH lookups, for the same reason rankRoutes uses it
+	// below: a bare `BILLING_TIER[billing]` inherits from Object.prototype, so a
+	// typo'd `billing: "constructor"` returns a FUNCTION — which `??` cannot
+	// guard, because a function is neither null nor undefined. The comparator
+	// then computes `function - number` = NaN, and V8's sort does not throw on a
+	// NaN comparator: it silently yields a declaration-order-dependent partial
+	// order, so a route can outrank a cheaper or native one with no error at all.
+	const own = Object.hasOwn(PROVIDER_BILLING, providerId)
+		? PROVIDER_BILLING[providerId]
+		: undefined;
+	const billing = route?.billing || own;
+	return billing !== undefined && Object.hasOwn(BILLING_TIER, billing)
+		? BILLING_TIER[billing]
+		: DEFAULT_TIER;
 }
 
 /**
@@ -82,6 +93,16 @@ export function tierOf(providerId, route) {
  */
 export const ROUTES = {
 	// --- served by more than one backend: the reason this file exists ---
+	// `deepseek-v4-pro` (issue #19): the NATIVE backend (deepseek) sorts FIRST
+	// even though the Qwen plan is the cheaper tier (2 < 3), because rankRoutes
+	// ranks NATIVE above tier. The plan gateway injects a +79-token preamble, so
+	// the plan and native routes are behaviourally non-interchangeable, and the
+	// bare id is the one /model sets — defaulting it to the plan silently
+	// rerouted a user who had tuned a prompt against native weights. The plan
+	// route stays 200 here (the catalog lists it, the probe is real, and it is
+	// the route a plan-holder WITHOUT a native DeepSeek key lands on — see the
+	// "native-first, then cheapest" sort in rankRoutes). glm-5.2 is unaffected:
+	// it already resolved native via the tiebreak (both backends tier 2).
 	"deepseek-v4-pro": [
 		{ provider: "qwen", status: 200 },
 		{ provider: "deepseek", status: 200 },
@@ -133,11 +154,26 @@ export const ROUTES = {
 };
 
 /**
- * Usable backends for a model, cheapest first.
+ * Usable backends for a model, in routing preference order.
  *
- * Ties break toward the NATIVE provider — the one whose id prefixes the model
- * id. That reproduces "a native plan outranks a resold plan" (`glm-5.2` stays
- * on Z.ai) as a consequence of the ordering rather than a special case.
+ * Sort key, in precedence: (1) NATIVE provider first, (2) then cheapest tier,
+ * (3) then declaration order. The native override is the issue-#19 rule:
+ * when a model is reachable through both its own vendor's backend AND a
+ * resold one, the native route wins EVEN IF the resold route is the cheaper
+ * tier, because a resold gateway may inject a preamble (`deepseek-v4-pro` on
+ * the Qwen plan measures +79 input tokens) that makes the routes
+ * behaviourally non-interchangeable — and the bare id is the one `/model`
+ * sets, so a user who tuned against native weights must not be silently
+ * rerouted. Behavioural predictability beats marginal cost.
+ *
+ * This is a deliberate STRENGTHENING of the pre-#19 rule, which only broke
+ * tier TIES toward native. Promoting native above tier flips exactly one id
+ * (`deepseek-v4-pro`: native deepseek tier 3 now beats plan qwen tier 2);
+ * every other multi-route id already resolved native (`glm-5.2` tied at
+ * tier 2 and the tiebreak won; `deepseek-v4-flash` and `glm-5.1/5` are native
+ * by default since the plan 403s them). When NATIVE IS NOT REGISTERED (a
+ * plan-holder without a DeepSeek key), `resolve()` skips the deepseek route
+ * and falls to the next-ranked one — qwen — so the plan stays reachable.
  *
  * `Object.hasOwn` rather than a bare lookup: a vendor id of `__proto__` or
  * `constructor` would otherwise inherit from Object.prototype and hand back a
@@ -152,9 +188,9 @@ export function rankRoutes(model) {
 		.filter((r) => r.status === 200)
 		.map((r, i) => ({ route: r, i, native: model.startsWith(r.provider) }))
 		.sort((a, b) => {
+			if (a.native !== b.native) return a.native ? -1 : 1; // native wins outright (issue #19)
 			const byTier = tierOf(a.route.provider, a.route) - tierOf(b.route.provider, b.route);
 			if (byTier !== 0) return byTier;
-			if (a.native !== b.native) return a.native ? -1 : 1;
 			return a.i - b.i; // stable: declaration order
 		})
 		.map((x) => x.route);

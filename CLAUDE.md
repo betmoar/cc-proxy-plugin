@@ -1,61 +1,46 @@
 # cc-proxy — maintainer handoff
 
-A local HTTP proxy that lets Claude Code use GLM (Z.ai), OpenRouter, and Claude
-in one session. Claude Code points `ANTHROPIC_BASE_URL` at it; the proxy routes
-each request **by model name** and forwards. That's the whole product. Resist
-making it more than that.
+A local HTTP proxy that lets Claude Code use GLM (Z.ai), OpenRouter, DeepSeek,
+Qwen, and Claude in one session. Claude Code points `ANTHROPIC_BASE_URL` at it;
+the proxy routes each request **by model name** and forwards. That's the whole
+product. Resist making it more than that.
 
 Read next: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) (design + why),
 [`docs/OPERATIONS.md`](docs/OPERATIONS.md) (runtime facts, debugging),
+[`docs/BACKLOG.md`](docs/BACKLOG.md) (open work + why past decisions went the
+way they did — probe matrices, measurements, refuted alternatives),
 [`CONTRIBUTING.md`](CONTRIBUTING.md) (add-a-provider procedure).
 
 ## Gates
 
-`pnpm check` (= `pnpm lint && pnpm test`) must pass before any commit. CI runs
-the same on push/PR. The test suite spins **real local HTTP backends** — if you
-change forwarding behavior and no test fails, you haven't tested it; add one.
+`pnpm check` (= `pnpm lint && pnpm test`) before any commit; CI runs the same.
+The suite spins **real local HTTP backends** — if you change forwarding and no
+test fails, you haven't tested it; add one.
 
 ## Invariants (breaking one is a design decision, not a refactor)
 
 Each is locked by tests; the test names tell you what you broke.
 
-1. **Transparent pipe.** The proxy rewrites auth/headers only. Full inbound
-   path *including the query string* reaches the upstream; bodies are forwarded
-   byte-for-byte (except the thinking-strip and the selector-strip, below). No
-   prompt inspection, no rewriting, no retry/replay. **Second body exception:**
-   a `<provider>:` selector is cc-proxy's LOCAL lens — no backend has heard of
-   it — so `handleProxy` rewrites `body.model` to the bare id and nothing else.
-   The rewrite is decided before the stream/non-stream branch (the streaming
-   path never parses the body) and is gated on `upstreamModel !== body.model`,
-   so an unprefixed request still reuses the original buffer verbatim. →
-   `test/server.test.js` "provider selector strip…". One deliberate header exception: hop-by-hop
-   headers (RFC 9110 §7.6.1 — above all `transfer-encoding`) are dropped,
-   because the proxy always sends a buffered body with an exact
-   `content-length`, and forwarding CL+TE together trips upstream
-   request-smuggling rejection (bare 400). → `test/server.test.js` "query
-   string is preserved…", "passes through…", "chunked inbound body…";
-   `test/providers.test.js` "drops inbound hop-by-hop headers…"
-2. **Stateless.** No circuit breakers, no on-disk state, no in-proxy waiting.
-   Rate limits are handled by *injecting* `Retry-After` and letting the client
-   back off. → "…1302 rate limit gets a Retry-After header", "1313 … no
-   Retry-After"
-3. **Credential isolation.** Inbound `Authorization` and `x-api-key` (the
-   user's Anthropic credentials) never reach a third-party backend; the Claude
-   route passes them through untouched (OAuth). Never set `ANTHROPIC_API_KEY`
-   in settings templates — it shadows OAuth. → `test/providers.test.js`
-   "…drops an inbound x-api-key…", `test/server.test.js` "OAuth passthrough"
-4. **`claude-haiku-*` pins to Claude** so Claude Code's internal ops (titles,
-   summaries) never burn paid third-party quota. → `test/router.test.js`
-5. **Anthropic Messages only.** Every provider speaks the Anthropic API or a
-   compatible skin. There is deliberately no OpenAI↔Anthropic translation
-   layer; a provider that needs one doesn't belong here.
-6. **Client abort propagates upstream.** When the client connection dies before
-   the response finishes, the upstream request is destroyed — otherwise a
-   cancelled turn keeps billing tokens into a dead socket. → "client abort
-   mid-stream aborts the upstream request"
-7. **Loopback bind by default.** The proxy injects API keys; a LAN-reachable
-   bind lets any host spend your quota. `PROXY_HOST` is the explicit opt-out.
-   → `test/config.test.js`
+1. **Transparent pipe.** Auth/headers only. Full inbound path *including the
+   query string* reaches upstream; bodies forwarded byte-for-byte. Two body
+   exceptions (thinking-strip, `<provider>:` selector-strip) and one header
+   exception (hop-by-hop dropped — CL+TE together trips smuggling rejection).
+   → `server.test.js` "query string is preserved…", "provider selector strip…"
+2. **Stateless.** No breakers, no on-disk state, no in-proxy waiting. Rate
+   limits inject `Retry-After` and let the client back off. → "…1302 … gets a
+   Retry-After", "1313 … no Retry-After"
+3. **Credential isolation.** Inbound `Authorization`/`x-api-key` never reach a
+   third party; the Claude route passes them through (OAuth). Never set
+   `ANTHROPIC_API_KEY` in settings templates — it shadows OAuth.
+   → `providers.test.js` "…drops an inbound x-api-key…"
+4. **`claude-haiku-*` pins to Claude** so internal ops never burn paid quota.
+   The pin tests the STRIPPED tail — pinning the raw id lets
+   `glm:claude-haiku-…` skip it. → `router.test.js`
+5. **Anthropic Messages only.** No OpenAI↔Anthropic translation layer, ever.
+6. **Client abort propagates upstream**, or a cancelled turn bills into a dead
+   socket. → "client abort mid-stream aborts the upstream request"
+7. **Loopback bind by default.** `PROXY_HOST` is the explicit opt-out.
+   → `config.test.js`
 
 ## Load-bearing map (ranked by blast radius)
 
@@ -65,7 +50,7 @@ Each is locked by tests; the test names tell you what you broke.
 | 2 | `src/providers.js` `applyAuth()` / `buildUpstreamHeaders()` | credential leak, or auth failure everywhere |
 | 3 | `hooks/proxy-lifecycle.js` `ensureProxyRunning()` | proxy never starts → all sessions `ECONNREFUSED` |
 | 4 | `src/server.js` `forwardBuffered()` | GLM overflow becomes silent empty turns again |
-| 5 | `src/router.js` `resolve()` + `parseModelSelector()` | wrong backend / haiku traffic burns GLM quota. The haiku pin must test the STRIPPED tail — pinning on the raw id lets `glm:claude-haiku-…` skip it |
+| 5 | `src/router.js` `resolve()` + `parseModelSelector()` | wrong backend / haiku burns paid quota |
 | 5b | `src/routes.js` `rankRoutes()` | every shared id silently takes the expensive route |
 | 6 | `.claude-plugin/plugin.json` `version` | users silently never receive updates (cache key) |
 | 7 | `skills/setup/SKILL.md` | corrupts the user's `~/.claude/settings.json` |
@@ -73,565 +58,134 @@ Each is locked by tests; the test names tell you what you broke.
 
 ## Couplings — if you touch X, you must also update Y
 
-- **A catalog says what a backend SERVES; `ROUTES` says who serves it CHEAPEST;
-  namespace ownership decides the SPELLING.** Three questions, three places —
-  keep them separate. A leg's static list is the offline mirror of that
-  backend's live catalog, so it legitimately includes FOREIGN ids: the Qwen plan
-  really does serve `glm-5.2` and `deepseek-v4-pro`, and omitting them would
-  make the fallback publish a different list than the live fetch. That is not a
-  restatement of the route table — the two answer different questions.
-  What must hold: a foreign id in a catalog has a `200` `ROUTES` entry naming
-  that backend, or the catalog claims a route nothing has ever probed.
-  → `test/routes.test.js` "a catalog may list a foreign id it serves — the lens
-  keeps it unambiguous", plus its looser sibling "every id that a static catalog
-  publishes has a route or a predicate".
-  Display then follows **ownership, not cost** (`ownsId` in `src/models.js`):
-  a backend publishes ids in its own namespace bare and everything else under
-  the `<provider>:` lens, so `deepseek-v4-pro` stays bare on DeepSeek's card and
-  appears as `qwen:deepseek-v4-pro` on the plan's. Routing is still cost-ranked
-  and independent of that — the bare id resolves to the cheapest route, which
-  for `deepseek-v4-pro` is the plan, not the vendor whose namespace it is.
-  **Reversed 7b4361c.** The prior rule was the opposite — catalogs listed only
-  their own vendor's ids, `collectModels()` derived the winner, and a foreign
-  entry was forbidden (locked by a now-deleted test "no static catalog restates
-  a route it does not own"). That held while catalogs were hand-curated. Once
-  the Qwen and OpenRouter legs became LIVE fetches, a catalog stopped being a
-  curated opinion and became a mirror of someone else's response, which the
-  fallback must match. If you make a leg static again, this reverses back.
-- **Capability grade lives in `src/models.js` only.** `MODEL_GRADES` (+
-  `gradeOf`) is published on `/v1/models` as `grade`;
-  `scripts/render-models.js` re-exports it as `MODEL_TIERS` and must never
-  reintroduce a local copy. A new model with no grade silently ships
-  `Specialist`.
-- **`grade` (capability) and `tier` (cost) are separate fields on purpose.**
-  `tier` comes from `src/routes.js` `tierOf()`, `grade` from `MODEL_GRADES`.
-  They do not correlate — tier 4 + Flagship and tier 2 + Economy are both
-  normal. Never derive one from the other or collapse them into one field.
+`test/couplings.test.js` is the executable copy of this table — most rows fail
+there if you forget. The ones marked ⚠ have no test and drift silently.
 
-- **Routing log format** `[<iso>] <model> -> <provider> <path>` (`src/server.js`) is
-  **parsed** by `scripts/status.js` `parseRoutingLines()`. Change one → both + tests.
-- **Version**: bump only via `pnpm version <patch|minor>` (runs
-  `sync-version.mjs`, keeps `plugin.json` in step). Hand-editing one file fails
-  `test/version-sync.test.js`. Users only get new code when the version changes.
-- **Release coupling**: a `v<x.y.z>` tag must equal `plugin.json` == `package.json`
-  == newest `## [x.y.z]` heading in `CHANGELOG.md`, and that CHANGELOG section
-  must be non-empty (it becomes the GitHub release body). Enforced by
-  `scripts/release-gate.mjs` (run locally: `node scripts/release-gate.mjs v<x.y.z>`),
-  fired on tag push by `.github/workflows/release.yml`, locked by
-  `test/release-gate.test.js`. So: write the CHANGELOG entry **before** tagging.
-- **Marketplace manifest** `.claude-plugin/marketplace.json` advertises the plugin
-  at `source: ./` for standalone install (`cc-proxy@cc-proxy-plugin`). Its entry
-  `name` and `source` must match `plugin.json`; `test/marketplace.test.js` locks
-  it. (It carries no version — the central `betmoar/ccp-market` is the primary
-  channel; this is the fallback.)
-- **Plugin description** is carried by three manifests (`package.json`,
-  `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json` entry). Change
-  one → all three. Nothing at runtime reads all three, so drift is invisible
-  until a user reads the stale one (package.json advertised "Z.ai and
-  OpenRouter" two providers after DeepSeek and Qwen shipped). → locked by
-  `test/couplings.test.js`.
-- **`docs/models.html` is a generated artifact**, rendered against a *live*
-  proxy (`pnpm models:html`). Two traps: (a) CI can't regenerate it, so it can
-  only be pinned to the static catalog — `test/render-models.test.js` asserts
-  every curated id appears and that the hero's count matches the rows drawn;
-  (b) the running proxy may be older than your working tree — the version
-  handshake replaces a *version*-mismatched proxy, so same-version code changes
-  need a manual `POST /_shutdown` + restart before rendering, or the artifact
-  silently captures the old catalog (this is how it shipped 23 of 24 models).
-  After adding a model: restart the proxy, then `pnpm models:html`.
-- **`upstreamRequestOptions()`** in `src/proxy.js` is the single place upstream
-  request options are built, shared by the streaming and buffered paths. Do not
-  reintroduce a second copy in `server.js` — that duplication is how the
-  query-string bug shipped twice.
-- **`PROXY_PORT` default (4000)** is read independently in `src/config.js`,
-  `hooks/proxy-lifecycle.js`, `scripts/statusline.js`, `scripts/status.js`.
-  Change the default in all four or in none. → locked by `test/couplings.test.js`.
-- **`PROXY_READY_TIMEOUT_MS` vs `hooks/hooks.json` `timeout: 10`** (seconds):
-  the hook is killed at 10 s, so a ready-timeout ≥ 10000 ms silently never
-  completes. Raise both together. → locked by `test/couplings.test.js`.
-- **`.env.example` ↔ README env table ↔ `docs/OPERATIONS.md`**: new env vars go
-  in all three. → locked by `test/couplings.test.js`.
-- **Scripts must call `loadEnv()` before any module-level `process.env` read.**
-  `scripts/statusline.js` once computed its `PROXY_PORT` const above the
-  `loadEnv()` call, so a port configured only in `~/.env` was silently ignored
-  by the liveness probe (fixed; locked by `test/statusline.test.js` "liveness
-  probe honors PROXY_PORT from ~/.env"). When adding a script, put `loadEnv()`
-  directly under the imports.
-- **Keys vs plumbing split.** API keys (`GLM_API_KEY`, `OPENROUTER_API_KEY`)
-  live in `~/.env`; non-secret plumbing (`PROXY_PORT`, `PROXY_LOG`,
-  `ANTHROPIC_BASE_URL`, `ANTHROPIC_CUSTOM_MODEL_OPTION*`) lives in settings.json
-  `env`. Both are loaded by the shared `src/env.js` (`loadEnv()`): repo `.env`
-  first (dev/inline), then `~/.env`, with `process.env` always winning. All key
-  consumers (`bin/cc-proxy.js`, `scripts/status.js`, `scripts/statusline.js`)
-  call `loadEnv()` — don't add a fourth inline `process.loadEnvFile`; that's how
-  the proxy shipped without `~/.env` support (the bug behind v0.3.4).
-- **Proxy binary is self-resolved; version handshake replaces stale proxies.**
-  `resolveProxyPath()` (`hooks/proxy-lifecycle.js`) uses the plugin tree's own
-  `bin/cc-proxy.js`; env `PROXY_PATH` is only a legacy fallback for trees
-  without a bin. `/_status` carries the proxy's `version` (from
-  `package.json` via `src/config.js`), and `ensureProxyRunning()` replaces a
-  version-mismatched proxy via POST `/_shutdown` + respawn. Never make setup
-  write `PROXY_PATH` again — a version-pinned path in settings.json is how
-  users silently stopped receiving proxy updates (the running process outlives
-  the plugin cache update). Foreign listeners (no `/_status` contract) are
-  never killed. → `test/proxy-lifecycle.test.js` "version handshake",
-  `test/start-proxy.test.js` "ignores a stale settings.json PROXY_PATH…",
-  `test/server.test.js` "/_shutdown".
+| Touch | Also update |
+|---|---|
+| routing log format (`server.js`) | `status.js` `parseRoutingLines()` — it parses the line |
+| a version | `pnpm version` only; `plugin.json` is the plugin cache key |
+| a `v<x.y.z>` tag | its CHANGELOG section, non-empty, BEFORE tagging |
+| `PROXY_PORT` default | `config.js`, `proxy-lifecycle.js`, `statusline.js`, `status.js` |
+| `PROXY_READY_TIMEOUT_MS` | `hooks/hooks.json` `timeout: 10` — ≥10000 ms never completes |
+| `buildProviders()` | `PROVIDER_IDS` + `CONTRIBUTING.md` 1b — else the raw lens leaks upstream |
+| a new env var | `.env.example` + README table + `docs/OPERATIONS.md` |
+| the plugin description | `package.json`, `plugin.json`, `marketplace.json` |
+| an upstream request option | `upstreamRequestOptions()` only — a 2nd copy shipped the query-string bug twice |
+| a script's `process.env` read | `loadEnv()` directly under the imports, or `~/.env` is ignored |
+| `QWEN_PLAN_RESELLS` (`providers.js`) | `QWEN_PLAN_ALSO` (`render-models.js`) must cover it, or the Qwen card under-reports the plan |
+| ⚠ `MODEL_GRADES` | nothing — it is the only copy IN THE REPO, but `gradeOf()` overlays `~/.claude/cc-proxy/grades.json` on top of it, so a reader is not reading this table alone. `render-models.js` re-exports it for coverage assertions only — rendering goes through `gradeOf()` |
+| ⚠ a static catalog | confirm the id has a `ROUTES` entry |
+| ⚠ the `/v1/models` wire shape | README + OPERATIONS + ARCHITECTURE, by hand |
+
+Three questions, three places, never merged: a **catalog** says what a backend
+serves, **`ROUTES`** who serves it cheapest, **`ownsId`** how it is spelled.
+`grade` (capability) and `tier` (cost) are independent — tier 4 + Flagship is
+normal. → [`docs/BACKLOG.md`](docs/BACKLOG.md)
+
+**`GET /v1/models` is a PUBLISHING contract, and the arrow only points one
+way.** cc-proxy publishes curated model facts; downstream plugins consume them.
+`context_window` exists on the response so `cc-reload` can budget a session
+against the real window instead of hard-coding its own id table; `grade` exists
+so `cc-operator` can dispatch by model strength instead of guessing. Both moved
+out of a display layer into `src/models.js` for exactly that reason, and both
+are therefore **API surface, not a local opinion** — and both OMIT their field
+rather than inventing a value: an id with no curated window has no
+`context_window`, an id nobody assessed has no `grade`. `"grade" in entry` and
+`"context_window" in entry` are the checks, so a consumer can tell "unknown"
+from "known", and neither key is ever `null`. (Until 0.6.1 an unassessed id
+shipped `Specialist`, which read as a verdict where it was an absence — 299 of
+320. `Economy` was retired in the same change: a cost class has no business on
+the capability axis.) Never read a consumer's file back to decide
+anything here: that inverts the arrow and makes neither plugin installable
+alone. Adding a field means updating the three docs that describe the shape —
+no test enforces that.
 
 ## Traps for the unwary
 
-- **Plumbing can't move to `~/.env`.** The `SessionStart` hook reads
-  `PROXY_PORT`/`PROXY_LOG` from `process.env` (settings.json injection)
-  *before* the proxy process exists to load `~/.env`. So those stay in
-  settings.json `env`; only keys (loaded by the proxy itself) go in `~/.env`.
-- **Setup order matters.** The moment `ANTHROPIC_BASE_URL` lands in
-  settings.json, *already-open* sessions retarget immediately. That's why
-  `/cc-proxy:setup` starts the proxy itself (`scripts/start-proxy.js`) and why
-  that script reads settings.json's `env` block explicitly — on first run the
-  plumbing exists nowhere else. Don't "simplify" this into a plain spawn.
-- **Never `rm && touch` the proxy log** while the proxy runs (orphan inode —
-  output vanishes). `truncate -s 0` instead.
-- **The 429 buffering exception**: `stream:true` responses are a pure pipe
-  *except* status 429, which is a small JSON body (the limit short-circuits
-  before SSE) and gets buffered for `Retry-After` injection. Never extend
-  buffering to other statuses on the streaming path — you'd break SSE.
-- **`Retry-After` injection is gated on GLM code `1302` exactly.** Its sibling
-  `1113` (insufficient balance) is also a 429 but is *not retryable*; giving it
-  a retry hint recreates the infinite-cooldown loop other clients hit.
-- **Response inspection requires identity encoding, and now enforces it.**
-  `forwardBuffered()` passes `forceIdentityEncoding` to
-  `upstreamRequestOptions()` → `buildUpstreamHeaders()`, which *overwrites* the
-  client's `accept-encoding` with `identity` — a deliberate invariant-1 header
-  exception, like the hop-by-hop drop. Without it a gzipped body fails
-  `JSON.parse` and both the 200-overflow→400 conversion and the 1302
-  `Retry-After` injection silently degrade to passthrough. Never pass the flag
-  on the streaming path: SSE is a pure pipe and must keep the client's
-  negotiated encoding. → `test/server.test.js` "buffered path forces
-  accept-encoding: identity…", "…streaming path leaves accept-encoding
-  untouched".
-- **CC internals may drift**: the `[1m]` model suffix, internal `claude-haiku-*`
-  ids, and `ANTHROPIC_CUSTOM_MODEL_OPTION` (exactly one slot) are not public
-  API. When routing looks wrong after a Claude Code update, check these first.
-- **`/v1/models` is synthesized, not forwarded.** It's intercepted before
-  `handleProxy` (like `/_status`/`/_shutdown`) but matches via parsed pathname
-  (query-string tolerant), and `/v1/models/<id>` deliberately falls through to
-  forwarding. GLM is the only live leg; Claude/OpenRouter are static config
-  (`src/models.js`). `modelsTimeoutMs` is config-only (no env var — keep it out
-  of `.env.example` or the coupling test will demand doc entries). The
-  `[models]` summary log line is not parsed by `status.js`.
-  Entries carry a non-standard **`context_window`** (integer tokens) when the id
-  is in `CONTEXT_WINDOW`; uncurated ids OMIT it rather than send `null`
-  (`"context_window" in entry` is the check). Two traps when touching it: (a)
-  attach via `withContextWindow()`, which uses `Object.hasOwn` — a bare
-  `CONTEXT_WINDOW[id]` lookup inherits from `Object.prototype`, and a vendor id
-  of `__proto__`/`constructor` then ships `{}` or a function as the window
-  (fixed 0.5.1, locked by `test/models.test.js`); (b) the response shape is
-  documented in README + OPERATIONS + ARCHITECTURE and no test enforces that —
-  a new wire field must be added to all three by hand.
+- **Plumbing can't move to `~/.env`** — the SessionStart hook reads
+  `PROXY_PORT`/`PROXY_LOG` before the proxy exists to load it. Keys in `~/.env`,
+  plumbing in settings.json `env`.
+- **Setup order matters.** `ANTHROPIC_BASE_URL` retargets *already-open*
+  sessions instantly, so `/cc-proxy:setup` starts the proxy itself and reads
+  settings.json's `env` explicitly. Don't "simplify" it into a plain spawn.
+- **Never `rm && touch` the proxy log** while it runs (orphan inode);
+  `truncate -s 0`.
+- **429 is the ONE buffering exception on the streaming path.** Extending it to
+  other statuses breaks SSE. And it is gated on GLM `1302` exactly — sibling
+  `1113` (insufficient balance) is a 429 but NOT retryable; a hint there
+  recreates an infinite cooldown loop.
+- **Response inspection requires identity encoding.** `forwardBuffered()` forces
+  it; without it a gzipped body fails `JSON.parse` and overflow/rate-limit
+  handling degrades to passthrough, silently. Never on the streaming path.
+- **A slash command has NO positional parameters.** Only `$ARGUMENTS` and `$1`
+  are substituted, TEXTUALLY, before any shell runs — `$2`/`$3` expand to
+  nothing, and `$1` may be the LAST token (`bench speed --report` → `$1` =
+  `--report`). Use `set -- $ARGUMENTS`. Untestable offline: a shell test of the
+  SOURCE passes while the SUBSTITUTED body fails. → `commands/bench.md`
+- **A session SNAPSHOTS command bodies at startup**, even under `--plugin-dir .`
+  — editing a command and re-running it tests the OLD body, and the expansion
+  looks plausible either way. Verify which body you have (md5 the expansion vs
+  the file, or probe with a signature only the new version has), then `/exit`
+  and relaunch. For anything billed, pick an observable that separates the paths
+  first: `bench speed --report` is read-only, a live run appends.
+- **CC internals may drift**: `[1m]` suffix, `claude-haiku-*` ids,
+  `ANTHROPIC_CUSTOM_MODEL_OPTION` (one slot) are not public API — check these
+  first when routing looks wrong after a CC update.
+- **`/v1/models` is synthesized**, but `/v1/models/<id>` is forwarded. Uncurated
+  ids OMIT `context_window` rather than sending `null`; attach via
+  `withContextWindow()` — a bare lookup inherits from `Object.prototype` and
+  ships a function for an id named `constructor`. The wire shape is documented
+  in three files with no test enforcing it.
 
 ## Decision procedures
 
-**Adding a provider** → follow `CONTRIBUTING.md` step-by-step. Summary: one
-gated entry in `buildProviders()`, disjoint `match()`, keep `claude` last,
+**Adding a provider** → `CONTRIBUTING.md`, step by step. One gated entry in
+`buildProviders()`, disjoint `match()`, id in `PROVIDER_IDS`, `claude` last,
 tests in `providers.test.js` + `router.test.js`. Never a router/server change.
 
 **Changing the forwarding path** →
 1. Build options only via `upstreamRequestOptions()`.
-2. Ask: does this hold response bytes in memory? If yes, it needs a size cap
-   and a passthrough escape hatch (see `NON_STREAM_BUFFER_LIMIT`,
-   `RATE_LIMIT_PEEK_LIMIT` for the pattern).
-3. Ask: does this add state across requests? If yes, stop — invariant 2.
-4. Add an end-to-end test in `server.test.js` with a local stub backend. Cover
-   both the streaming and buffered paths; they are separate code.
+2. Holds response bytes in memory? Needs a size cap + passthrough escape hatch
+   (`NON_STREAM_BUFFER_LIMIT`, `RATE_LIMIT_PEEK_LIMIT`).
+3. Adds cross-request state? Stop — invariant 2.
+4. End-to-end test in `server.test.js` against a local stub, covering BOTH the
+   streaming and buffered paths; they are separate code.
 
-**Releasing** →
-1. `CHANGELOG.md` entry.
-2. `pnpm version patch|minor` (never hand-edit versions).
-3. `pnpm check`, push. The marketplace repo (`betmoar/ccp-market`) points at
-   this repo; users pick it up via `claude plugin update cc-proxy@betmoar`.
+**Merging a PR** → `gh pr merge <n> --squash`, **never `--rebase`**. `main` is
+one commit per PR, `<type>: <what> (#<n>)`;
+`git log --merges 156a1f8..origin/main` must stay empty. `--rebase` replays
+every commit (#21 landed as nine and needed a force-push to undo). The squash
+body is where the WHY goes — per-commit messages are discarded. Two
+consequences: squashed branches never appear in `git branch --merged` (use `-D`
+once content is confirmed landed), and simultaneous squashes always conflict in
+`CHANGELOG.md` — fold into ONE version section, Added → Changed → Fixed.
 
-## Reversed decisions
+**Releasing** → CHANGELOG entry (before tagging — the gate reads it) →
+`pnpm version patch|minor` → `pnpm check`, push, tag. If routing, the catalog,
+or the renderer changed, also regenerate `docs/models.html`: confirm the port
+owner by PID (`lsof -nP -iTCP:4000 -sTCP:LISTEN -t` — `/_status` says what
+ANSWERED, not what is bound), restart the proxy to match the merged tree, then
+`pnpm models:html` and commit. CI cannot rebuild it and the suite reads the
+committed file, so a stale artifact ships green and silent. `models:html` goes
+through `scripts/render-html.mjs`, which runs the renderer against a temp HOME
+holding only a symlink to `~/.env` — the renderer grades in-process through
+`gradeOf()`, so a plain run publishes YOUR `grades.json` instead of the repo's
+table (it shipped four wrong grades that way). Never "simplify" it back to
+`node render-models.js >`, and never isolate the whole HOME: `loadEnv()` reads
+`~/.env` from it, so a blanket override drops every key and the page collapses
+to the Claude card alone (measured: 40 rows → 3).
 
-- **`context_window` is now published on `GET /v1/models` (0.5.1), reversing
-  the 0.4.3-era call that it was deliberately display-layer-only.** The
-  curated integer table lived in `scripts/list-models.js` as `CONTEXT_WINDOW`
-  (human strings like `"128K"`), with a header comment stating "the Anthropic
-  format has no context_window field ... deliberately the display layer's
-  concern (not the proxy's)". That held until a second consumer needed the
-  number: the `cc-reload` Claude Code plugin budgets a session's context usage
-  against its model's window, and was hard-coding its own model-id table —
-  the exact "same curated data in two places" drift this repo's own
-  `test/couplings.test.js` exists to catch, just one repo removed. The table
-  is now `CONTEXT_WINDOW` in `src/models.js` (integer tokens, not display
-  strings), attached to discovery entries via `withContextWindow()` in
-  `collectModels()`. ids with no curated window (OpenRouter-prefixed ids,
-  `claude-*`) OMIT the field — never `null` — so a consumer can tell "unknown"
-  from "known" with `"context_window" in entry`. `scripts/list-models.js`
-  keeps its `CONTEXT_WINDOW` export but it is now a pure format-derivation
-  (`formatContextWindow()`) of the `src/models.js` table, locked against
-  redrift by `test/couplings.test.js` and `test/list-models.test.js`. If you
-  are tempted to reverse this again (move it back to display-only), first
-  check whether `cc-reload` (or any other consumer) still reads it — direction
-  matters here too, same as `MODEL_TIERS`/cc-operator: cc-proxy **publishes**
-  curated model facts, downstream plugins **consume**.
+## Backlog
 
-## Backlog (prioritized, with context)
-
-1. **Thinking-strip vs Claude thinking+tool-use** (`src/sanitize.js`) — thinking
-   blocks are stripped from history on *every* route, including Claude→Claude.
-   The Anthropic API has historically required the preceding assistant turn's
-   thinking block during tool-use loops; empirically this works today via the
-   OAuth/Claude Code flow. **If the Claude route starts returning 400 "must
-   start with a thinking block"**: gate the strip to non-`claude` providers and
-   accept that a GLM→Claude mid-session switch then fails (the signatures are
-   indistinguishable without state, and state is out — invariant 2).
-2. ~~**Content-encoding blind spot**~~ — DONE (0.5.1). The buffered path forces
-   `accept-encoding: identity` upstream; see the Traps bullet. Numbering kept so
-   older notes referencing "backlog item N" still resolve.
-3. ~~**Dedup quota fetchers**~~ — DONE (0.5.1). Endpoints, the fetch timeout, and
-   response shaping (GLM quota, OpenRouter credits, DeepSeek balance) live in
-   `scripts/quota.js`; both consumers import it. What stayed at the call sites is
-   what genuinely differs: the statusline's 60s disk cache + stale fallback (one
-   `cachedFetch()` wrapper for all three gauges) and the CLI's fail-now error
-   handling. `quota.js` must never read `process.env` at module level — imports
-   hoist above the consumers' `loadEnv()`. Both locked by `test/couplings.test.js`.
-4. ~~**`checkPort` socket timeout**~~ — DONE (0.5.1). The lifecycle TCP probe is
-   bounded at 300ms, mirroring `probePort`. Numbering kept so older notes
-   referencing "backlog item N" still resolve.
-5. ~~**Predictable `/tmp` defaults**~~ — DONE (0.5.1). `PROXY_LOG` and the
-   statusline cache dir now default under `~/.claude/cc-proxy/` instead of
-   `/tmp`, where another local user could plant a symlink our O_APPEND follows,
-   or a `*_cache.json` the statusline renders as this user's quota. The default
-   is spelled twice (`DEFAULT_LOG_PATH` in `hooks/proxy-lifecycle.js`, read back
-   by `scripts/status.js` — scripts/ doesn't import hooks/), locked by
-   `test/couplings.test.js`. `spawnProxy()` now mkdir -p's the log directory and
-   falls back to discarded stdio if the open still fails: it runs inside the
-   SessionStart hook, so a throw there is ECONNREFUSED for the whole session.
-   Existing users: the log silently moves; the old `/tmp/cc-proxy.log` is left
-   in place and never read again.
-6. **Agent-queue wall-clock deadline** — documented out of scope in
-   `docs/ARCHITECTURE.md` (last section); only matters past ~128 concurrently
-   stalled upstream calls to one origin.
-7. **Windows** — untested end to end (detached spawn, log paths).
-8. ~~**Explicit provider-prefix ids (`<provider>:<model>`)**~~ — **DONE
-   (feat/route-selection).** Shipped as a COLON-ONLY selector (`src/router.js`
-   `parseModelSelector`), with the cost rank in `src/routes.js` (`ROUTES`,
-   `rankRoutes`, `tierOf`). Spec: `docs/specs/route-selection.md`. Keep reading
-   the item — the probe matrix and the billing/tier vocabulary below are still
-   the reference, and item 9 builds on them.
-
-   **The `/` trap dissolved rather than being solved.** The worry was that
-   OpenRouter's `includes("/")` claims the whole slash namespace, so
-   `qwen/deepseek-v4-pro` could never mean the plan. True — and irrelevant, once
-   probed: the BARE id already routes to the cheapest backend and the slash form
-   already routes to the most expensive one (`qwen3.7-max` → plan,
-   `qwen/qwen3.7-max` → OpenRouter). A slash selector therefore buys nothing in
-   either direction, so `/` was left to OpenRouter untouched and the collision-
-   lock tests (`test/router.test.js:65,77,179`) never needed changing.
-   `:` was live-verified through Claude Code's `/model` picker on 2026-08-06 —
-   it reaches the proxy intact.
-
-   **What the lens cost, and where the danger was.** The selector must be
-   stripped before forwarding (a backend 400s on our local spelling), and that
-   strip is what nearly broke invariant 4: the haiku pin tested the RAW model
-   id, so `glm:claude-haiku-…` skipped the pin AND arrived upstream as the bare
-   haiku id — internal ops billed to a third party. The pin now tests the
-   STRIPPED TAIL and discards any selector. Caught by an adversarial review, not
-   by the original design; both the unit and end-to-end guards were
-   mutation-tested against a reintroduction of the defect.
-
-   Original scoping notes follow. Motive is
-   billing, not availability: a model reached through a plan is already paid for
-   (sunk capacity), while the same model on a credit-billed backend costs real
-   money per call — see the billing table below, and note it does NOT track
-   first-party-ness. Live-probed 2026-08-04 against the Token Plan host with
-   `DASHSCOPE_API_KEY` (re-verify before building — this vendor's catalog moves):
-
-   Full cross-host matrix, every cell probed (`POST /v1/messages`, 1 token):
-
-   | id | qwen plan | deepseek native | z.ai native |
-   |---|---|---|---|
-   | `qwen3.8-max`, `qwen3.7-plus` (+3 more) | 200 | 400 | 400 |
-   | `deepseek-v4-flash-0731` | 200 | **400 — id unknown to DeepSeek** | 400 |
-   | `deepseek-v4-pro` | 200 | 200 — *same id, different bill* | 400 |
-   | `deepseek-v4-flash` | 403 AccessDenied | 200 | 400 |
-   | `glm-5.2` | 200 | 400 | 200 — *same id, different bill* |
-   | `glm-5.1`, `glm-5` | 403 | 400 | 200 |
-
-   **The vendor's own plan page is also incomplete** — it lists five Qwen text
-   models (exactly the five in `DEFAULT_QWEN_MODELS`, so that curation is
-   confirmed correct), plus `deepseek-v4-pro`, and omits both `glm-5.2` and
-   `deepseek-v4-flash-0731`, which serve clean 200s. Two independent tables
-   (QwenCloud's public model list AND the account's own plan page) each miss
-   ids the gateway actually serves. Probe, never read.
-
-   The plan page also lists multimodal ids (`wan2.7-image*`,
-   `happyhorse-1.1-*v`, `qwen-audio-3.0-tts-plus`). These DO resolve on the
-   Messages endpoint — they fail on body shape (`"Input should be a valid list:
-   input.messages.0"`, `"url error"`), not with `Model not exist` — so they are
-   routable but unusable here: they want a different request schema, and
-   invariant 5 keeps translation out. (An earlier note claimed they were absent
-   from the endpoint entirely; that was probing wrong ids — `qwen-image-3.0-pro`
-   and `wan2.6-t2i` don't exist, `wan2.7-image` does.)
-
-   So the plan resells exactly one GLM (5.2) and two DeepSeek models.
-
-   **Partially DONE in 0.5.1 — "plan before credits" is the DEFAULT now.**
-   `QWEN_PLAN_RESELLS` (`src/providers.js`) routes bare `deepseek-v4-pro` to the
-   plan when `DASHSCOPE_API_KEY` is set, because prepaid capacity is free at the
-   margin and DeepSeek native bills metered credits. **A native plan outranks a
-   resold plan**, so `glm-5.2` stays on Z.ai (itself a GLM Pro plan) — switching
-   would swap prepaid pools for +6 injected tokens and nothing gained. The rule
-   is plan-before-CREDITS, not plan-before-everything.
-   `deepseek-v4-flash-0731` routes there too (plan-only id, DATED_ID rule).
-   `deepseek-v4-flash` stays native — the plan 403s it.
-
-   What that leaves open, and why it still needs the prefix scheme:
-   - **No way back to the native route.** The plan's gateway injects a preamble
-     (+79 input tokens on `deepseek-v4-pro`), so the two routes are not
-     behaviourally identical. A user who tuned a prompt against native DeepSeek
-     now has no spelling that reaches it. This is the strongest single
-     argument for the scheme and it is now a live gap, not a hypothetical.
-   - **The set is hand-curated and rots.** An id that starts 403-ing on the plan
-     becomes a hard failure on a model the user could otherwise reach. Re-probe
-     before each release; there is no test that can catch this offline.
-   - **It only helps holders of this one plan.** A second plan (another vendor,
-     another account) would need its own set, and two plans reselling the same
-     id would be ambiguous again — with no way to say which.
-
-   **The trap for any prefix scheme**: OpenRouter matches on `includes("/")` and
-   sits *before* qwen in the registry, so `qwen/deepseek-v4-pro` routes to
-   OpenRouter, not Qwen. A slash-namespaced scheme therefore cannot be added
-   without rewriting OpenRouter's predicate to an allowlist (it currently claims
-   the entire slash namespace by design — that is what makes it the aggregator).
-   A different separator (`qwen:deepseek-v4-pro`) sidesteps it but must survive
-   Claude Code's `/model` picker and `ANTHROPIC_CUSTOM_MODEL_OPTION`, neither of
-   which is public API.
-
-   Not a fallback mechanism: "use the plan when the Z.ai quota is spent" needs
-   cross-request state (invariant 2). An explicit alias the user selects is
-   stateless; automatic failover is not.
-
-   **Provider tiers = distance from the weights** (the vocabulary the cost rank
-   below is built on). Tier 1 = Anthropic (OAuth passthrough, the default
-   backend, pinned by invariants 3 and 4 — a *structural* position, NOT a
-   capability claim; capability is item 9 and needs evals). Tier 2 = the model's
-   own provider or a **contracted plan** reselling it. Tier 3 = an aggregator
-   buying at market (OpenRouter). The risks that matter for a distant route —
-   truncated window, substituted weights, an unmeasured deployment — scale with
-   that distance, not with who sends the bill.
-
-   **A plan IS tier 2, not tier 3.** A prepaid plan is a contract with the
-   vendor for capacity, so the route is provisioned rather than brokered.
-   Established by `deepseek-v4-flash-0731`: that dated id exists ONLY on the
-   Qwen Token Plan host and is unknown to DeepSeek natively (400) — a reseller
-   cannot mint an id the origin has never heard of, so the plan is a first-party
-   arrangement with the model provider, not a middleman. Which means Qwen's
-   `glm-5.2` and `deepseek-v4-*` are tier 2 as well.
-   This is what makes the tiering usable: without it, cost and provenance
-   conflict (the plan routes are the cheap ones AND the resold ones, so "prefer
-   plan" and "distrust resold" point opposite ways). Filing plans as tier 2
-   removes the conflict — the two axes now agree everywhere, and only OpenRouter
-   is tier 3.
-   Measured caveat, worth knowing before trusting "same weights": identical
-   prompts bill DIFFERENT input tokens across routes, reproducibly (2026-08-04,
-   same 9-word body):
-
-   | id | via plan | native | delta |
-   |---|---|---|---|
-   | `glm-5.2` | 22 | 16 (Z.ai) | +6 |
-   | `deepseek-v4-pro` | 93 | 14 (DeepSeek) | **+79** |
-
-   The plan's gateway augments the request, and by a per-model amount — +79 on
-   DeepSeek is a substantial injected preamble, not header overhead. Same
-   weights, NOT the same context: a prompt tuned on one route can behave
-   differently on the other, and the cheaper route is not free of cost per
-   token either (you pay the preamble out of plan capacity on every call).
-   So tier 2 means "provisioned by the vendor", NOT "byte-identical" — this is
-   the single strongest argument for making the route EXPLICIT rather than
-   letting anything pick one silently.
-
-   Tier is a property of the **(id, backend) pair**, never of a provider:
-   Qwen is tier 2 for `qwen3.8-max` and tier 2-by-plan for `glm-5.2`, while
-   OpenRouter is tier 3 for everything. It therefore cannot live as one field on
-   a `providers.js` entry. It also cannot be the SELECTOR — `deepseek-v4-pro` is
-   reachable at tier 2 through two different backends, so a tier does not
-   uniquely name one. Compression is the point of a tier; uniqueness is the
-   point of a selector. Keep the explicit prefix as the selector.
-
-   **Cost rank (belongs here, NOT in item 9).** Billing is a SEPARATE axis from
-   the tier above — do not read one off the other. Three distinct plans and two
-   credit pools, verified against each provider's own quota/balance endpoint
-   (2026-08-04):
-
-   | backend | billing | evidence |
-   |---|---|---|
-   | Z.ai (GLM) | **plan** — GLM Pro | `/quota/limit` → `level=pro`, TIME_LIMIT + TOKENS_LIMIT |
-   | Qwen Token Plan | **plan** — Individual | prepaid capacity, no balance endpoint at all |
-   | Claude | **plan** — Max/Pro (OAuth) | no key, no meter; the session's own quota |
-   | DeepSeek native | **credits** | `/user/balance` → `topped_up_balance: $19.56` |
-   | OpenRouter | **credits** | `/credits` → remaining USD |
-
-   So preference order is: any plan route (sunk cost — the capacity is already
-   bought) → credits (marginal spend, real money per call), with OpenRouter last
-   among credit routes because it is also tier 3.
-   Note this makes DeepSeek's own native endpoint the EXPENSIVE way to reach
-   `deepseek-v4-pro` and the plan route the cheap one — the opposite of the
-   intuition that first-party is cheapest. That inversion is the entire reason
-   this item exists. `deepseek-v4-flash`, though, is credits-only: the plan
-   403s it (see the matrix above), so it has no cheap route.
-   This is a **cost** ranking, not a knowledge ranking, and the two are
-   deliberately not correlated — measuring capability-per-currency is out of
-   scope. `deepseek/deepseek-v4-pro` via OpenRouter is the same weights as
-   native, so it cannot carry a lower *capability* grade; publishing it as one
-   would be a false claim on item 9's tier field. The rank attaches to the
-   **(id, backend) pair**, which is why it lives in this item: item 9 grades a
-   *model*, this grades a *route*.
-   Corollary: a cost rank is inert without a way to express the choice. Ranking
-   tells a consumer that `deepseek/deepseek-v4-pro` is the expensive path but
-   offers no way to ask for the cheap one — so the rank and the prefix scheme
-   ship together, or neither is actionable.
-9. **Publish a capability tier per model in `GET /v1/models`**, so cc-operator
-   stops guessing when a model it has never seen appears in the catalog.
-   Direction matters and only one direction is allowed: cc-proxy **publishes**,
-   cc-operator **consumes**. cc-operator already depends on this proxy one way
-   (`ops-tiers.sh --check` reads `/v1/models`), because routing is the layer
-   underneath it. Reading `tiers.env` back would invert that and make neither
-   plugin installable alone. A tier field on the discovery response respects the
-   arrow; a tiers.env read does not.
-
-   **MECHANICALLY DONE (feat/route-selection); the grades themselves are not.**
-   The map moved from `scripts/render-models.js` to `src/models.js` as
-   `MODEL_GRADES` (+ `gradeOf`, `DEFAULT_GRADE`), and every `/v1/models` entry
-   now carries **`grade`** (capability) alongside **`tier`** (cost, 1–4 from
-   `src/routes.js`). `render-models.js` re-exports `MODEL_TIERS = MODEL_GRADES`
-   so the two cannot drift. That was the reversal this paragraph warned about:
-   a curated opinion is now API surface, so **every new model needs a grade or
-   discovery silently publishes `Specialist`**.
-
-   **The live catalogs changed the SCALE of that, not just the principle.**
-   Grading was tractable while the catalog was ~27 hand-curated ids. Discovery
-   now publishes ~320 usable models, almost all of them OpenRouter's, and the
-   curated table covers a couple of dozen — so the overwhelming majority of the
-   response ships the `Specialist` default, which reads as a claim and is really
-   an absence. Measured 2026-08-07 against the live proxy: of 320 usable
-   entries, **299 are `Specialist`** (7 Flagship, 9 Strong, 5 Economy). Two consequences to decide on before item 9 is called done:
-   (a) a consumer cannot distinguish "graded Specialist" from "never graded",
-   which argues for OMITTING `grade` when there is no entry, exactly as
-   `context_window` already omits rather than sending `null`;
-   (b) grading ~320 models by hand is not going to happen, so the eval harness
-   below is now a prerequisite rather than a refinement — or the field is
-   honestly scoped to the ids someone has actually assessed.
-
-   TWO FIELDS, TWO AXES, NEVER READ ONE OFF THE OTHER: `deepseek/deepseek-v4-pro`
-   is tier 4 (expensive, resold) and Flagship (same weights as native); a cheap
-   fast model can be tier 2 and Economy. Collapsing them would make one a lie.
-
-   **What remains open is the part that actually needed evals** — the grades are
-   still one person's read of vendor marketing, now published where another tool
-   dispatches on them. Everything under "Grades need evals" below still stands.
-
-   **The two tier vocabularies are not the same axis** — this is the part to
-   think through before building. cc-proxy's are *capability grades* (how strong
-   is this model); cc-operator's are *roles* (JUDGMENT / IMPLEMENT / MECHANICAL
-   / RECON — what job is it for). They do not map 1:1: Specialist is a shape,
-   not a rung, and a cheap-but-fast model is a good MECHANICAL pick precisely
-   because it is *not* Flagship. So publish the capability grade and let
-   cc-operator own the role mapping; do not publish role names from here, or
-   this repo starts encoding another plugin's policy.
-
-   Trap for the consumer side: a bound id need NOT appear in `/v1/models`.
-   `claude-haiku-4-5-20251001` (the RECON default) is deliberately absent —
-   invariant 4 pins haiku to Claude and discovery advertises only three Claude
-   ids — so a tier lookup must tolerate a miss rather than dropping the row.
-
-   **Grades need evals before they are published.** Today `MODEL_TIERS` is one
-   person's read of vendor marketing; that is fine for an infographic and not
-   fine for a field another tool dispatches on. Whatever harness is built, two
-   properties matter more than the score itself: (a) it must be **re-runnable
-   per model**, because the catalog changes under us — the whole reason this
-   item exists is new ids arriving — so a one-off spreadsheet rots immediately;
-   (b) it must record *when* and *against which id spelling*, since a dated
-   alias (`deepseek-v4-flash-0731`) and its bare form can be different weights
-   on different hosts (see item 8). Cheap first cut: rank within a provider
-   only (vendors are internally consistent — `glm-5.2` > `glm-5.1` > `glm-4.x`
-   needs no eval), and reserve measurement for CROSS-provider placement, which
-   is the only part actually in doubt. Note the eval itself is billed: GLM and
-   Qwen are plan capacity (effectively free to re-run), DeepSeek and OpenRouter
-   are metered — so a full-matrix sweep has a real cost that a
-   rank-within-provider approach mostly avoids.
-10. **Reset-time display is inconsistent between the two tools** (cosmetic).
-    `scripts/status.js` renders the GLM quota reset as an absolute UTC stamp
-    (`resets 2026-08-04T20:43:41Z`) while `scripts/statusline.js` renders a
-    relative countdown (`⏱2h15m`, via `formatResetTime`). Same fact, two
-    formats — and the absolute one makes a reader in a non-UTC zone do the
-    arithmetic. Neither is *wrong*: `status.js` uses `toISOString()` (epoch →
-    UTC, unambiguous by construction) and the statusline subtracts two epoch
-    values (a pure duration, timezone-independent). So this is a formatting
-    change only — render `(resets in 2h15m)` in the CLI too, from the same
-    `resetMs` it already has. Do not "fix" it as a timezone bug; there isn't one.
-11. **No clock-drift check on the quota gauges.** Every countdown assumes the
-    local clock agrees with the vendor's. If the machine clock is off, the
-    gauge is wrong by exactly that offset and nothing says so — the reset looks
-    plausible and is silently late or early.
-    Previously dismissed as unfixable without cross-request state. It is not:
-    **cc-proxy plus the backend calls it already makes is the source of truth**,
-    and both quota endpoints return a `Date` header (verified 2026-08-04 —
-    `api.z.ai` and `openrouter.ai` both send one; local clock matched to the
-    second). So the reference clock is free: read `res.headers.get("date")` in
-    the fetchers that are ALREADY running, compare to `Date.now()`, and mark the
-    gauge when the skew exceeds ~60s.
-    Two constraints that keep it honest: (a) this belongs in `scripts/quota.js`,
-    which makes its own diagnostic calls — doing it in `src/` would mean the
-    *proxy* inspecting responses on the forwarding path, which is invariant 2;
-    (b) the threshold must stay loose, because request latency inflates apparent
-    skew by up to the round-trip time — 60s is safe, 5s would false-positive on
-    a slow network. Pure insurance while the clock is correct, which is exactly
-    when it is cheap to write.
-12. **`ROUTES` is hand-probed and silently rots.** Every entry in
-    `src/routes.js` is a status a host returned on one day. Nothing offline can
-    tell you it still holds, and the two failure modes differ sharply:
-    - an id that starts **403-ing** on a plan degrades safely — `rankRoutes()`
-      skips it and the predicate fallback in `providers.js` still routes the
-      request, just to a costlier backend and without saying so;
-    - an id that is **renamed or withdrawn** drops out of discovery entirely,
-      and because a catalog now mirrors a live response, the offline fallback
-      keeps advertising it until someone notices.
-    Re-probe before each release (`POST /v1/messages`, 1 token, per cell). The
-    matrix in item 8 is the reference shape. There is no test that can catch
-    this — that is the point of writing it down.
-13. **`docs/models.html` regressions are invisible to CI, and one already got
-    through.** The artifact is generated against a LIVE proxy, so the gate can
-    only ever compare a committed file to the static catalog. An adversarial
-    review proved the consequence on 2026-08-07: reintroducing the renderer's
-    provider-attribution defect left **all 17 artifact tests green**, because
-    they read the committed HTML rather than running the renderer.
-    Partly closed — `test/render-models.test.js` now drives
-    `scripts/render-models.js` as a subprocess against a stub `/_status` +
-    `/v1/models` (mutation-verified: the defect fails with "DeepSeek card
-    missing"). What remains open is everything only a real backend can produce:
-    a vendor renaming an id, a leg timing out, a catalog shape change. Those
-    still surface only when a human regenerates and looks.
-14. ~~**`coerceCreated()` does not validate its string branch**~~ — **DONE**
-    (Copilot review on PR #18 raised it independently the same day, which is a
-    fair signal it was not worth deferring). Unparseable strings now null;
-    parseable ones pass through VERBATIM rather than round-tripping through
-    `Date`, which would silently rewrite a vendor's offset (`+02:00` → `Z`) and
-    drop sub-second precision on a value that is already valid.
-15. **`handleProxy()` is not exported, so its body handling cannot be unit
-    tested.** Surfaced by the same review: it used to write
-    `stripped.body.model = upstreamModel`, an in-place edit of the inbound body
-    (`stripAssistantThinking` returns the caller's own object when it strips
-    nothing). Fixed by building an outbound object — but the fix is **not
-    directly locked**, and the reason is worth keeping: every observable is
-    identical under the defect, because `inboundModel` is captured before the
-    rewrite. An end-to-end test asserting the log line and the upstream body
-    PASSES against the in-place write (verified by mutation, then deleted rather
-    than left in place looking like a guard).
-    What is locked is the contract underneath: `test/sanitize.test.js` "returns
-    the SAME object when nothing was stripped" (mutation-verified — returning a
-    copy fails 2 tests). Exporting `handleProxy` for a direct test is the real
-    fix; weigh that against widening the module's surface.
+Open work, closed items with their evidence, and reversed decisions live in
+[`docs/BACKLOG.md`](docs/BACKLOG.md); item numbers are stable and never reused.
+Worth knowing exist: **1** thinking-strip vs Claude tool-use loops (the fix to
+apply *if* it fires); **8** the `<provider>:` selector, the cross-host probe
+matrix, and the measured +79-token plan preamble; **9** grades — the
+`Specialist` default and `Economy` are gone as of 0.6.1 (an unassessed id now
+omits `grade`); what remains open is where assessments come from at all;
+**12** `ROUTES` is hand-probed and rots silently, and no test can catch it.
 
 ## Operator
 

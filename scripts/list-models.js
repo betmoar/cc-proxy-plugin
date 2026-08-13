@@ -109,6 +109,44 @@ export function registeredProviders(providers, statusProviders = []) {
 	return providers.filter((p) => on.includes(p.id));
 }
 
+/**
+ * Build a display row for one /v1/models entry.
+ * @param {{ id: string, provider?: string, usable?: boolean }} m
+ * @param {import("../src/providers.js").Provider[]} providers
+ */
+export function buildRow(m, providers) {
+	// `provider` is which backend PUBLISHED the row — discovery already knows,
+	// because it built the row. attribute() answers a different question ("where
+	// would /model send this id?"), and the two diverge exactly where it matters:
+	// a bare id routes by rankRoutes (native first, then cheapest tier), which
+	// used to (pre-issue-#19) file deepseek-v4-pro under Qwen when re-derived
+	// here, leaving DeepSeek's own card without the model it owns — still a
+	// live trap for any id where the ranked route and the owning vendor
+	// diverge (e.g. `deepseek-v4-flash-0731`, plan-only, no native route at
+	// all). Fall back to the router only for a proxy older than this field.
+	const pid = m.provider || attribute(m.id, providers);
+	const name = Object.hasOwn(DISPLAY, pid) ? DISPLAY[pid] : pid;
+	// A prefixed id (`qwen:deepseek-v4-pro`) is the same model reached another
+	// way, and the curated window/price tables are keyed on the BARE id — so
+	// look them up by the tail rather than blanking the column on every alias.
+	// Object.hasOwn, not a bare bracket lookup: ids come from a LIVE vendor
+	// catalog, so the key space is not ours — `CONTEXT_WINDOW["constructor"]`
+	// or `["__proto__"]` would otherwise resolve through Object.prototype
+	// instead of missing, same trap src/models.js already guards against.
+	const bare = m.id.slice(m.id.indexOf(":") + 1);
+	const ctx = Object.hasOwn(CONTEXT_WINDOW, bare) ? CONTEXT_WINDOW[bare] : "";
+	const price =
+		pid === "deepseek" && Object.hasOwn(DEEPSEEK_PRICING, bare)
+			? `$${DEEPSEEK_PRICING[bare].out.toFixed(2)}/M out`
+			: "";
+	// `usable: false` = reachable but not selectable from a Claude Code session
+	// (image/audio models want another request schema; `:batch`/`~latest`/auto
+	// are not chat models). Shown rather than hidden so the catalog stays a
+	// true picture of the backend — but marked, so nobody picks one from /model
+	// and gets an opaque body-shape error.
+	return { id: m.id, name, pid, ctx, price, unusable: m.usable === false };
+}
+
 async function fetchJson(url) {
 	const res = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
 	if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -153,31 +191,7 @@ async function main() {
 		status.providers,
 	);
 
-	const rows = (models.data || []).map((m) => {
-		// `provider` is which backend PUBLISHED the row — discovery already knows,
-		// because it built the row. attribute() answers a different question ("where
-		// would /model send this id?"), and the two diverge exactly where it matters:
-		// a bare id routes to its cheapest backend, so re-deriving here filed
-		// deepseek-v4-pro under Qwen while DeepSeek's own card lost the model it
-		// owns. Fall back to the router only for a proxy older than this field.
-		const pid = m.provider || attribute(m.id, providers);
-		const name = DISPLAY[pid] || pid;
-		// A prefixed id (`qwen:deepseek-v4-pro`) is the same model reached another
-		// way, and the curated window/price tables are keyed on the BARE id — so
-		// look them up by the tail rather than blanking the column on every alias.
-		const bare = m.id.slice(m.id.indexOf(":") + 1);
-		const ctx = CONTEXT_WINDOW[bare] || "";
-		const price =
-			pid === "deepseek" && DEEPSEEK_PRICING[bare]
-				? `$${DEEPSEEK_PRICING[bare].out.toFixed(2)}/M out`
-				: "";
-		// `usable: false` = reachable but not selectable from a Claude Code session
-		// (image/audio models want another request schema; `:batch`/`~latest`/auto
-		// are not chat models). Shown rather than hidden so the catalog stays a
-		// true picture of the backend — but marked, so nobody picks one from /model
-		// and gets an opaque body-shape error.
-		return { id: m.id, name, pid, ctx, price, unusable: m.usable === false };
-	});
+	const rows = (models.data || []).map((m) => buildRow(m, providers));
 
 	const idw = Math.max(4, ...rows.map((r) => r.id.length));
 	const nmw = Math.max(4, ...rows.map((r) => r.name.length));

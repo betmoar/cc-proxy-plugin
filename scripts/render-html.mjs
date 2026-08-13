@@ -1,0 +1,146 @@
+#!/usr/bin/env node
+// Regenerates docs/models.html — the wrapper `pnpm models:html` runs.
+//
+// WHY A WRAPPER AND NOT `node render-models.js > docs/models.html`:
+//
+// The renderer computes grades in-process through gradeOf() (render-models.js
+// tierFor), and gradeOf() overlays ~/.claude/cc-proxy/grades.json on top of the
+// built-in MODEL_GRADES table. So a plain run publishes whatever the OPERATOR
+// last benched — the committed artifact shipped glm-5 as Specialist and
+// claude-fable-5 as Strong purely because this machine's grades.json said so,
+// while src/models.js said Strong and Flagship. A repo artifact must state the
+// REPO's grades, not one developer's.
+//
+// The suite already learned this (9ac2bf2, "isolate HOME so the suite stops
+// reading the developer's grades.json"); the release procedure never did.
+//
+// Isolating the whole HOME is the obvious fix and it is WRONG: src/env.js
+// loadEnv() reads ~/.env from the same home, so a blanket override drops every
+// third-party API key, every live leg fails to register, and the page silently
+// collapses to the Claude card alone (measured: 40 rows -> 3). The isolation has
+// to be surgical — hide exactly the grades file, keep the rest of HOME.
+//
+// So: a temp home containing a SYMLINK to the real ~/.env, and no
+// .claude/cc-proxy/grades.json. Keys resolve, grades fall back to the built-in
+// table, and the rest of the environment is untouched.
+
+import { execFileSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const repo = path.join(here, "..");
+const out = path.join(repo, "docs", "models.html");
+
+const realHome = os.homedir();
+const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "ccproxy-render-"));
+
+/** Remove the temp home. Idempotent (`force: true`), because both `finally` and
+ * a signal handler can reach it. */
+const cleanup = () => fs.rmSync(tmpHome, { recursive: true, force: true });
+
+// `finally` is not enough: a SIGNAL does not unwind the stack, so Ctrl-C during
+// a slow render walks away from the cleanup exactly the way `process.exit()` did
+// before 02ec139 (measured both). The window is the whole render — seconds of
+// live HTTP to four backends — and what leaks is a directory holding a SYMLINK
+// TO ~/.env. Re-raise after cleaning so the exit status still reads as "killed
+// by a signal" rather than a tidy exit 0 — but REMOVE THE LISTENER FIRST, or the
+// re-raise re-enters this same handler rather than reaching Node's default
+// disposition, and spins (measured: 5 re-entries and still climbing).
+//
+// DELAYED, not instant: execFileSync is SYNCHRONOUS, so it blocks the event loop
+// and no handler runs until the child returns. Measured — Ctrl-C mid-render
+// leaves the process alive until the renderer's own fetch timeout expires, and
+// the directory is removed then. That is a bounded wait (the renderer caps each
+// leg at ~3s), and the alternative is an async rewrite whose only benefit is a
+// faster Ctrl-C. Cleaning late still beats not cleaning.
+for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+	process.on(sig, () => {
+		cleanup();
+		process.removeAllListeners(sig);
+		process.kill(process.pid, sig);
+	});
+}
+
+try {
+	// The one thing the renderer needs from a real home: the API keys that decide
+	// which legs register. Symlinked, not copied — nothing here should be a second
+	// copy of a credential file, however short-lived.
+	const realEnv = path.join(realHome, ".env");
+	if (fs.existsSync(realEnv)) {
+		fs.symlinkSync(realEnv, path.join(tmpHome, ".env"));
+	} else {
+		// Say it HERE, where it is known for certain. Without the symlink no key
+		// loads, so no third-party leg registers and the page is Claude-only — the
+		// row floor below does catch that, but it reports the symptom several steps
+		// downstream and invites a hunt for a down proxy that is running fine.
+		console.error(`render-html: no ${realEnv} — no API keys will load, so live legs`);
+		console.error("  will not register. Expect a Claude-only page below.");
+	}
+
+	const html = execFileSync(process.execPath, [path.join(here, "render-models.js")], {
+		env: { ...process.env, HOME: tmpHome },
+		maxBuffer: 64 * 1024 * 1024,
+		encoding: "utf8",
+	});
+
+	// A collapsed page is the failure mode this wrapper itself introduced once, so
+	// it refuses to write one. The floor is deliberately low (a card is dropped
+	// when its leg is unregistered, which is legitimate on a machine with fewer
+	// keys) — this catches "everything broke", not "one leg is missing".
+	const rows = (html.match(/<span class="mname">/g) || []).length;
+	if (rows < 10) {
+		console.error(`render-html: only ${rows} model rows — refusing to overwrite ${out}.`);
+		console.error(
+			"Is the proxy running (lsof -nP -iTCP:4000 -sTCP:LISTEN) and are keys in ~/.env?",
+		);
+		// THROW, never process.exit() — exit skips finally, and finally is what
+		// removes a temp dir holding a SYMLINK TO ~/.env. Measured: exit(1) from
+		// inside a try leaves the directory on disk. This is the path that fires
+		// repeatedly while someone debugs a down proxy, so it is the last place
+		// that should litter /tmp with credential-adjacent links.
+		throw new Error(`refusing to write a ${rows}-row page`);
+	}
+
+	// A leg that failed is recorded in the page as a warn banner (render-models.js
+	// errorLines, from /v1/models's non-standard `_errors`). Baked into the HTML is
+	// not the same as TOLD to the operator: a partially-degraded page clears the
+	// row floor, prints the same cheerful summary as a healthy one, and gets
+	// committed — the reader only learns a backend was missing by opening the file.
+	// Read them back out of the markup rather than re-fetching: this is the exact
+	// page about to be written, so the two can never disagree.
+	// The banner text is HTML-escaped (render-models.js esc()), which is what
+	// keeps `[^<]*` safe against a message containing angle brackets — an
+	// ECONNREFUSED naming `<host:443>` arrives as `&lt;host:443&gt;` and cannot
+	// truncate the match. Unescape for the TERMINAL, which is not HTML: printing
+	// the entities raw is both ugly and slightly wrong about what upstream said.
+	const unesc = (s) =>
+		s
+			.replace(/&lt;/g, "<")
+			.replace(/&gt;/g, ">")
+			.replace(/&quot;/g, '"')
+			.replace(/&#39;/g, "'")
+			.replace(/&amp;/g, "&"); // LAST — else `&amp;lt;` would double-decode
+	const warnings = [...html.matchAll(/<div class="warn">([^<]*)<\/div>/g)].map((m) => unesc(m[1]));
+
+	fs.writeFileSync(out, html);
+	console.log(`docs/models.html — ${rows} rows, grades from the repo's MODEL_GRADES table.`);
+	if (warnings.length > 0) {
+		console.error(`render-html: ${warnings.length} leg(s) FAILED — the page is incomplete:`);
+		for (const w of warnings) console.error(`  ${w}`);
+		console.error("  Fix the leg and re-run before committing, or the artifact ships a gap.");
+		process.exitCode = 1;
+	}
+} catch (e) {
+	// The renderer's own failure (proxy down, non-zero exit) lands here too.
+	// execFileSync forwards the child's stderr to ours by default (verified), so
+	// its diagnosis is already on screen; this adds the one fact its message does
+	// not carry — that the committed artifact was left alone.
+	console.error(`render-html: ${e.message}`);
+	console.error(`${out} is UNCHANGED.`);
+	process.exitCode = 1;
+} finally {
+	fs.rmSync(tmpHome, { recursive: true, force: true });
+}

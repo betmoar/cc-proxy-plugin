@@ -2,7 +2,7 @@
   "name": "cc-proxy-plugin",
   "private": true,
   "type": "module",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "GLM, DeepSeek, OpenRouter, and Qwen proxy for Claude Code — stateless local router with manual /model switching and per-provider auth.",
   "license": "MIT",
   "packageManager": "pnpm@11.3.0",
@@ -19,7 +19,7 @@
     "test": "node --test test/*.test.js",
     "check": "pnpm lint && pnpm test",
     "proxy": "node bin/cc-proxy.js",
-    "models:html": "node scripts/render-models.js > docs/models.html",
+    "models:html": "node scripts/render-html.mjs",
     "sync-version": "node scripts/sync-version.mjs",
     "version": "node scripts/sync-version.mjs && git add .claude-plugin/plugin.json"
   },
