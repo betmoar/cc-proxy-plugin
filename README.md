@@ -201,7 +201,9 @@ cc 5h:2% | glm 5h:14% | or:$$$ | ds:$$ | qw:on
 - **`ds:`** — DeepSeek balance remaining (when `DEEPSEEK_API_KEY` is set), same `$`-tier gauge as `or:`. Reports total balance (DeepSeek exposes no used figure).
 - **`qw:`** — Qwen presence marker (when `DASHSCOPE_API_KEY` is set). Deliberately not a gauge: QwenCloud exposes no quota API reachable with an API key — the console's own remaining-percentage figure is authenticated by a browser login session. So the marker carries no number rather than fabricating one.
 - **`proxy down`** in bold red when the local proxy is unreachable.
-- **`!`** after a gauge — the number is older than its 60 s cache: either a fetch failed, or a background refresh is still in flight. The value shown is the last good one.
+- **`!`** after a gauge — the number shown is the last good one, because the 60 s cache has expired and a fresh value isn't in yet. **A brief `!` is normal, not a fault.** It appears on the render that finds the cache expired and clears once the background refresh lands, so you see it for roughly two redraws (~0.5 s) about once a minute. Several gauges can carry it at once and clear at different times — `glm` clears last, since it is the slowest endpoint (~1.1 s, against ~0.3 s for `ds:` and ~20 ms for `or:`).
+
+  What is *not* normal is `!` that **persists for many seconds or never clears** — that means the refresh is failing rather than merely pending. See [Troubleshooting](#troubleshooting).
 - **`?`** after the `glm` gauge — the local clock disagrees with the vendor's by more than a minute, so the reset countdown is off by that much. `/cc-proxy:status` names the offset and direction.
 
 **The bar never waits on the network.** Every render reads only local cache files; when something is past its 60 s TTL the stale value is served immediately and a detached background process refreshes it for the next render. One expiry costs exactly one round of API calls no matter how often the bar redraws.
@@ -237,6 +239,28 @@ The statusline runs as its own subprocess and only inherits `settings.json`'s `e
 - **`400 model: String should have at most 256 characters`** — a `"model": "glm-..."` default in settings.json with the proxy not running. Pick the model with `/model` instead, or start the proxy.
 - **Port 4000 in use** — set `PROXY_PORT` in `env`.
 - **`proxy down` in statusline** — check `lsof -ti:4000` and `~/.claude/cc-proxy/cc-proxy.log`.
+- **A gauge is stuck on `!`** — only worth chasing if it stays for many seconds; a flash once a minute is the normal refresh (above). The refresher runs detached with its output discarded, so run it in the foreground to see the error it is swallowing:
+
+  ```bash
+  # are the caches actually stale, or is the mark wrong?
+  for f in glm_quota openrouter_credits deepseek_balance; do
+    node -e "const j=require('$HOME/.claude/cc-proxy/'+'$f'+'_cache.json');
+      console.log('$f', Math.round((Date.now()-j._ts)/1000)+'s old')"
+  done
+
+  # a lock older than 10s is reclaimed automatically; one that keeps
+  # reappearing means refreshes are starting and dying
+  ls -l ~/.claude/cc-proxy/refresh.lock
+
+  # run the refresh in the foreground, with stderr visible.
+  # NOTE the explicit newest-version pick: several versions stay in the cache,
+  # and a bare `*` glob hands node the OLDEST, which predates refresh mode and
+  # quietly prints a status bar instead of refreshing anything.
+  R=$(ls -d ~/.claude/plugins/cache/betmoar/cc-proxy/*/scripts/statusline.js | sort -V | tail -1)
+  CC_PROXY_STATUSLINE_REFRESH=1 CLAUDE_PLUGIN_DATA=~/.claude/cc-proxy node "$R"
+  ```
+
+  That command prints **nothing** on success — it is the refresher, not the renderer. If a status bar appears instead, you ran a pre-0.6.2 copy and the version pick above went wrong. A non-zero exit or a printed error is the real fault, usually an expired API key or an endpoint that stopped answering. Deleting `~/.claude/cc-proxy/*_cache.json` is safe: the gauges are omitted until the next refresh fills them.
 - **See routing** — `PROXY_DEBUG=1`.
 
 ## Docs
