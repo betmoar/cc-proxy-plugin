@@ -824,6 +824,19 @@ describe("server end-to-end routing", () => {
 			/] glm-5\.2\[1m\] -> glm \(routed as glm-5\.2\) \/v1\/messages$/,
 			"the raw id is reported, the normalized id explains the decision",
 		);
+
+		// The bytes the BACKEND actually received — the project's rule is that a
+		// forwarding change with no failing test is untested, and every other
+		// suffix assertion is unit-level against resolve(). Measured 2026-08-14:
+		// Z.ai 400s on `glm-5.2[1m]` ([1214][modelCode: does not exist]) and the
+		// Qwen plan 400s the same way, so sending the suffix upstream would route
+		// correctly and fail at the vendor. This is the assertion that catches a
+		// regression to forwarding it.
+		assert.equal(
+			JSON.parse(glm.calls[0].body).model,
+			"glm-5.2",
+			"upstream must receive the bare id — no vendor accepts CC's [1m] spelling",
+		);
 	});
 
 	// The version handshake that fixes PROXY_PATH staleness: the SessionStart

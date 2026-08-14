@@ -22,10 +22,16 @@ test fails, you haven't tested it; add one.
 Each is locked by tests; the test names tell you what you broke.
 
 1. **Transparent pipe.** Auth/headers only. Full inbound path *including the
-   query string* reaches upstream; bodies forwarded byte-for-byte. Two body
-   exceptions (thinking-strip, `<provider>:` selector-strip) and one header
-   exception (hop-by-hop dropped — CL+TE together trips smuggling rejection).
-   → `server.test.js` "query string is preserved…", "provider selector strip…"
+   query string* reaches upstream; bodies forwarded byte-for-byte. THREE body
+   exceptions (thinking-strip, `<provider>:` selector-strip, `[1m]` variant-
+   suffix strip) and one header exception (hop-by-hop dropped — CL+TE together
+   trips smuggling rejection). The third was added in 0.6.3 on a measurement,
+   not a preference: both Z.ai and the Qwen plan 400 on a suffixed id, so
+   forwarding CC's display spelling means routing correctly and then failing at
+   the vendor. All three strips share one shape — a spelling the CLIENT uses
+   that no BACKEND knows.
+   → `server.test.js` "query string is preserved…", "provider selector strip…",
+   "routing log annotates the normalized id…"
 2. **Stateless.** No breakers, no on-disk state, no in-proxy waiting. Rate
    limits inject `Retry-After` and let the client back off. → "…1302 … gets a
    Retry-After", "1313 … no Retry-After"

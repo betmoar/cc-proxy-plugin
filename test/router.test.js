@@ -479,30 +479,36 @@ describe("router", () => {
 
 		// THE bug. With no GLM key, `glm-5.2` reaches qwen only through ROUTES —
 		// an exact-match table — so the suffix stranded it on the default backend.
-		it("routes a suffixed shared id through ROUTES, and forwards the suffix", () => {
+		it("routes a suffixed shared id through ROUTES, and sends the bare id upstream", () => {
 			const bare = resolve2("glm-5.2", planOnly);
 			assert.equal(bare.provider.id, "qwen");
 
 			const suffixed = resolve2("glm-5.2[1m]", planOnly);
 			assert.equal(suffixed.provider.id, "qwen", "the suffix must not defeat the ROUTES lookup");
+			// Measured 2026-08-14: BOTH vendors 400 on the suffixed spelling
+			// (Z.ai `[1214][modelCode: does not exist]`, the Qwen plan
+			// `InvalidParameter: Model not exist.`), so forwarding it would route
+			// correctly and then fail at the vendor anyway. It is Claude Code's
+			// display spelling, stripped on the way out like the `<provider>:`
+			// lens.
 			assert.equal(
 				suffixed.upstreamModel,
-				"glm-5.2[1m]",
-				"the suffix is stripped for ROUTING ONLY — upstream gets the id it gets today",
+				"glm-5.2",
+				"the suffix is CC's spelling — no vendor accepts it, so it does not go upstream",
 			);
 		});
 
 		it("routes a suffixed id to the same backend as its bare form, with keys present", () => {
 			const glm = { port: 4000, providers: buildProviders({ GLM_API_KEY: "g" }, "claude") };
 			assert.equal(resolve2("glm-5.2[1m]", glm).provider.id, "glm");
-			assert.equal(resolve2("glm-5.2[1m]", glm).upstreamModel, "glm-5.2[1m]");
+			assert.equal(resolve2("glm-5.2[1m]", glm).upstreamModel, "glm-5.2");
 
 			const deep = {
 				port: 4000,
 				providers: buildProviders({ DEEPSEEK_API_KEY: "d", DASHSCOPE_API_KEY: "q" }, "claude"),
 			};
 			assert.equal(resolve2("deepseek-v4-pro[1m]", deep).provider.id, "deepseek");
-			assert.equal(resolve2("deepseek-v4-pro[1m]", deep).upstreamModel, "deepseek-v4-pro[1m]");
+			assert.equal(resolve2("deepseek-v4-pro[1m]", deep).upstreamModel, "deepseek-v4-pro");
 		});
 
 		// The site issue #34 did NOT name: DATED_ID is anchored (`\d{4}$`), so a
@@ -517,7 +523,7 @@ describe("router", () => {
 			);
 			assert.equal(
 				resolve2("deepseek-v4-flash-0731[1m]", planOnly).upstreamModel,
-				"deepseek-v4-flash-0731[1m]",
+				"deepseek-v4-flash-0731",
 			);
 		});
 
@@ -552,8 +558,8 @@ describe("router", () => {
 			assert.equal(resolve2("glm:claude-haiku-4-5-20251001[1m]", all).provider.id, "claude");
 			assert.equal(
 				resolve2("glm:claude-haiku-4-5-20251001[1m]", all).upstreamModel,
-				"claude-haiku-4-5-20251001[1m]",
-				"the lens is stripped (never leaves the proxy), the suffix is not",
+				"claude-haiku-4-5-20251001",
+				"both the lens and the suffix are cc-proxy/CC spellings — neither leaves the proxy",
 			);
 		});
 
@@ -566,15 +572,18 @@ describe("router", () => {
 		//     yielding the stem `glm-5.2[a`. Only the pair's INTERIOR is required
 		//     to be bracket-free, not the stem.
 		// Either way the result is not a routable id, so both land on the default
-		// backend and upstream receives the original string untouched. That last
-		// part is the assertion that matters: whatever the strip computed for
-		// ROUTING, it must never reach the vendor.
-		it("routes a malformed or stemless bracket to the default, upstream untouched", () => {
-			for (const id of ["glm-5.2[", "glm-5.2]", "glm-5.2[a[b]", "[1m]", "[]"]) {
+		// backend. `glm-5.2[a[b]` is the one case where the strip DID fire, so it
+		// is listed separately below rather than asserted as "unchanged".
+		it("routes a malformed or stemless bracket to the default backend", () => {
+			for (const id of ["glm-5.2[", "glm-5.2]", "[1m]", "[]"]) {
 				const r = resolve2(id, planOnly);
-				assert.equal(r.upstreamModel, id, `${id} must reach upstream unchanged`);
+				assert.equal(r.upstreamModel, id, `${id} matches no pair — nothing to strip`);
 				assert.equal(r.provider.id, "claude", `${id} is not a routable id — default backend`);
 			}
+			// The strip fires on the trailing `[b]` and yields an unroutable stem.
+			const nested = resolve2("glm-5.2[a[b]", planOnly);
+			assert.equal(nested.upstreamModel, "glm-5.2[a");
+			assert.equal(nested.provider.id, "claude");
 		});
 
 		// Pins the two behaviours above at the function itself, so a regex edit
@@ -585,6 +594,27 @@ describe("router", () => {
 			assert.equal(stripVariantSuffix("glm-5.2[]"), "glm-5.2");
 			assert.equal(stripVariantSuffix("glm-5.2[a[b]"), "glm-5.2[a", "strips the tail pair only");
 			assert.equal(stripVariantSuffix("glm-5.2[1m][2m]"), "glm-5.2[1m]", "one pair, not greedy");
+			// THE shape that separates the strict interior `[^[\]]*` from a loose
+			// `.*`, and the reason the strict form is the one that ships. With
+			// `.*` the match takes the FIRST bracket and returns "glm-5.2" — a
+			// real, routable id synthesized out of a malformed one, which would
+			// send a mangled request to Z.ai instead of the default backend.
+			// The loose form was committed by mistake once; this is what catches
+			// it, because every other shape the two forms agree on.
+			assert.equal(
+				stripVariantSuffix("glm-5.2[a]b]"),
+				"glm-5.2[a]b]",
+				"a malformed id must never be coerced into a routable one",
+			);
+			// The leading `^` is load-bearing and was NOT covered: without it the
+			// pattern matches at any offset, so `(.+)` starts wherever it must and
+			// the function still returns a stem — silently accepting an id with
+			// junk in front of it. Reported by the test-coverage lens on PR #36.
+			assert.equal(
+				stripVariantSuffix("\nglm-5.2[1m]"),
+				"\nglm-5.2[1m]",
+				"anchored: `.` cannot span the newline, so no match — the id is left alone",
+			);
 			// The trailing space is written as an escape so a formatter cannot
 			// silently trim it — one did, turning this case into plain
 			// "glm-5.2[1m]" and asserting the exact opposite of what it tests.
@@ -596,7 +626,7 @@ describe("router", () => {
 		it("strips an EMPTY bracket pair, which is well-formed", () => {
 			// `glm-5.2[]` has the shape; the stem is a real id, so it routes.
 			assert.equal(resolve2("glm-5.2[]", planOnly).provider.id, "qwen");
-			assert.equal(resolve2("glm-5.2[]", planOnly).upstreamModel, "glm-5.2[]");
+			assert.equal(resolve2("glm-5.2[]", planOnly).upstreamModel, "glm-5.2");
 		});
 	});
 

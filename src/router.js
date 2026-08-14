@@ -52,7 +52,7 @@ export function parseModelSelector(model, _config) {
 }
 
 /**
- * Drop a trailing `[...]` VARIANT SUFFIX from a model id for ROUTING PURPOSES.
+ * Drop a trailing `[...]` VARIANT SUFFIX from a model id.
  *
  * Claude Code spells a long-context variant `glm-5.2[1m]` — the form
  * `ANTHROPIC_CUSTOM_MODEL_OPTION` registers and `/model` shows. Today CC strips
@@ -71,20 +71,47 @@ export function parseModelSelector(model, _config) {
  * backend with no error.
  *
  * Stripped ONCE here rather than at the three sites, because a per-site patch
- * fixes the two the issue named and leaves DATED_ID broken. `resolve()` then
- * routes on the stripped id and forwards the RAW one: the suffix is Claude
- * Code's spelling, and today Z.ai accepts it, so rewriting `upstreamModel` would
- * change what the vendor receives — a bigger change than the bug being fixed.
+ * fixes the two the issue named and leaves DATED_ID broken.
  *
- * WELL-FORMED ONLY, and never to empty. A single bracket pair holding no
- * brackets is CC's shape; `glm-5.2[`, `glm-5.2[a[b]` and a bare `[1m]` are not,
- * and route raw exactly as they do today rather than being coerced into an id.
+ * THE STRIPPED ID ALSO GOES UPSTREAM, and that is a measurement, not a
+ * preference. Issue #34 asked whether the suffix survives to the vendor and
+ * said to verify before deciding; the first version of this fix assumed it did
+ * and preserved it. Probed 2026-08-14 with real keys:
+ *
+ *   POST api.z.ai/api/anthropic  model=glm-5.2      → 200
+ *   POST api.z.ai/api/anthropic  model=glm-5.2[1m]  → 400 [1214][modelCode: does not exist]
+ *   POST token-plan…/anthropic   model=glm-5.2      → 200
+ *   POST token-plan…/anthropic   model=glm-5.2[1m]  → 400 InvalidParameter: Model not exist.
+ *
+ * Both vendors reject it, with the same error a wholly fake id gets
+ * (`glm-5.2-totally-fake` → the identical 1214), so the suffix is not a
+ * spelling any backend knows — forwarding it means routing correctly and then
+ * failing at the vendor anyway. It is Claude Code's own display spelling, so it
+ * is stripped on the way out exactly as the `<provider>:` lens is: the third
+ * deliberate exception to invariant 1's byte-for-byte rule, for the same reason
+ * as the second.
+ *
+ * WELL-FORMED TRAILING PAIR ONLY, and never to empty. `.+` requires a stem, so
+ * a bare `[1m]` and `[]` come back untouched rather than stripped to nothing;
+ * `$` requires the pair to END the id, so `glm-5.2[` (unclosed) and
+ * `glm-5.2[1m] ` (trailing space) are untouched too.
+ *
+ * It does NOT validate the whole id: `glm-5.2[a[b]` ends in the well-formed
+ * pair `[b]`, so the strip FIRES and yields `glm-5.2[a` — still unroutable, so
+ * it lands on the default backend as if nothing had been stripped, same outcome
+ * by a different route.
+ *
+ * The interior is `[^[\]]*` and NOT `.*`. Measured, the two forms agree on
+ * every shape but one: `glm-5.2[a]b]` is left alone here, where `.*` takes the
+ * FIRST bracket and hands back `glm-5.2` — a real, routable id synthesized out
+ * of a malformed one, which is the single outcome this function must never
+ * produce. A mangled id belongs on the default backend, not silently on Z.ai.
  *
  * @param {string} model
  * @returns {string} the id without its variant suffix, or unchanged
  */
 export function stripVariantSuffix(model) {
-	const m = /^(.+)\[.*\]$/.exec(model);
+	const m = /^(.+)\[[^[\]]*\]$/.exec(model);
 	return m ? m[1] : model;
 }
 
@@ -132,29 +159,33 @@ export function routingIdOf(model) {
 export function resolve(model, config) {
 	const { providerId, model: tail } = parseModelSelector(model, config);
 
-	// Every routing decision below reads `routeId`; every return sends `tail`.
-	// That split is the whole fix for issue #34 — see stripVariantSuffix().
+	// `routeId` is the inbound id with its variant suffix removed — it drives
+	// every step below that inspects the id AND is what goes upstream, because
+	// both vendors 400 on the suffixed spelling (measured; see
+	// stripVariantSuffix()). The one branch that reads neither is the
+	// registered-selector return: it decides from `providerId` alone and never
+	// looks at the id's shape, so it is suffix-safe without the split.
 	const routeId = typeof tail === "string" ? stripVariantSuffix(tail) : tail;
 
 	if (typeof routeId === "string" && routeId.startsWith("claude-haiku-")) {
 		return {
 			provider: providerById(config, "claude") || defaultProvider(config),
-			upstreamModel: tail,
+			upstreamModel: routeId,
 		};
 	}
 
 	const selected = providerId ? providerById(config, providerId) : undefined;
-	if (selected) return { provider: selected, upstreamModel: tail };
+	if (selected) return { provider: selected, upstreamModel: routeId };
 
 	// An unregistered selector already fell through above; from here the tail is
 	// routed exactly as a bare id would be.
 	for (const route of rankRoutes(routeId)) {
 		const p = providerById(config, route.provider);
-		if (p) return { provider: p, upstreamModel: tail };
+		if (p) return { provider: p, upstreamModel: routeId };
 	}
 
 	const matched = config.providers.find((p) => !p.isDefault && p.match(routeId));
-	return { provider: matched || defaultProvider(config), upstreamModel: tail };
+	return { provider: matched || defaultProvider(config), upstreamModel: routeId };
 }
 
 /**
