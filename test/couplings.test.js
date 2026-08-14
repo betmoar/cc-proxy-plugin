@@ -259,6 +259,46 @@ describe("cross-file couplings", () => {
 		);
 	});
 
+	// COUPLING: the routing log line (src/server.js) is PARSED by
+	// scripts/status.js parseRoutingLines(). CLAUDE.md has carried this row since
+	// 0.3.3 with nothing enforcing it — the two files never import each other, so
+	// a format change breaks `/cc-proxy:status`'s recent-routing section silently
+	// and only on a machine with a populated log. 0.6.3 appended a
+	// `(routed as <id>)` annotation to that line, which is exactly the kind of
+	// edit this row exists to catch, so it stops being a prose-only promise here.
+	//
+	// Asserts the CONTRACT parseRoutingLines() actually relies on — a leading
+	// `[` and a ` -> ` separator — against a line built the way server.js builds
+	// it, in both its annotated and unannotated forms. Deliberately not a
+	// full-format lock: pinning the whole line would fail on every cosmetic edit
+	// and teach the next maintainer to delete the test.
+	it("the routing log line stays parseable by scripts/status.js", async () => {
+		const { parseRoutingLines } = await import("../scripts/status.js");
+		const src = read("src/server.js");
+
+		// The literal must still be built the way this test models it. If the
+		// template changes shape, this assertion fails FIRST with a pointer,
+		// rather than the sample lines below silently testing a stale format.
+		assert.match(
+			src,
+			/console\.log\(`\[\$\{new Date\(\)\.toISOString\(\)\}\] \$\{inboundModel\} -> \$\{provider\.id\}\$\{via\} \$\{req\.url\}`\)/,
+			"the routing log template in src/server.js changed — update scripts/status.js parseRoutingLines() and this test together",
+		);
+
+		const stamp = "2026-08-14T11:15:10.068Z";
+		const lines = [
+			`[${stamp}] glm-5.2 -> qwen /v1/messages`,
+			`[${stamp}] glm-5.2[1m] -> qwen (routed as glm-5.2) /v1/messages`,
+			`[${stamp}] qwen:deepseek-v4-pro -> qwen (routed as deepseek-v4-pro) /v1/messages`,
+			`[${stamp}] unknown -> claude /v1/messages/count_tokens`,
+		];
+		assert.deepEqual(
+			parseRoutingLines(lines.join("\n")),
+			lines,
+			"parseRoutingLines() dropped a routing line — src/server.js and scripts/status.js have drifted",
+		);
+	});
+
 	// COUPLING: every env var offered in .env.example must be documented in the
 	// README env table and in docs/OPERATIONS.md (new knobs go in all three).
 	it("every .env.example key is documented in README.md and docs/OPERATIONS.md", () => {

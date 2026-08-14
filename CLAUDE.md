@@ -63,7 +63,8 @@ there if you forget. The ones marked ⚠ have no test and drift silently.
 
 | Touch | Also update |
 |---|---|
-| routing log format (`server.js`) | `status.js` `parseRoutingLines()` — it parses the line |
+| routing log format (`server.js`) | `status.js` `parseRoutingLines()` — it parses the line. Locked by `couplings.test.js` as of 0.6.3; was ⚠ prose-only before |
+| `stripVariantSuffix` / `routingIdOf` (`router.js`) | `routes.test.js` imports the first to lock strip∘rank composition; `server.js` calls the second for the log's `(routed as …)` annotation |
 | a version | `pnpm version` only; `plugin.json` is the plugin cache key |
 | a `v<x.y.z>` tag | its CHANGELOG section, non-empty, BEFORE tagging |
 | `PROXY_PORT` default | `config.js`, `proxy-lifecycle.js`, `statusline.js`, `status.js` |
