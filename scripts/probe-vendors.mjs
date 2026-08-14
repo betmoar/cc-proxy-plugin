@@ -39,6 +39,13 @@ const JSON_OUT = process.argv.includes("--json");
  * optional `bodyMatch` pins the vendor's own error vocabulary, because a 400
  * for the right reason and a 400 for the wrong reason are different facts.
  */
+// The suffix these cases probe is the one `stripVariantSuffix` removes — this
+// script and the router must agree on what "the bare id" means, or the probe
+// would be measuring a spelling the proxy never sends. Executed by
+// test/doc-examples.test.js, and deliberately living OUTSIDE src/: it is the
+// checked-in proof that the collector walks more than one directory.
+//
+// @doctest stripVariantSuffix("glm-5.2[1m]") -> "glm-5.2"
 const CASES = [
 	{
 		name: "z.ai accepts a bare id",

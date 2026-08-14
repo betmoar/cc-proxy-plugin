@@ -313,21 +313,44 @@ describe("cross-file couplings", () => {
 	// So: pin the code side, and forbid the phrasings that only make sense under
 	// the reversed contract. Not a general prose linter — a short deny-list of
 	// claims that were literally wrong, so the next reversal trips here.
-	it("no comment still promises the pre-reversal upstream contract", () => {
+	it("no comment still promises the pre-reversal upstream contract", async () => {
 		const router = read("src/router.js");
+		const { resolve } = await import("../src/router.js");
+		const { buildProviders } = await import("../src/providers.js");
 
-		// Code side: every return in resolve() sends the normalized id.
-		const body = router.slice(router.indexOf("export function resolve("));
-		const returns = [...body.matchAll(/upstreamModel:\s*(\w+)/g)].map((m) => m[1]);
-		assert.ok(
-			returns.length >= 4,
-			`expected resolve() to have 4+ upstreamModel returns, found ${returns.length}`,
-		);
-		assert.deepEqual(
-			[...new Set(returns)],
-			["routeId"],
-			`resolve() must send the normalized id upstream from every return; found ${[...new Set(returns)].join(", ")}. If this is a deliberate reversal, update the prose in the same commit — that is the whole point of this test.`,
-		);
+		// CODE SIDE — behavioural, deliberately NOT a source-text pattern.
+		//
+		// The first version of this matched `upstreamModel:\s*(\w+)` and asserted
+		// the identifier was uniformly `routeId`. An adversarial review broke it in
+		// one line: change what the identifier COMPUTES —
+		//   const routeId = tail;            // the strip silently stops happening
+		// — and every return still reads `upstreamModel: routeId`, so the regex saw
+		// nothing wrong. Measured: that mutation passes this file and passes
+		// doc-examples; only router/server behavioural tests catch it. A test that
+		// pins a NAME while claiming to pin a CONTRACT is the same class of false
+		// assurance as the stale comments this whole round is about.
+		//
+		// So drive the real function instead. Each row is one branch of resolve():
+		// the suffix must not survive to the vendor on ANY of them.
+		const cfg = (env) => ({ port: 4000, providers: buildProviders(env, "claude") });
+		const allKeys = cfg({
+			GLM_API_KEY: "g",
+			DEEPSEEK_API_KEY: "d",
+			DASHSCOPE_API_KEY: "q",
+			OPENROUTER_API_KEY: "o",
+		});
+		for (const [id, config, expected, branch] of [
+			["claude-haiku-4-5-20251001[1m]", allKeys, "claude-haiku-4-5-20251001", "haiku pin"],
+			["qwen:deepseek-v4-pro[1m]", allKeys, "deepseek-v4-pro", "registered selector"],
+			["glm-5.2[1m]", cfg({ DASHSCOPE_API_KEY: "q" }), "glm-5.2", "ranked route (ROUTES)"],
+			["glm-5.3[1m]", cfg({ GLM_API_KEY: "g" }), "glm-5.3", "predicate fallback"],
+		]) {
+			assert.equal(
+				resolve(id, config).upstreamModel,
+				expected,
+				`resolve() sent a variant suffix upstream via the ${branch} branch. Both vendors 400 on the suffixed spelling (see scripts/probe-vendors.mjs), so this is a live break, not a style question. If it is a deliberate reversal, update the prose in the same commit.`,
+			);
+		}
 
 		// Prose side: phrasings that are only true under the OLD contract.
 		const stale = [

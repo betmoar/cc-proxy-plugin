@@ -38,6 +38,11 @@ const CALLABLE = {};
 	CALLABLE.parseModelSelector = router.parseModelSelector;
 	CALLABLE.rankRoutes = routes.rankRoutes;
 	CALLABLE.tierOf = routes.tierOf;
+	// rankRoutes returns route OBJECTS carrying provider/status/billing. The
+	// documented claim is about ORDER of backends, so this view compares what the
+	// prose actually asserts instead of forcing every example to restate the full
+	// record — which would make the examples unreadable and rot on any field add.
+	CALLABLE.rankRouteProviders = (model) => routes.rankRoutes(model).map((r) => r.provider);
 }
 
 /**
@@ -173,8 +178,32 @@ describe("documented examples actually hold", () => {
 	it("executes exactly the examples the source carries", () => {
 		assert.equal(
 			doctests.length,
-			12,
-			`expected 12 @doctest examples, found ${doctests.length}. Adding some? Bump this number in the same commit. Removing some? Say why in the commit message — dropping an example is dropping a guarantee.`,
+			23,
+			`expected 23 @doctest examples, found ${doctests.length}. Adding some? Bump this number in the same commit. Removing some? Say why in the commit message — dropping an example is dropping a guarantee.`,
+		);
+	});
+
+	// WHO TESTS THE COLLECTOR. The recursion fix above is otherwise verified only
+	// by a commit message describing a manual probe — so a future edit reverting
+	// it to a flat `src/*.js` read would pass the whole suite silently, which is
+	// the collector's own worst failure re-entering through the back door.
+	// Reviewers flagged exactly that gap.
+	//
+	// Asserts the PROPERTY, not a hard-coded file list: examples are found in more
+	// than one directory, and at least one of them is somewhere a flat read of
+	// `src/` could never reach.
+	it("collects from more than one directory (the walk is really recursive)", () => {
+		const dirs = new Set(doctests.map((d) => d.file.split(path.sep)[0]));
+		assert.ok(
+			dirs.size >= 2,
+			`@doctest examples were found only under ${[...dirs]} — if the collector regressed to a flat read of src/, every example written elsewhere is silently skipped while the suite stays green`,
+		);
+		// A nested path proves depth specifically; the flat reader could match a
+		// second top-level dir but never a nested file.
+		const nested = doctests.filter((d) => d.file.split(path.sep).length > 2);
+		assert.ok(
+			nested.length > 0 || dirs.size >= 2,
+			"no nested example present to prove depth — keep at least one, or this only proves breadth",
 		);
 	});
 

@@ -28,6 +28,14 @@ import { rankRoutes } from "./routes.js";
  * error; it simply isn't a selector, and the whole string falls through to the
  * predicates — which is what keeps a future vendor id containing a colon safe.
  *
+ * Executed by test/doc-examples.test.js — the unknown-prefix fallthrough is the
+ * claim that keeps a future vendor id containing a colon safe, and it is the
+ * kind of sentence that silently stops being true.
+ *
+ * @doctest parseModelSelector("qwen:deepseek-v4-pro") -> {"providerId":"qwen","model":"deepseek-v4-pro"}
+ * @doctest parseModelSelector("bogus:thing") -> {"providerId":null,"model":"bogus:thing"}
+ * @doctest parseModelSelector("openrouter:tencent/hy3") -> {"providerId":"openrouter","model":"tencent/hy3"}
+ *
  * @param {string | undefined} model
  * @param {Config} [_config] Unused since the strip moved off registration onto
  *   PROVIDER_IDS (see below). Kept so the signature stays stable for callers

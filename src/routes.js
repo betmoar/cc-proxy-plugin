@@ -175,6 +175,24 @@ export const ROUTES = {
  * plan-holder without a DeepSeek key), `resolve()` skips the deepseek route
  * and falls to the next-ranked one — qwen — so the plan stays reachable.
  *
+ * The examples below are EXECUTED by test/doc-examples.test.js. The #19 rule is
+ * a CLAIM ABOUT ORDER, and order is what silently changes when a tier or a
+ * declaration moves — `deepseek-v4-pro` leading with `deepseek` rather than the
+ * cheaper `qwen` IS the rule, so it is pinned rather than narrated. Reviewers
+ * found this function registered with the doctest harness and carrying none.
+ *
+ * @doctest tierOf("qwen") -> 2
+ * @doctest tierOf("deepseek") -> 3
+ * @doctest tierOf("openrouter") -> 4
+ * @doctest tierOf("nobody-knows") -> 3
+ *
+ * And the order itself, which is the actual #19 rule: native first even though
+ * the qwen plan is the cheaper tier, then cheapest, then declaration order.
+ *
+ * @doctest rankRouteProviders("deepseek-v4-pro") -> ["deepseek","qwen","openrouter"]
+ * @doctest rankRouteProviders("glm-5.2") -> ["glm","qwen"]
+ * @doctest rankRouteProviders("glm-5.2[1m]") -> []
+ *
  * `Object.hasOwn` rather than a bare lookup: a vendor id of `__proto__` or
  * `constructor` would otherwise inherit from Object.prototype and hand back a
  * non-array (the same trap `withContextWindow` guards in src/models.js).
