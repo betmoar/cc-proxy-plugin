@@ -110,6 +110,18 @@ no test enforces that.
 - **Setup order matters.** `ANTHROPIC_BASE_URL` retargets *already-open*
   sessions instantly, so `/cc-proxy:setup` starts the proxy itself and reads
   settings.json's `env` explicitly. Don't "simplify" it into a plain spawn.
+- **An inline `ANTHROPIC_BASE_URL=… claude` prefix is SILENTLY IGNORED** —
+  settings.json's `env` block overrides the process environment, and the run
+  looks like a success while hitting the OLD proxy. Use
+  `claude --settings '{"env":{"ANTHROPIC_BASE_URL":"http://127.0.0.1:<port>"}}'`,
+  which does work. Measured 2026-08-14 against two bare logging listeners
+  (issue #25): the inline variant printed `ok` with ZERO requests on :4400 and
+  +4 routing lines on the :4000 proxy; `--settings` logged
+  `POST /v1/messages?beta=true model=claude-opus-5` on :4401 with 0 on :4000.
+  The variable is NOT being dropped by the shell — `node -p process.env…` and
+  `bash -c` both see it — so this is precedence, not plumbing. Any A/B between
+  two proxy builds must read the TARGET LISTENER's log, never the client's
+  stdout, which reports success either way.
 - **Never `rm && touch` the proxy log** while it runs (orphan inode);
   `truncate -s 0`.
 - **429 is the ONE buffering exception on the streaming path.** Extending it to
