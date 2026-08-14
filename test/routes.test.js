@@ -194,6 +194,31 @@ describe("discovery ↔ routing coherence", () => {
 		}
 	});
 
+	// glm-5.3, promoted 2026-08-14. Pins the two facts that make it different
+	// from every other glm id, both probed live the same day: it is Z.ai-ONLY
+	// (the Qwen plan answers "Model not exist.", OpenRouter does not list it),
+	// and it is the vendor's current flagship, so glm-5.2 demoted under it.
+	//
+	// The single-route shape is the load-bearing half: a plan-only user cannot
+	// reach this id at all and correctly falls to their default backend. If a
+	// future probe finds the plan serving it, this test fails and the ROUTES
+	// entry gains a second route — which is the intended workflow, not a break.
+	it("glm-5.3 is Z.ai-only, and outranks glm-5.2 on grade", async () => {
+		const { MODEL_GRADES, CONTEXT_WINDOW } = await import("../src/models.js");
+		assert.deepEqual(
+			rankRoutes("glm-5.3").map((r) => r.provider),
+			["glm"],
+			"the Qwen plan 400s glm-5.3 — a second route here would be unprobed fiction",
+		);
+		assert.equal(MODEL_GRADES["glm-5.3"], "Flagship");
+		assert.equal(
+			MODEL_GRADES["glm-5.2"],
+			"Strong",
+			"grade is position within the vendor's own line, so a new flagship demotes the old one",
+		);
+		assert.equal(CONTEXT_WINDOW["glm-5.3"], 1048576, "per Z.ai's own /api/v1/models");
+	});
+
 	// Issue #34, the routes.js half of the pairing. `rankRoutes` stays an
 	// exact-match table lookup BY DESIGN — the suffix strip lives once in
 	// `resolve()`, which is the table's only caller. So what this locks is the

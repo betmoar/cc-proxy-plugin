@@ -82,23 +82,23 @@ describe("grade refresh (bench grades -> gradeOf)", () => {
 
 	it("an id absent from the refresh still gets its built-in grade", async () => {
 		const home = homeWith(JSON.stringify({ models: { "glm-4.7": { grade: "Specialist" } } }));
-		assert.equal(await gradeIn(home, "glm-5.2"), "Flagship", "built-in survives a partial refresh");
+		assert.equal(await gradeIn(home, "glm-5.3"), "Flagship", "built-in survives a partial refresh");
 	});
 
 	it("no grades.json at all falls back to the built-in table", async () => {
-		assert.equal(await gradeIn(homeWith(undefined), "glm-5.2"), "Flagship");
+		assert.equal(await gradeIn(homeWith(undefined), "glm-5.3"), "Flagship");
 	});
 
 	// Discovery must keep answering whatever state the file is in: it is written
 	// by a command that can be interrupted mid-write, and it lives in a directory
 	// the user can edit by hand.
 	it("malformed JSON falls back silently rather than throwing", async () => {
-		assert.equal(await gradeIn(homeWith("{ not json"), "glm-5.2"), "Flagship");
+		assert.equal(await gradeIn(homeWith("{ not json"), "glm-5.3"), "Flagship");
 	});
 
 	it("a valid file with a junk shape falls back", async () => {
 		assert.equal(
-			await gradeIn(homeWith(JSON.stringify({ models: "nope" })), "glm-5.2"),
+			await gradeIn(homeWith(JSON.stringify({ models: "nope" })), "glm-5.3"),
 			"Flagship",
 		);
 	});
@@ -106,10 +106,10 @@ describe("grade refresh (bench grades -> gradeOf)", () => {
 	it("a single malformed entry is skipped, not the whole file", async () => {
 		const home = homeWith(
 			JSON.stringify({
-				models: { "glm-5.2": { grade: 42 }, "glm-4.7": { grade: "Flagship" } },
+				models: { "glm-5.3": { grade: 42 }, "glm-4.7": { grade: "Flagship" } },
 			}),
 		);
-		assert.equal(await gradeIn(home, "glm-5.2"), "Flagship", "junk grade -> built-in");
+		assert.equal(await gradeIn(home, "glm-5.3"), "Flagship", "junk grade -> built-in");
 		assert.equal(await gradeIn(home, "glm-4.7"), "Flagship", "good entry still applied");
 	});
 
@@ -123,7 +123,7 @@ describe("grade refresh (bench grades -> gradeOf)", () => {
 		const home = homeWith(
 			JSON.stringify({
 				models: {
-					"glm-5.2": { grade: "SuperDuperMax" },
+					"glm-5.3": { grade: "SuperDuperMax" },
 					"glm-5.1": { grade: "   " },
 					"glm-5": { grade: "" },
 					// Retired in 0.6.1 — an OLD grades.json still carries it, and it must
@@ -134,7 +134,7 @@ describe("grade refresh (bench grades -> gradeOf)", () => {
 				},
 			}),
 		);
-		assert.equal(await gradeIn(home, "glm-5.2"), "Flagship", "unknown bucket -> built-in");
+		assert.equal(await gradeIn(home, "glm-5.3"), "Flagship", "unknown bucket -> built-in");
 		assert.equal(await gradeIn(home, "glm-5.1"), "Strong", "whitespace-only -> built-in");
 		assert.equal(await gradeIn(home, "glm-5"), "Strong", "empty string -> built-in");
 		assert.equal(await gradeIn(home, "glm-4.7"), "Specialist", "a retired value -> built-in");

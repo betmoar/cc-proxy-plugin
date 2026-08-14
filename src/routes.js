@@ -120,8 +120,24 @@ export const ROUTES = {
 		{ provider: "qwen", status: 200 },
 		{ provider: "deepseek", status: 400 },
 	],
+	// Z.ai ONLY. Probed 2026-08-14: the Qwen plan 400s it ("Model not exist.")
+	// and OpenRouter does not list it, so unlike glm-5.2 there is no second
+	// route to rank — a plan-only user cannot reach this id at all and falls to
+	// their default backend, which is correct and not a bug to route around.
+	"glm-5.3": [
+		{ provider: "glm", status: 200 },
+		{ provider: "qwen", status: 400 },
+	],
 	// Two PLAN routes. Tie broken toward native (glm) — swapping one prepaid
 	// pool for another buys nothing and costs +6 injected tokens.
+	//
+	// NOTE, measured 2026-08-14: Z.ai currently SERVES glm-5.3 for this id (and
+	// for glm-5.1 and glm-5) — the response body comes back `"model":"glm-5.3"`.
+	// The route is still correct and the entry stays: aliasing is the vendor's
+	// choice, reversible without notice, and the plan route below genuinely
+	// serves real glm-5.2 weights (the plan answers `"model":"glm-5.2"`). So the
+	// two routes are NOT interchangeable today, which is exactly why native
+	// wins the tie.
 	"glm-5.2": [
 		{ provider: "glm", status: 200 },
 		{ provider: "qwen", status: 200 },
