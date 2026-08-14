@@ -20,6 +20,7 @@
     "check": "pnpm lint && pnpm test",
     "proxy": "node bin/cc-proxy.js",
     "models:html": "node scripts/render-html.mjs",
+    "probe:vendors": "node scripts/probe-vendors.mjs",
     "sync-version": "node scripts/sync-version.mjs",
     "version": "node scripts/sync-version.mjs && git add .claude-plugin/plugin.json"
   },

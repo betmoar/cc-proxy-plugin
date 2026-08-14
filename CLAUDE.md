@@ -17,6 +17,11 @@ way they did — probe matrices, measurements, refuted alternatives),
 The suite spins **real local HTTP backends** — if you change forwarding and no
 test fails, you haven't tested it; add one.
 
+`pnpm probe:vendors` is the MANUAL gate for claims about someone else's server.
+It is never in `pnpm check` (real keys, real quota) and exits 1 when a vendor
+stops behaving the way a source comment says it does. Run it when you touch
+routing/forwarding, or when a probe date in a comment looks old.
+
 ## Invariants (breaking one is a design decision, not a refactor)
 
 Each is locked by tests; the test names tell you what you broke.
@@ -77,6 +82,9 @@ there if you forget. The ones marked ⚠ have no test and drift silently.
 | `PROXY_READY_TIMEOUT_MS` | `hooks/hooks.json` `timeout: 10` — ≥10000 ms never completes |
 | `buildProviders()` | `PROVIDER_IDS` + `CONTRIBUTING.md` 1b — else the raw lens leaks upstream |
 | a new env var | `.env.example` + README table + `docs/OPERATIONS.md` |
+| a comment claiming an input→output | write it as `@doctest fn(<json>) -> <json>`; `doc-examples.test.js` runs it |
+| a comment claiming vendor behaviour | a case in `scripts/probe-vendors.mjs`, so it can be re-measured |
+| the outbound-id contract (`upstreamModel`) | the prose describing it — `couplings.test.js` fails on either drifting |
 | the plugin description | `package.json`, `plugin.json`, `marketplace.json` |
 | an upstream request option | `upstreamRequestOptions()` only — a 2nd copy shipped the query-string bug twice |
 | a script's `process.env` read | `loadEnv()` directly under the imports, or `~/.env` is ignored |
@@ -111,6 +119,20 @@ no test enforces that.
 
 ## Traps for the unwary
 
+- **A comment that states behaviour rots like untested code, but louder.** The
+  #34 fix reversed its own contract mid-review (the `[1m]` suffix went from
+  "preserved upstream" to "stripped upstream" once both vendors were measured
+  rejecting it) and left THREE comments asserting the old one — a JSDoc, a test
+  block comment, and `resolve()`'s numbered step list. Every one was caught by a
+  reviewer, none by a test, the last only after approval. Three mechanisms now
+  exist, and which one you need depends on the claim:
+  - *"this input yields that output"* → a `@doctest` line, EXECUTED by
+    `test/doc-examples.test.js`. Prose keeps the why; the falsifiable half moves.
+  - *"this vendor does X"* → a case in `scripts/probe-vendors.mjs`, re-runnable
+    on demand. Untestable offline is not the same as unfalsifiable.
+  - *"the contract is X"* → a lock in `couplings.test.js` ("no comment still
+    promises the pre-reversal upstream contract") pinning the code side and
+    denying phrasings that only hold under the old contract.
 - **Plumbing can't move to `~/.env`** — the SessionStart hook reads
   `PROXY_PORT`/`PROXY_LOG` before the proxy exists to load it. Keys in `~/.env`,
   plumbing in settings.json `env`.

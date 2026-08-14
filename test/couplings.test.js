@@ -299,6 +299,55 @@ describe("cross-file couplings", () => {
 		);
 	});
 
+	// COUPLING: the OUTBOUND-ID CONTRACT and the prose that describes it.
+	//
+	// Issue #34's fix reversed this contract mid-review — the `[1m]` suffix went
+	// from "preserved upstream" to "stripped upstream" once both vendors were
+	// measured rejecting it — and left THREE comments asserting the old one: the
+	// stripVariantSuffix JSDoc, a test block comment, and resolve()'s numbered
+	// step list. Each was found by a reviewer, none by a test, and the last only
+	// after the PR was approved. The claim is a single word in the code
+	// (`upstreamModel: routeId` vs `: tail`) and a paragraph in the prose, which
+	// is exactly the asymmetry that lets them drift apart.
+	//
+	// So: pin the code side, and forbid the phrasings that only make sense under
+	// the reversed contract. Not a general prose linter — a short deny-list of
+	// claims that were literally wrong, so the next reversal trips here.
+	it("no comment still promises the pre-reversal upstream contract", () => {
+		const router = read("src/router.js");
+
+		// Code side: every return in resolve() sends the normalized id.
+		const body = router.slice(router.indexOf("export function resolve("));
+		const returns = [...body.matchAll(/upstreamModel:\s*(\w+)/g)].map((m) => m[1]);
+		assert.ok(
+			returns.length >= 4,
+			`expected resolve() to have 4+ upstreamModel returns, found ${returns.length}`,
+		);
+		assert.deepEqual(
+			[...new Set(returns)],
+			["routeId"],
+			`resolve() must send the normalized id upstream from every return; found ${[...new Set(returns)].join(", ")}. If this is a deliberate reversal, update the prose in the same commit — that is the whole point of this test.`,
+		);
+
+		// Prose side: phrasings that are only true under the OLD contract.
+		const stale = [
+			"upstream gets it back",
+			"ROUTING ONLY",
+			"upstream gets the id it gets today",
+			"Z.ai accepts the suffixed",
+			"keeps the raw suffix",
+		];
+		for (const file of ["src/router.js", "src/server.js", "test/router.test.js", "CHANGELOG.md"]) {
+			const text = read(file);
+			for (const phrase of stale) {
+				assert.ok(
+					!text.includes(phrase),
+					`${file} contains "${phrase}" — that describes the contract BEFORE the #34 reversal, and the code now strips the suffix on the way out. Fix the prose.`,
+				);
+			}
+		}
+	});
+
 	// COUPLING: every env var offered in .env.example must be documented in the
 	// README env table and in docs/OPERATIONS.md (new knobs go in all three).
 	it("every .env.example key is documented in README.md and docs/OPERATIONS.md", () => {

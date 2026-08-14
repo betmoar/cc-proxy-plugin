@@ -97,15 +97,28 @@ export function parseModelSelector(model, _config) {
  * `glm-5.2[1m] ` (trailing space) are untouched too.
  *
  * It does NOT validate the whole id: `glm-5.2[a[b]` ends in the well-formed
- * pair `[b]`, so the strip FIRES and yields `glm-5.2[a` — still unroutable, so
- * it lands on the default backend as if nothing had been stripped, same outcome
- * by a different route.
+ * pair `[b]`, so the strip FIRES and yields a stem that is still unroutable —
+ * it lands on the default backend as if nothing had been stripped, the same
+ * outcome by a different route.
  *
  * The interior is `[^[\]]*` and NOT `.*`. Measured, the two forms agree on
  * every shape but one: `glm-5.2[a]b]` is left alone here, where `.*` takes the
- * FIRST bracket and hands back `glm-5.2` — a real, routable id synthesized out
- * of a malformed one, which is the single outcome this function must never
- * produce. A mangled id belongs on the default backend, not silently on Z.ai.
+ * FIRST bracket and hands back a real, routable id synthesized out of a
+ * malformed one — the single outcome this function must never produce. A
+ * mangled id belongs on the default backend, not silently on Z.ai.
+ *
+ * The examples below are EXECUTED by test/doc-examples.test.js. Three comments
+ * on this function asserted the pre-reversal contract and rotted undetected
+ * (issue #34); a claim a machine can check should not be left to prose.
+ *
+ * @doctest stripVariantSuffix("glm-5.2[1m]") -> "glm-5.2"
+ * @doctest stripVariantSuffix("glm-5.2[]") -> "glm-5.2"
+ * @doctest stripVariantSuffix("glm-5.2[a[b]") -> "glm-5.2[a"
+ * @doctest stripVariantSuffix("glm-5.2[a]b]") -> "glm-5.2[a]b]"
+ * @doctest stripVariantSuffix("glm-5.2[1m][2m]") -> "glm-5.2[1m]"
+ * @doctest stripVariantSuffix("glm-5.2[") -> "glm-5.2["
+ * @doctest stripVariantSuffix("[1m]") -> "[1m]"
+ * @doctest stripVariantSuffix("\nglm-5.2[1m]") -> "\nglm-5.2[1m]"
  *
  * @param {string} model
  * @returns {string} the id without its variant suffix, or unchanged
@@ -124,6 +137,14 @@ export function stripVariantSuffix(model) {
  * explain the routing incorrectly, which is worse than not explaining it. This
  * is a reporting helper: `resolve()` does not call it (it needs the selector's
  * provider id as well, so it runs the two steps itself).
+ *
+ * Both strips compose, and the log depends on that: `glm:glm-5.2[1m]` must
+ * report `glm-5.2`, not either half-normalized form.
+ *
+ * @doctest routingIdOf("glm-5.2[1m]") -> "glm-5.2"
+ * @doctest routingIdOf("qwen:deepseek-v4-pro") -> "deepseek-v4-pro"
+ * @doctest routingIdOf("glm:glm-5.2[1m]") -> "glm-5.2"
+ * @doctest routingIdOf("glm-5.2") -> "glm-5.2"
  *
  * @param {string | undefined} model
  * @returns {string | undefined}
