@@ -14,7 +14,7 @@ import {
 	parseMaybeJson,
 	upstreamRequestOptions,
 } from "./proxy.js";
-import { resolve } from "./router.js";
+import { resolve, routingIdOf } from "./router.js";
 import { stripAssistantThinking } from "./sanitize.js";
 
 function debug(...args) {
@@ -210,7 +210,17 @@ function handleProxy(req, res, body, bodyBuffer, config) {
 	const outboundBuffer =
 		stripped.modified || rewritten ? Buffer.from(JSON.stringify(outboundBody)) : bodyBuffer;
 
-	console.log(`[${new Date().toISOString()}] ${inboundModel} -> ${provider.id} ${req.url}`);
+	// The routing DECISION is made on a normalized id (a `<provider>:` lens and a
+	// `[1m]`-style variant suffix are both stripped for lookup purposes), while
+	// the line above reports the id the CLIENT sent. When those differ, the log
+	// alone cannot explain why an id landed where it did — the reader has to
+	// re-derive the normalization by hand. Annotate, but only when it actually
+	// differs, so the common case stays the exact byte-shape it has always been.
+	// `scripts/status.js` parseRoutingLines() keeps whole lines that contain
+	// " -> " and start with "[", so a trailing annotation is safe there.
+	const routedAs = routingIdOf(inboundModel);
+	const via = routedAs === inboundModel ? "" : ` (routed as ${routedAs})`;
+	console.log(`[${new Date().toISOString()}] ${inboundModel} -> ${provider.id}${via} ${req.url}`);
 	debug(
 		"  metadata:",
 		JSON.stringify(body.metadata),

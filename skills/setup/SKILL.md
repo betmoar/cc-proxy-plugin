@@ -1,6 +1,6 @@
 ---
 name: setup
-description: One-time setup for the cc-proxy plugin. Writes API keys (all optional — GLM_API_KEY, OPENROUTER_API_KEY, DEEPSEEK_API_KEY, DASHSCOPE_API_KEY) to ~/.env, and configures ANTHROPIC_BASE_URL and the glm-5.2[1m] custom model option in ~/.claude/settings.json so the SessionStart hook can auto-start the proxy and /model can route to GLM. Invoke via /cc-proxy:setup.
+description: One-time setup for the cc-proxy plugin. Writes API keys (all optional — GLM_API_KEY, OPENROUTER_API_KEY, DEEPSEEK_API_KEY, DASHSCOPE_API_KEY) to ~/.env, and configures ANTHROPIC_BASE_URL and the glm-5.3[1m] custom model option in ~/.claude/settings.json so the SessionStart hook can auto-start the proxy and /model can route to GLM. Invoke via /cc-proxy:setup.
 ---
 
 # cc-proxy setup
@@ -34,7 +34,7 @@ Read `~/.env` first (create the file if absent). For each key, reuse a value alr
 
 If the user skips, continue setup — do not stop and do not re-ask. The proxy
 starts without it and routes to Claude; a backend with no key is simply not
-registered. Say once that `glm-5.2[1m]` will appear in `/model` but won't route
+registered. Say once that `glm-5.3[1m]` will appear in `/model` but won't route
 until a key is added, then move on.
 
 **OpenRouter — optional.** Ask the user whether they also want OpenRouter routing. If yes and `OPENROUTER_API_KEY` is missing or empty in `~/.env`, ask:
@@ -73,19 +73,19 @@ entry:
 ```json
 {
   "env": {
-    "ANTHROPIC_CUSTOM_MODEL_OPTION": "glm-5.2[1m]",
-    "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME": "GLM-5.2 (1M)",
-    "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION": "Z.ai GLM-5.2 1M-context (routed via cc-proxy)"
+    "ANTHROPIC_CUSTOM_MODEL_OPTION": "glm-5.3[1m]",
+    "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME": "GLM-5.3 (1M)",
+    "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION": "Z.ai GLM-5.3 1M-context (routed via cc-proxy)"
   }
 }
 ```
 
-This registers `glm-5.2[1m]` in the `/model` picker (Claude Code allows exactly
+This registers `glm-5.3[1m]` in the `/model` picker (Claude Code allows exactly
 one custom model option). If `ANTHROPIC_CUSTOM_MODEL_OPTION` is already set to a
 different value, ask the user before overwriting it.
 
 **Why the condition.** The GLM key is skippable (issue #20), and the picker slot
-holds exactly one entry. Writing `glm-5.2[1m]` for a user who skipped it puts a
+holds exactly one entry. Writing `glm-5.3[1m]` for a user who skipped it puts a
 model in their picker that cannot route — it resolves to the default backend
 instead, and the only warning was spoken once during setup and never persisted,
 so weeks later the entry fails with nothing on disk explaining why. If the user
@@ -133,7 +133,7 @@ Tell the user, verbatim:
 
 > Setup complete. The proxy is running (step 5 started it). Claude Code re-applies `ANTHROPIC_BASE_URL` to running sessions immediately, so any open `claude` may still fail until it re-reads env — `/exit` and `/resume` any open session if you hit an error.
 >
-> To confirm, check `~/.claude/cc-proxy/cc-proxy.log` after your next prompt — you should see routing lines like `claude-sonnet-4-6 -> claude` or `glm-5.2 -> glm`.
+> To confirm, check `~/.claude/cc-proxy/cc-proxy.log` after your next prompt — you should see routing lines like `claude-sonnet-4-6 -> claude` or `glm-5.3 -> glm`.
 
 ## Important constraints
 

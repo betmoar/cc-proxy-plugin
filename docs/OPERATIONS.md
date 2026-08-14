@@ -130,6 +130,19 @@ backends; when GLM is the only one missing it says so, because an unset
 
 When clearing logs: `truncate -s 0 ~/.claude/cc-proxy/cc-proxy.log`. Never `rm && touch`.
 
+### Pointing a session at a different proxy (issue #25)
+
+An inline prefix **does not work** — settings.json's `env` block wins over the process environment:
+
+```
+ANTHROPIC_BASE_URL=http://127.0.0.1:4400 claude -p "say ok"     # IGNORED, hits the old proxy
+claude --settings '{"env":{"ANTHROPIC_BASE_URL":"http://127.0.0.1:4400"}}' -p "say ok"   # works
+```
+
+The inline form fails **silently**: the turn succeeds, the answer looks right, and the request went to whichever proxy settings.json names. Measured 2026-08-14 against two bare logging listeners — the inline variant left :4400 with zero requests while the :4000 proxy log gained 4 routing lines; `--settings` logged `POST /v1/messages?beta=true model=claude-opus-5` on :4401 and 0 on :4000. The shell is not eating the variable (`node -p process.env.ANTHROPIC_BASE_URL` and `bash -c` both print it), so this is precedence.
+
+Consequence for any A/B between two proxy builds: **read the target listener's log**, never the client's stdout, which reports success either way. A `curl` straight at the port under test avoids the question entirely, which is how issue #19 was ultimately confirmed.
+
 ## Dev loop
 
-`pnpm proxy` runs the proxy standalone (loads repo `.env` then `~/.env`); `node --watch bin/cc-proxy.js` auto-restarts on edits. Hook/skill edits in the dev repo take effect on the next prompt only if the cache points at your repo — for marketplace installs, bump `plugin.json` version and re-run `claude plugin update`. Gates: `pnpm test`, `pnpm lint`.
+`pnpm proxy` runs the proxy standalone (loads repo `.env` then `~/.env`); `node --watch bin/cc-proxy.js` auto-restarts on edits. Hook/skill edits in the dev repo take effect on the next prompt only if the cache points at your repo — for marketplace installs, bump `plugin.json` version and re-run `claude plugin update`. Gates: `pnpm test`, `pnpm lint`. `pnpm probe:vendors` is a separate MANUAL check (real keys, real quota, never in CI): it re-measures the vendor behaviour that source comments assert — the class of claim the hermetic suite cannot reach. Its exit codes are deliberately four-way, so "verified nothing" can never be mistaken for "all verified": **0** everything ran and matched · **1** a vendor disagrees with a source comment (the signal it exists for) · **2** inconclusive, something was unreachable · **3** no keys, so no claim was checked. Anything wiring this into automation should treat 2 and 3 as UNVERIFIED rather than as either pass or fail.

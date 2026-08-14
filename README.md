@@ -169,7 +169,13 @@ cp .env.example .env   # set GLM_API_KEY (and OPENROUTER_API_KEY if used)
 pnpm install
 pnpm proxy             # standalone on PROXY_PORT (default 4000)
 pnpm test && pnpm lint
+pnpm probe:vendors     # MANUAL: re-measure the vendor behaviour source comments claim
 ```
+
+`probe:vendors` is deliberately outside `pnpm check` — it spends real quota
+against real keys. It re-issues the requests behind claims like "this vendor
+rejects a `[1m]`-suffixed model id" and exits non-zero if a vendor no longer
+answers the way a comment says it does.
 
 `bin/cc-proxy.js` loads API keys from `~/.env` (canonical for installs) and, if present, the repo-root `.env` (dev/inline). Vars already in the environment (e.g. settings.json `env`) always win. For the installed plugin, just the two keys go in `~/.env`; `/cc-proxy:setup` writes them there. Both files are gitignored.
 

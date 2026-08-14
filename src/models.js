@@ -52,8 +52,19 @@ import { tierOf } from "./routes.js";
  * @type {Record<string, "Flagship" | "Strong" | "Specialist">}
  */
 export const MODEL_GRADES = {
-	// GLM
-	"glm-5.2": "Flagship",
+	// GLM. Grade is the model's position within its OWN vendor, so a new
+	// flagship demotes the previous one — glm-5.3 shipped 2026-08-14 and
+	// glm-5.2 moves to Strong, which is what it now is relative to Z.ai's line.
+	//
+	// Deliberately NOT derived from the fact that Z.ai currently serves glm-5.3
+	// for glm-5.2/5.1/5 alike (measured the same day). That aliasing is a
+	// serving decision the vendor can reverse without notice, and the Qwen plan
+	// still serves real glm-5.2 weights, so collapsing these ids to one grade
+	// would publish a claim that is false for plan users and volatile for
+	// everyone else. Position is stable; what is behind an alias this week is
+	// not. See scripts/probe-vendors.mjs for the standing measurement.
+	"glm-5.3": "Flagship",
+	"glm-5.2": "Strong",
 	"glm-5.1": "Strong",
 	"glm-5": "Strong",
 	"glm-5-turbo": "Specialist",
@@ -255,6 +266,9 @@ export const CONTEXT_WINDOW = {
 	"glm-5-turbo": 200000,
 	"glm-5.1": 200000,
 	"glm-5.2": 1000000,
+	// 1048576 exactly, per Z.ai's own /api/v1/models — the only one of its three
+	// list endpoints that knows glm-5.3 exists.
+	"glm-5.3": 1048576,
 	// DeepSeek (api-docs.deepseek.com/quick_start/pricing)
 	"deepseek-v4-pro": 1000000,
 	"deepseek-v4-flash": 1000000,

@@ -791,6 +791,54 @@ describe("server end-to-end routing", () => {
 		assert.match(route, /] glm-5\.2 -> glm \/v1\/messages\?beta=true$/);
 	});
 
+	// Issue #34 follow-up. The routing DECISION is made on a normalized id, but
+	// the log reports what the CLIENT sent — so when a `[1m]` suffix or a
+	// `<provider>:` lens is present, the line alone cannot explain why the id
+	// landed where it did. The annotation is gated on an actual difference, and
+	// BOTH halves matter: it must appear when normalization happened (or the log
+	// is unexplainable) and must NOT appear otherwise (the bare-id line above is
+	// anchored with `$`, and scripts/status.js parses these lines).
+	it("routing log annotates the normalized id, and only when it differs", async () => {
+		await wire(() => ({
+			status: 200,
+			headers: { "content-type": "application/json" },
+			body: NORMAL_200,
+		}));
+		const logged = [];
+		const orig = console.log;
+		console.log = (...a) => logged.push(a.join(" "));
+		try {
+			await post(
+				proxy.port,
+				{ model: "glm-5.2[1m]", stream: false, messages: [] },
+				{},
+				"/v1/messages",
+			);
+		} finally {
+			console.log = orig;
+		}
+		const route = logged.find((l) => / -> /.test(l));
+		assert.ok(route, "a routing line was logged");
+		assert.match(
+			route,
+			/] glm-5\.2\[1m\] -> glm \(routed as glm-5\.2\) \/v1\/messages$/,
+			"the raw id is reported, the normalized id explains the decision",
+		);
+
+		// The bytes the BACKEND actually received — the project's rule is that a
+		// forwarding change with no failing test is untested, and every other
+		// suffix assertion is unit-level against resolve(). Measured 2026-08-14:
+		// Z.ai 400s on `glm-5.2[1m]` ([1214][modelCode: does not exist]) and the
+		// Qwen plan 400s the same way, so sending the suffix upstream would route
+		// correctly and fail at the vendor. This is the assertion that catches a
+		// regression to forwarding it.
+		assert.equal(
+			JSON.parse(glm.calls[0].body).model,
+			"glm-5.2",
+			"upstream must receive the bare id — no vendor accepts CC's [1m] spelling",
+		);
+	});
+
 	// The version handshake that fixes PROXY_PATH staleness: the SessionStart
 	// hook compares /_status.version against its own plugin tree and restarts a
 	// mismatched proxy via /_shutdown. Without version in /_status a stale proxy
@@ -924,6 +972,12 @@ describe("provider selector strip (the local lens must never leak upstream)", ()
 		const providers = buildProviders({ GLM_API_KEY: "g", DASHSCOPE_API_KEY: "q" }, "claude");
 		providers.find((p) => p.id === "qwen").baseUrl = qwen.baseUrl;
 		providers.find((p) => p.id === "claude").baseUrl = claude.baseUrl;
+		// GLM registers here (the key is set to make the qwen/glm predicates
+		// realistic) but has NO stub, so any test in this block that routes a
+		// glm- id would issue a REAL request to api.z.ai — observed once as a
+		// bare 401, which reads like a proxy bug rather than a wiring mistake.
+		// Point it at a closed port so the failure is instant and unambiguous.
+		providers.find((p) => p.id === "glm").baseUrl = "http://127.0.0.1:1";
 		proxy = await startProxy({ port: 0, providers });
 	}
 
@@ -962,6 +1016,57 @@ describe("provider selector strip (the local lens must never leak upstream)", ()
 		});
 		assert.equal(res.status, 200);
 		assert.equal(JSON.parse(qwen.calls[0].body).model, "deepseek-v4-pro");
+	});
+
+	// 0.6.3 made the variant-suffix strip a body rewrite (both vendors 400 on
+	// the suffixed spelling), so the rewrite now fires on inputs where it never
+	// used to. The streaming path is SEPARATE code that never parses the body,
+	// and the qwen: selector test above exercises the LENS strip, not this one —
+	// same branch, different producer of the rewrite.
+	it("streaming path: a [1m] suffix is stripped from the body too", async () => {
+		await wire(() => ({
+			status: 200,
+			headers: { "content-type": "text/event-stream" },
+			body: 'event: message_start\ndata: {"type":"message_start"}\n\n',
+		}));
+		const res = await post(proxy.port, {
+			model: "deepseek-v4-pro[1m]",
+			stream: true,
+			messages: [{ role: "user", content: "hi" }],
+		});
+		assert.equal(res.status, 200);
+		assert.equal(
+			JSON.parse(qwen.calls[0].body).model,
+			"deepseek-v4-pro",
+			"the vendor must receive the bare id on the streaming path as well",
+		);
+	});
+
+	// A rewritten body is SHORTER than the inbound one (stripping `[1m]` drops 4
+	// bytes), so a content-length copied from the inbound request would over-
+	// declare the payload. Node would then wait for bytes that never arrive and
+	// the request would hang rather than fail cleanly. The local stubs are
+	// permissive enough to accept a wrong header, so assert the header itself
+	// rather than trusting that the request succeeded.
+	it("content-length matches the REWRITTEN body, not the inbound one", async () => {
+		await wire(okJson);
+		const inbound = { model: "deepseek-v4-pro[1m]", messages: [{ role: "user", content: "hi" }] };
+		const inboundLength = Buffer.byteLength(JSON.stringify(inbound));
+		await post(proxy.port, inbound);
+
+		const sent = qwen.calls[0];
+		const declared = Number(sent.headers["content-length"]);
+		assert.equal(
+			declared,
+			Buffer.byteLength(sent.body),
+			"declared content-length must equal the bytes actually sent",
+		);
+		assert.equal(
+			declared,
+			inboundLength - "[1m]".length,
+			"the rewritten body is exactly 4 bytes shorter than what the client sent",
+		);
+		assert.equal(sent.headers["transfer-encoding"], undefined, "no chunked alongside a length");
 	});
 
 	it("a non-prefixed body is forwarded byte-for-byte (invariant 1 intact)", async () => {

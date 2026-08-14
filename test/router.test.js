@@ -4,7 +4,11 @@ import { buildProviders } from "../src/providers.js";
 // `resolve` here is the provider-only wrapper — it keeps the ~50 pre-existing
 // `.id` assertions readable. `resolve2` is the full result, used wherever a test
 // needs to see the stripped upstream id.
-import { resolveProvider as resolve, resolve as resolve2 } from "../src/router.js";
+import {
+	resolveProvider as resolve,
+	resolve as resolve2,
+	stripVariantSuffix,
+} from "../src/router.js";
 
 const config = { port: 4000, providers: buildProviders({ GLM_API_KEY: "glm-test" }, "claude") };
 
@@ -455,6 +459,225 @@ describe("router", () => {
 			} finally {
 				ROUTES["deepseek-v4-pro"] = saved;
 			}
+		});
+	});
+
+	// Issue #34. Claude Code spells a long-context variant `glm-5.2[1m]`, the form
+	// ANTHROPIC_CUSTOM_MODEL_OPTION registers. CC strips it before the wire today
+	// (0 of 24070 routing lines carry one), so these lock a HARDENING guard, not a
+	// live defect: the day CC stops stripping, a plan-only user's headline model
+	// must not silently change backend.
+	//
+	// Every assertion checks BOTH halves — provider AND upstreamModel — because
+	// the two answer different questions: WHERE the request went, and WHAT the
+	// vendor was asked for. A fix can get either right while breaking the other.
+	//
+	// The upstream half is a MEASUREMENT, and it reversed mid-PR. The first cut
+	// preserved the raw suffix on the belief that Z.ai accepted it; probed
+	// 2026-08-14 with real keys, it does not — `glm-5.2[1m]` and `glm-5.3[1m]`
+	// both draw `400 [1214][modelCode: does not exist]`, the same rejection a
+	// wholly fake id gets, and the Qwen plan answers `InvalidParameter: Model
+	// not exist.` So the suffix reaches no vendor: it is stripped on the way out
+	// exactly as the `<provider>:` lens is.
+	describe("variant suffix (issue #34)", () => {
+		const planOnly = {
+			port: 4000,
+			providers: buildProviders({ DASHSCOPE_API_KEY: "q" }, "claude"),
+		};
+
+		// THE bug. With no GLM key, `glm-5.2` reaches qwen only through ROUTES —
+		// an exact-match table — so the suffix stranded it on the default backend.
+		it("routes a suffixed shared id through ROUTES, and sends the bare id upstream", () => {
+			const bare = resolve2("glm-5.2", planOnly);
+			assert.equal(bare.provider.id, "qwen");
+
+			const suffixed = resolve2("glm-5.2[1m]", planOnly);
+			assert.equal(suffixed.provider.id, "qwen", "the suffix must not defeat the ROUTES lookup");
+			// Measured 2026-08-14: BOTH vendors 400 on the suffixed spelling
+			// (Z.ai `[1214][modelCode: does not exist]`, the Qwen plan
+			// `InvalidParameter: Model not exist.`), so forwarding it would route
+			// correctly and then fail at the vendor anyway. It is Claude Code's
+			// display spelling, stripped on the way out like the `<provider>:`
+			// lens.
+			assert.equal(
+				suffixed.upstreamModel,
+				"glm-5.2",
+				"the suffix is CC's spelling — no vendor accepts it, so it does not go upstream",
+			);
+		});
+
+		// glm-5.3 shipped 2026-08-14 and is in NO table — no ROUTES entry, no static
+		// catalog — so it reaches GLM purely through the `startsWith("glm-")`
+		// predicate. That makes it the honest test of the predicate path: the
+		// suffix must not defeat it, and the bare id must reach the vendor.
+		// Probed the same day against the live endpoint: `glm-5.3` -> 200,
+		// `glm-5.3[1m]` -> 400 [1214][modelCode: does not exist], the identical
+		// rejection glm-5.2 gives. The suffix is not a spelling Z.ai knows for
+		// ANY model, new ones included — which is why the strip goes upstream.
+		it("strips the suffix for an id that only the predicate claims (glm-5.3)", () => {
+			const glm = { port: 4000, providers: buildProviders({ GLM_API_KEY: "g" }, "claude") };
+			assert.equal(resolve2("glm-5.3", glm).provider.id, "glm");
+			const suffixed = resolve2("glm-5.3[1m]", glm);
+			assert.equal(
+				suffixed.provider.id,
+				"glm",
+				"no ROUTES entry — the predicate must still claim it",
+			);
+			assert.equal(suffixed.upstreamModel, "glm-5.3", "the vendor 400s on the suffixed spelling");
+		});
+
+		it("routes a suffixed id to the same backend as its bare form, with keys present", () => {
+			const glm = { port: 4000, providers: buildProviders({ GLM_API_KEY: "g" }, "claude") };
+			assert.equal(resolve2("glm-5.2[1m]", glm).provider.id, "glm");
+			assert.equal(resolve2("glm-5.2[1m]", glm).upstreamModel, "glm-5.2");
+
+			const deep = {
+				port: 4000,
+				providers: buildProviders({ DEEPSEEK_API_KEY: "d", DASHSCOPE_API_KEY: "q" }, "claude"),
+			};
+			assert.equal(resolve2("deepseek-v4-pro[1m]", deep).provider.id, "deepseek");
+			assert.equal(resolve2("deepseek-v4-pro[1m]", deep).upstreamModel, "deepseek-v4-pro");
+		});
+
+		// The site issue #34 did NOT name: DATED_ID is anchored (`\d{4}$`), so a
+		// suffix defeats the plan's claim on plan-only spellings too. A fix that
+		// patched only ROUTES + QWEN_PLAN_RESELLS would leave this broken.
+		it("keeps the plan's claim on a DATED id that carries a suffix", () => {
+			assert.equal(resolve2("deepseek-v4-flash-0731", planOnly).provider.id, "qwen");
+			assert.equal(
+				resolve2("deepseek-v4-flash-0731[1m]", planOnly).provider.id,
+				"qwen",
+				"DATED_ID is anchored, so the suffix defeats it unless stripped",
+			);
+			assert.equal(
+				resolve2("deepseek-v4-flash-0731[1m]", planOnly).upstreamModel,
+				"deepseek-v4-flash-0731",
+			);
+		});
+
+		// QWEN_PLAN_RESELLS, the third exact-match site. Reached only when no
+		// native DeepSeek key is registered — rankRoutes' native-first sort (issue
+		// #19) claims the id first otherwise.
+		it("keeps the plan predicate's claim on a resold id that carries a suffix", async () => {
+			const { ROUTES } = await import("../src/routes.js");
+			const saved = ROUTES["deepseek-v4-pro"];
+			// biome-ignore lint/performance/noDelete: rankRoutes() gates on Object.hasOwn, so `= undefined` would not reproduce a missing entry.
+			delete ROUTES["deepseek-v4-pro"];
+			try {
+				assert.equal(
+					resolve2("deepseek-v4-pro[1m]", planOnly).provider.id,
+					"qwen",
+					"QWEN_PLAN_RESELLS is a Set.has on the raw id",
+				);
+			} finally {
+				ROUTES["deepseek-v4-pro"] = saved;
+			}
+		});
+
+		// The registered-selector branch, which the haiku test above does NOT
+		// reach: a haiku tail short-circuits before the selector is consulted, so
+		// the ordinary path — selector honored, suffix stripped — had no coverage
+		// even though the reversal changed what it returns (raw tail → routeId).
+		// Both strips must compose: the lens is cc-proxy's spelling and the suffix
+		// is Claude Code's, and no backend has heard of either.
+		it("strips BOTH the selector and the suffix on the ordinary selector path", () => {
+			const all = {
+				port: 4000,
+				providers: buildProviders({ DASHSCOPE_API_KEY: "q", DEEPSEEK_API_KEY: "d" }, "claude"),
+			};
+			const r = resolve2("qwen:deepseek-v4-pro[1m]", all);
+			assert.equal(r.provider.id, "qwen", "the selector still names the backend");
+			assert.equal(
+				r.upstreamModel,
+				"deepseek-v4-pro",
+				"the vendor receives neither cc-proxy's lens nor CC's suffix",
+			);
+			// The selector must still WIN over the ranked route, suffix or not:
+			// with a DeepSeek key registered, the bare id would go native.
+			assert.equal(resolve2("deepseek-v4-pro[1m]", all).provider.id, "deepseek");
+		});
+
+		// Invariant 4 under a suffix. The pin already tests the STRIPPED tail of a
+		// `<provider>:` lens; it must survive both strips composed, or
+		// `glm:claude-haiku-…[1m]` bills CC's internal ops to a third party.
+		it("pins a suffixed haiku id to Claude, selector or not", () => {
+			const all = {
+				port: 4000,
+				providers: buildProviders({ GLM_API_KEY: "g", DASHSCOPE_API_KEY: "q" }, "claude"),
+			};
+			assert.equal(resolve2("claude-haiku-4-5-20251001[1m]", all).provider.id, "claude");
+			assert.equal(resolve2("glm:claude-haiku-4-5-20251001[1m]", all).provider.id, "claude");
+			assert.equal(
+				resolve2("glm:claude-haiku-4-5-20251001[1m]", all).upstreamModel,
+				"claude-haiku-4-5-20251001",
+				"both the lens and the suffix are cc-proxy/CC spellings — neither leaves the proxy",
+			);
+		});
+
+		// A bracket that is not a well-formed TRAILING pair never routes anywhere
+		// new. Two distinct reasons, and the distinction is worth stating because
+		// the strip is not an id validator:
+		//   - `glm-5.2[`, `glm-5.2]`, `[1m]` — the regex does not fire at all
+		//     (unclosed / no pair / no stem before it).
+		//   - `glm-5.2[a[b]` — the regex DOES fire, on the well-formed tail `[b]`,
+		//     yielding the stem `glm-5.2[a`. Only the pair's INTERIOR is required
+		//     to be bracket-free, not the stem.
+		// Either way the result is not a routable id, so both land on the default
+		// backend. `glm-5.2[a[b]` is the one case where the strip DID fire, so it
+		// is listed separately below rather than asserted as "unchanged".
+		it("routes a malformed or stemless bracket to the default backend", () => {
+			for (const id of ["glm-5.2[", "glm-5.2]", "[1m]", "[]"]) {
+				const r = resolve2(id, planOnly);
+				assert.equal(r.upstreamModel, id, `${id} matches no pair — nothing to strip`);
+				assert.equal(r.provider.id, "claude", `${id} is not a routable id — default backend`);
+			}
+			// The strip fires on the trailing `[b]` and yields an unroutable stem.
+			const nested = resolve2("glm-5.2[a[b]", planOnly);
+			assert.equal(nested.upstreamModel, "glm-5.2[a");
+			assert.equal(nested.provider.id, "claude");
+		});
+
+		// Pins the two behaviours above at the function itself, so a regex edit
+		// that changed WHICH of them applies fails here even though resolve()
+		// returns `claude` for both reasons.
+		it("fires only on a well-formed trailing pair, and never strips to empty", () => {
+			assert.equal(stripVariantSuffix("glm-5.2[1m]"), "glm-5.2");
+			assert.equal(stripVariantSuffix("glm-5.2[]"), "glm-5.2");
+			assert.equal(stripVariantSuffix("glm-5.2[a[b]"), "glm-5.2[a", "strips the tail pair only");
+			assert.equal(stripVariantSuffix("glm-5.2[1m][2m]"), "glm-5.2[1m]", "one pair, not greedy");
+			// THE shape that separates the strict interior `[^[\]]*` from a loose
+			// `.*`, and the reason the strict form is the one that ships. With
+			// `.*` the match takes the FIRST bracket and returns "glm-5.2" — a
+			// real, routable id synthesized out of a malformed one, which would
+			// send a mangled request to Z.ai instead of the default backend.
+			// The loose form was committed by mistake once; this is what catches
+			// it, because every other shape the two forms agree on.
+			assert.equal(
+				stripVariantSuffix("glm-5.2[a]b]"),
+				"glm-5.2[a]b]",
+				"a malformed id must never be coerced into a routable one",
+			);
+			// The leading `^` is load-bearing and was NOT covered: without it the
+			// pattern matches at any offset, so `(.+)` starts wherever it must and
+			// the function still returns a stem — silently accepting an id with
+			// junk in front of it. Reported by the test-coverage lens on PR #36.
+			assert.equal(
+				stripVariantSuffix("\nglm-5.2[1m]"),
+				"\nglm-5.2[1m]",
+				"anchored: `.` cannot span the newline, so no match — the id is left alone",
+			);
+			// The trailing space is written as an escape so a formatter cannot
+			// silently trim it — one did, turning this case into plain
+			// "glm-5.2[1m]" and asserting the exact opposite of what it tests.
+			for (const untouched of ["glm-5.2[", "glm-5.2]", "[1m]", "[]", "glm-5.2[1m]\u0020"]) {
+				assert.equal(stripVariantSuffix(untouched), untouched, `${untouched} must not be stripped`);
+			}
+		});
+
+		it("strips an EMPTY bracket pair, which is well-formed", () => {
+			// `glm-5.2[]` has the shape; the stem is a real id, so it routes.
+			assert.equal(resolve2("glm-5.2[]", planOnly).provider.id, "qwen");
+			assert.equal(resolve2("glm-5.2[]", planOnly).upstreamModel, "glm-5.2");
 		});
 	});
 

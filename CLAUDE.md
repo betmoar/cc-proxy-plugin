@@ -17,15 +17,26 @@ way they did — probe matrices, measurements, refuted alternatives),
 The suite spins **real local HTTP backends** — if you change forwarding and no
 test fails, you haven't tested it; add one.
 
+`pnpm probe:vendors` is the MANUAL gate for claims about someone else's server.
+It is never in `pnpm check` (real keys, real quota) and exits 1 when a vendor
+stops behaving the way a source comment says it does. Run it when you touch
+routing/forwarding, or when a probe date in a comment looks old.
+
 ## Invariants (breaking one is a design decision, not a refactor)
 
 Each is locked by tests; the test names tell you what you broke.
 
 1. **Transparent pipe.** Auth/headers only. Full inbound path *including the
-   query string* reaches upstream; bodies forwarded byte-for-byte. Two body
-   exceptions (thinking-strip, `<provider>:` selector-strip) and one header
-   exception (hop-by-hop dropped — CL+TE together trips smuggling rejection).
-   → `server.test.js` "query string is preserved…", "provider selector strip…"
+   query string* reaches upstream; bodies forwarded byte-for-byte. THREE body
+   exceptions (thinking-strip, `<provider>:` selector-strip, `[1m]` variant-
+   suffix strip) and one header exception (hop-by-hop dropped — CL+TE together
+   trips smuggling rejection). The third was added in 0.6.3 on a measurement,
+   not a preference: both Z.ai and the Qwen plan 400 on a suffixed id, so
+   forwarding CC's display spelling means routing correctly and then failing at
+   the vendor. All three strips share one shape — a spelling the CLIENT uses
+   that no BACKEND knows.
+   → `server.test.js` "query string is preserved…", "provider selector strip…",
+   "routing log annotates the normalized id…"
 2. **Stateless.** No breakers, no on-disk state, no in-proxy waiting. Rate
    limits inject `Retry-After` and let the client back off. → "…1302 … gets a
    Retry-After", "1313 … no Retry-After"
@@ -63,13 +74,18 @@ there if you forget. The ones marked ⚠ have no test and drift silently.
 
 | Touch | Also update |
 |---|---|
-| routing log format (`server.js`) | `status.js` `parseRoutingLines()` — it parses the line |
+| routing log format (`server.js`) | `status.js` `parseRoutingLines()` — it parses the line. Locked by `couplings.test.js` as of 0.6.3; was ⚠ prose-only before |
+| `stripVariantSuffix` / `routingIdOf` (`router.js`) | `routes.test.js` imports the first to lock strip∘rank composition; `server.js` calls the second for the log's `(routed as …)` annotation |
 | a version | `pnpm version` only; `plugin.json` is the plugin cache key |
 | a `v<x.y.z>` tag | its CHANGELOG section, non-empty, BEFORE tagging |
 | `PROXY_PORT` default | `config.js`, `proxy-lifecycle.js`, `statusline.js`, `status.js` |
 | `PROXY_READY_TIMEOUT_MS` | `hooks/hooks.json` `timeout: 10` — ≥10000 ms never completes |
 | `buildProviders()` | `PROVIDER_IDS` + `CONTRIBUTING.md` 1b — else the raw lens leaks upstream |
 | a new env var | `.env.example` + README table + `docs/OPERATIONS.md` |
+| a human-facing `pnpm` script | README / CONTRIBUTING / OPERATIONS — a manual gate nobody knows about is not a gate |
+| a comment claiming an input→output | write it as `@doctest fn(<json>) -> <json>`; `doc-examples.test.js` runs it |
+| a comment claiming vendor behaviour | a case in `scripts/probe-vendors.mjs`, so it can be re-measured |
+| the outbound-id contract (`upstreamModel`) | the prose describing it — `couplings.test.js` fails on either drifting |
 | the plugin description | `package.json`, `plugin.json`, `marketplace.json` |
 | an upstream request option | `upstreamRequestOptions()` only — a 2nd copy shipped the query-string bug twice |
 | a script's `process.env` read | `loadEnv()` directly under the imports, or `~/.env` is ignored |
@@ -104,12 +120,38 @@ no test enforces that.
 
 ## Traps for the unwary
 
+- **A comment that states behaviour rots like untested code, but louder.** The
+  #34 fix reversed its own contract mid-review (the `[1m]` suffix went from
+  "preserved upstream" to "stripped upstream" once both vendors were measured
+  rejecting it) and left THREE comments asserting the old one — a JSDoc, a test
+  block comment, and `resolve()`'s numbered step list. Every one was caught by a
+  reviewer, none by a test, the last only after approval. Three mechanisms now
+  exist, and which one you need depends on the claim:
+  - *"this input yields that output"* → a `@doctest` line, EXECUTED by
+    `test/doc-examples.test.js`. Prose keeps the why; the falsifiable half moves.
+  - *"this vendor does X"* → a case in `scripts/probe-vendors.mjs`, re-runnable
+    on demand. Untestable offline is not the same as unfalsifiable.
+  - *"the contract is X"* → a lock in `couplings.test.js` ("no comment still
+    promises the pre-reversal upstream contract") pinning the code side and
+    denying phrasings that only hold under the old contract.
 - **Plumbing can't move to `~/.env`** — the SessionStart hook reads
   `PROXY_PORT`/`PROXY_LOG` before the proxy exists to load it. Keys in `~/.env`,
   plumbing in settings.json `env`.
 - **Setup order matters.** `ANTHROPIC_BASE_URL` retargets *already-open*
   sessions instantly, so `/cc-proxy:setup` starts the proxy itself and reads
   settings.json's `env` explicitly. Don't "simplify" it into a plain spawn.
+- **An inline `ANTHROPIC_BASE_URL=… claude` prefix is SILENTLY IGNORED** —
+  settings.json's `env` block overrides the process environment, and the run
+  looks like a success while hitting the OLD proxy. Use
+  `claude --settings '{"env":{"ANTHROPIC_BASE_URL":"http://127.0.0.1:<port>"}}'`,
+  which does work. Measured 2026-08-14 against two bare logging listeners
+  (issue #25): the inline variant printed `ok` with ZERO requests on :4400 and
+  +4 routing lines on the :4000 proxy; `--settings` logged
+  `POST /v1/messages?beta=true model=claude-opus-5` on :4401 with 0 on :4000.
+  The variable is NOT being dropped by the shell — `node -p process.env…` and
+  `bash -c` both see it — so this is precedence, not plumbing. Any A/B between
+  two proxy builds must read the TARGET LISTENER's log, never the client's
+  stdout, which reports success either way.
 - **Never `rm && touch` the proxy log** while it runs (orphan inode);
   `truncate -s 0`.
 - **429 is the ONE buffering exception on the streaming path.** Extending it to

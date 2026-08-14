@@ -259,6 +259,146 @@ describe("cross-file couplings", () => {
 		);
 	});
 
+	// COUPLING: the routing log line (src/server.js) is PARSED by
+	// scripts/status.js parseRoutingLines(). CLAUDE.md has carried this row since
+	// 0.3.3 with nothing enforcing it — the two files never import each other, so
+	// a format change breaks `/cc-proxy:status`'s recent-routing section silently
+	// and only on a machine with a populated log. 0.6.3 appended a
+	// `(routed as <id>)` annotation to that line, which is exactly the kind of
+	// edit this row exists to catch, so it stops being a prose-only promise here.
+	//
+	// Asserts the CONTRACT parseRoutingLines() actually relies on — a leading
+	// `[` and a ` -> ` separator — against a line built the way server.js builds
+	// it, in both its annotated and unannotated forms. Deliberately not a
+	// full-format lock: pinning the whole line would fail on every cosmetic edit
+	// and teach the next maintainer to delete the test.
+	it("the routing log line stays parseable by scripts/status.js", async () => {
+		const { parseRoutingLines } = await import("../scripts/status.js");
+		const src = read("src/server.js");
+
+		// The literal must still be built the way this test models it. If the
+		// template changes shape, this assertion fails FIRST with a pointer,
+		// rather than the sample lines below silently testing a stale format.
+		assert.match(
+			src,
+			/console\.log\(`\[\$\{new Date\(\)\.toISOString\(\)\}\] \$\{inboundModel\} -> \$\{provider\.id\}\$\{via\} \$\{req\.url\}`\)/,
+			"the routing log template in src/server.js changed — update scripts/status.js parseRoutingLines() and this test together",
+		);
+
+		const stamp = "2026-08-14T11:15:10.068Z";
+		const lines = [
+			`[${stamp}] glm-5.2 -> qwen /v1/messages`,
+			`[${stamp}] glm-5.2[1m] -> qwen (routed as glm-5.2) /v1/messages`,
+			`[${stamp}] qwen:deepseek-v4-pro -> qwen (routed as deepseek-v4-pro) /v1/messages`,
+			`[${stamp}] unknown -> claude /v1/messages/count_tokens`,
+		];
+		assert.deepEqual(
+			parseRoutingLines(lines.join("\n")),
+			lines,
+			"parseRoutingLines() dropped a routing line — src/server.js and scripts/status.js have drifted",
+		);
+	});
+
+	// COUPLING: the OUTBOUND-ID CONTRACT and the prose that describes it.
+	//
+	// Issue #34's fix reversed this contract mid-review — the `[1m]` suffix went
+	// from "preserved upstream" to "stripped upstream" once both vendors were
+	// measured rejecting it — and left THREE comments asserting the old one: the
+	// stripVariantSuffix JSDoc, a test block comment, and resolve()'s numbered
+	// step list. Each was found by a reviewer, none by a test, and the last only
+	// after the PR was approved. The claim is a single word in the code
+	// (`upstreamModel: routeId` vs `: tail`) and a paragraph in the prose, which
+	// is exactly the asymmetry that lets them drift apart.
+	//
+	// So: pin the code side, and forbid the phrasings that only make sense under
+	// the reversed contract. Not a general prose linter — a short deny-list of
+	// claims that were literally wrong, so the next reversal trips here.
+	it("no comment still promises the pre-reversal upstream contract", async () => {
+		const router = read("src/router.js");
+		const { resolve } = await import("../src/router.js");
+		const { buildProviders } = await import("../src/providers.js");
+
+		// CODE SIDE — behavioural, deliberately NOT a source-text pattern.
+		//
+		// The first version of this matched `upstreamModel:\s*(\w+)` and asserted
+		// the identifier was uniformly `routeId`. An adversarial review broke it in
+		// one line: change what the identifier COMPUTES —
+		//   const routeId = tail;            // the strip silently stops happening
+		// — and every return still reads `upstreamModel: routeId`, so the regex saw
+		// nothing wrong. Measured: that mutation passes this file and passes
+		// doc-examples; only router/server behavioural tests catch it. A test that
+		// pins a NAME while claiming to pin a CONTRACT is the same class of false
+		// assurance as the stale comments this whole round is about.
+		//
+		// So drive the real function instead. Each row is one branch of resolve():
+		// the suffix must not survive to the vendor on ANY of them.
+		const cfg = (env) => ({ port: 4000, providers: buildProviders(env, "claude") });
+		const allKeys = cfg({
+			GLM_API_KEY: "g",
+			DEEPSEEK_API_KEY: "d",
+			DASHSCOPE_API_KEY: "q",
+			OPENROUTER_API_KEY: "o",
+		});
+		for (const [id, config, expected, branch] of [
+			["claude-haiku-4-5-20251001[1m]", allKeys, "claude-haiku-4-5-20251001", "haiku pin"],
+			["qwen:deepseek-v4-pro[1m]", allKeys, "deepseek-v4-pro", "registered selector"],
+			["glm-5.2[1m]", cfg({ DASHSCOPE_API_KEY: "q" }), "glm-5.2", "ranked route (ROUTES)"],
+			["glm-5.3[1m]", cfg({ GLM_API_KEY: "g" }), "glm-5.3", "predicate fallback"],
+		]) {
+			assert.equal(
+				resolve(id, config).upstreamModel,
+				expected,
+				`resolve() sent a variant suffix upstream via the ${branch} branch. Both vendors 400 on the suffixed spelling (see scripts/probe-vendors.mjs), so this is a live break, not a style question. If it is a deliberate reversal, update the prose in the same commit.`,
+			);
+		}
+
+		// Prose side: phrasings that are only true under the OLD contract.
+		const stale = [
+			"upstream gets it back",
+			"ROUTING ONLY",
+			"upstream gets the id it gets today",
+			"Z.ai accepts the suffixed",
+			"keeps the raw suffix",
+		];
+		for (const file of ["src/router.js", "src/server.js", "test/router.test.js", "CHANGELOG.md"]) {
+			const text = read(file);
+			for (const phrase of stale) {
+				assert.ok(
+					!text.includes(phrase),
+					`${file} contains "${phrase}" — that describes the contract BEFORE the #34 reversal, and the code now strips the suffix on the way out. Fix the prose.`,
+				);
+			}
+		}
+	});
+
+	// COUPLING: a package script a HUMAN is meant to run must be discoverable
+	// where humans look. `probe:vendors` shipped in 0.6.3 as the manual gate for
+	// vendor claims — and a manual gate nobody knows about is not a gate. Same
+	// drift class as the .env.example row below: the code works, the knowledge
+	// does not propagate.
+	//
+	// Only human-facing scripts are checked. `version`/`sync-version` are npm
+	// lifecycle plumbing and `lint:fix`/`format` are editor conveniences; naming
+	// them here would be documentation theatre.
+	it("every human-facing pnpm script is documented", () => {
+		const scripts = Object.keys(JSON.parse(read("package.json")).scripts);
+		const internal = new Set(["version", "sync-version", "lint:fix", "format"]);
+		const humanFacing = scripts.filter((s) => !internal.has(s));
+		assert.ok(
+			humanFacing.length >= 5,
+			`expected several human-facing scripts, found ${humanFacing.length}`,
+		);
+
+		// One of these three is where a contributor actually looks first.
+		const docs = ["README.md", "CONTRIBUTING.md", "docs/OPERATIONS.md"].map(read).join("\n");
+		const undocumented = humanFacing.filter((s) => !docs.includes(s));
+		assert.deepEqual(
+			undocumented,
+			[],
+			`package.json defines ${undocumented.join(", ")} but no reader-facing doc mentions it — README.md, CONTRIBUTING.md and docs/OPERATIONS.md are where someone looks for "how do I run this"`,
+		);
+	});
+
 	// COUPLING: every env var offered in .env.example must be documented in the
 	// README env table and in docs/OPERATIONS.md (new knobs go in all three).
 	it("every .env.example key is documented in README.md and docs/OPERATIONS.md", () => {
