@@ -972,6 +972,12 @@ describe("provider selector strip (the local lens must never leak upstream)", ()
 		const providers = buildProviders({ GLM_API_KEY: "g", DASHSCOPE_API_KEY: "q" }, "claude");
 		providers.find((p) => p.id === "qwen").baseUrl = qwen.baseUrl;
 		providers.find((p) => p.id === "claude").baseUrl = claude.baseUrl;
+		// GLM registers here (the key is set to make the qwen/glm predicates
+		// realistic) but has NO stub, so any test in this block that routes a
+		// glm- id would issue a REAL request to api.z.ai — observed once as a
+		// bare 401, which reads like a proxy bug rather than a wiring mistake.
+		// Point it at a closed port so the failure is instant and unambiguous.
+		providers.find((p) => p.id === "glm").baseUrl = "http://127.0.0.1:1";
 		proxy = await startProxy({ port: 0, providers });
 	}
 
