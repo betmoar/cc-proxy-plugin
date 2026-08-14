@@ -2,6 +2,7 @@ import { strict as assert } from "node:assert";
 import { describe, it } from "node:test";
 import { CONTEXT_WINDOW } from "../src/models.js";
 import { buildProviders } from "../src/providers.js";
+import { stripVariantSuffix } from "../src/router.js";
 import { PROVIDER_BILLING, ROUTES, rankRoutes, tierOf } from "../src/routes.js";
 
 describe("routes", () => {
@@ -191,6 +192,34 @@ describe("discovery ↔ routing coherence", () => {
 				);
 			}
 		}
+	});
+
+	// Issue #34, the routes.js half of the pairing. `rankRoutes` stays an
+	// exact-match table lookup BY DESIGN — the suffix strip lives once in
+	// `resolve()`, which is the table's only caller. So what this locks is the
+	// COMPOSITION: strip-then-rank must be indistinguishable from ranking the bare
+	// id, for every multi-route id in the table. Ranking is where the cost and
+	// native-first ORDER is decided, so an order that differed under a suffix
+	// would silently pick a different backend even once the lookup succeeded.
+	describe("variant suffix composes with ranking (issue #34)", () => {
+		it("strip-then-rank equals rank-bare, for every id in the table", () => {
+			for (const id of Object.keys(ROUTES)) {
+				assert.deepEqual(
+					rankRoutes(stripVariantSuffix(`${id}[1m]`)),
+					rankRoutes(id),
+					`${id}[1m] must rank identically to ${id} — same backends, same order`,
+				);
+			}
+		});
+
+		it("the raw suffixed id ranks EMPTY — the strip is what makes it work", () => {
+			// Pins the defect itself, so this stays a red test if someone "fixes"
+			// rankRoutes to strip internally and the strip in resolve() is then
+			// removed as redundant. Both layers stripping is fine; neither is not.
+			assert.deepEqual(rankRoutes("glm-5.2[1m]"), []);
+			assert.deepEqual(rankRoutes("deepseek-v4-pro[1m]"), []);
+			assert.ok(rankRoutes("glm-5.2").length > 0, "the bare id is routable — that is the delta");
+		});
 	});
 
 	it("every id that a static catalog publishes has a route or a predicate", () => {
