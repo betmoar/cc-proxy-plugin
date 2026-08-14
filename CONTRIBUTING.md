@@ -6,7 +6,11 @@
 pnpm install
 cp .env.example .env   # dev: set GLM_API_KEY (and OPENROUTER_API_KEY if used)
 pnpm proxy             # run the proxy standalone on PROXY_PORT (default 4000)
+pnpm probe:vendors     # manual: re-measure what source comments claim vendors do
+pnpm models:html       # regenerate docs/models.html (needs a running proxy)
 ```
+
+`models:html` rebuilds the committed model card. CI cannot rebuild it and the suite reads the committed file, so a stale artifact ships green and silent — regenerate it whenever routing, the catalog, or the renderer changes, against a proxy running the merged tree.
 
 For the installed plugin, API keys live in `~/.env` (not the repo `.env`, which is the dev/inline convenience). `/cc-proxy:setup` writes them there; the proxy loads `~/.env` plus any repo `.env` at startup.
 

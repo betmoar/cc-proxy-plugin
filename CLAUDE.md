@@ -82,6 +82,7 @@ there if you forget. The ones marked ⚠ have no test and drift silently.
 | `PROXY_READY_TIMEOUT_MS` | `hooks/hooks.json` `timeout: 10` — ≥10000 ms never completes |
 | `buildProviders()` | `PROVIDER_IDS` + `CONTRIBUTING.md` 1b — else the raw lens leaks upstream |
 | a new env var | `.env.example` + README table + `docs/OPERATIONS.md` |
+| a human-facing `pnpm` script | README / CONTRIBUTING / OPERATIONS — a manual gate nobody knows about is not a gate |
 | a comment claiming an input→output | write it as `@doctest fn(<json>) -> <json>`; `doc-examples.test.js` runs it |
 | a comment claiming vendor behaviour | a case in `scripts/probe-vendors.mjs`, so it can be re-measured |
 | the outbound-id contract (`upstreamModel`) | the prose describing it — `couplings.test.js` fails on either drifting |

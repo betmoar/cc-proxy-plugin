@@ -348,6 +348,34 @@ describe("cross-file couplings", () => {
 		}
 	});
 
+	// COUPLING: a package script a HUMAN is meant to run must be discoverable
+	// where humans look. `probe:vendors` shipped in 0.6.3 as the manual gate for
+	// vendor claims — and a manual gate nobody knows about is not a gate. Same
+	// drift class as the .env.example row below: the code works, the knowledge
+	// does not propagate.
+	//
+	// Only human-facing scripts are checked. `version`/`sync-version` are npm
+	// lifecycle plumbing and `lint:fix`/`format` are editor conveniences; naming
+	// them here would be documentation theatre.
+	it("every human-facing pnpm script is documented", () => {
+		const scripts = Object.keys(JSON.parse(read("package.json")).scripts);
+		const internal = new Set(["version", "sync-version", "lint:fix", "format"]);
+		const humanFacing = scripts.filter((s) => !internal.has(s));
+		assert.ok(
+			humanFacing.length >= 5,
+			`expected several human-facing scripts, found ${humanFacing.length}`,
+		);
+
+		// One of these three is where a contributor actually looks first.
+		const docs = ["README.md", "CONTRIBUTING.md", "docs/OPERATIONS.md"].map(read).join("\n");
+		const undocumented = humanFacing.filter((s) => !docs.includes(s));
+		assert.deepEqual(
+			undocumented,
+			[],
+			`package.json defines ${undocumented.join(", ")} but no reader-facing doc mentions it — README.md, CONTRIBUTING.md and docs/OPERATIONS.md are where someone looks for "how do I run this"`,
+		);
+	});
+
 	// COUPLING: every env var offered in .env.example must be documented in the
 	// README env table and in docs/OPERATIONS.md (new knobs go in all three).
 	it("every .env.example key is documented in README.md and docs/OPERATIONS.md", () => {

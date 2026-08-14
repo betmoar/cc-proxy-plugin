@@ -145,4 +145,4 @@ Consequence for any A/B between two proxy builds: **read the target listener's l
 
 ## Dev loop
 
-`pnpm proxy` runs the proxy standalone (loads repo `.env` then `~/.env`); `node --watch bin/cc-proxy.js` auto-restarts on edits. Hook/skill edits in the dev repo take effect on the next prompt only if the cache points at your repo — for marketplace installs, bump `plugin.json` version and re-run `claude plugin update`. Gates: `pnpm test`, `pnpm lint`.
+`pnpm proxy` runs the proxy standalone (loads repo `.env` then `~/.env`); `node --watch bin/cc-proxy.js` auto-restarts on edits. Hook/skill edits in the dev repo take effect on the next prompt only if the cache points at your repo — for marketplace installs, bump `plugin.json` version and re-run `claude plugin update`. Gates: `pnpm test`, `pnpm lint`. `pnpm probe:vendors` is a separate MANUAL check (real keys, real quota, never in CI): it re-measures the vendor behaviour that source comments assert and exits 1 when a vendor has changed its mind — the class of claim the hermetic suite cannot reach.
