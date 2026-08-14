@@ -111,29 +111,70 @@ function parseCall(call) {
 	return { name, args: args.map((a) => JSON.parse(a.trim())) };
 }
 
-/** Every `@doctest` line in src/, with enough context to name a failure. */
+/**
+ * Every `@doctest` line in the repo's own source, with enough context to name a
+ * failure.
+ *
+ * WALKS RECURSIVELY, and over every directory holding our code — not just a
+ * flat read of `src/`. The first version read `src/*.js` non-recursively, which
+ * made WHERE a claim was written decide whether it was ever checked: a
+ * `@doctest` in `scripts/`, in a test, or in a future `src/` subdirectory was
+ * silently skipped. Measured on a copy of the tree — three deliberately FALSE
+ * claims planted in `scripts/probe-vendors.mjs`, `src/nested/thing.js` and
+ * `test/router.test.js` left the suite green.
+ *
+ * That is this harness's own worst failure: a claim that LOOKS pinned and is
+ * not manufactures more confidence than no claim at all, which is the exact
+ * defect class the harness exists to remove. Where a comment lives must not
+ * determine whether it is true.
+ */
 function collectDoctests() {
 	const found = [];
-	for (const file of fs.readdirSync(path.join(root, "src")).filter((f) => f.endsWith(".js"))) {
-		const rel = path.join("src", file);
-		const lines = fs.readFileSync(path.join(root, rel), "utf8").split("\n");
-		lines.forEach((line, i) => {
-			const m = /@doctest\s+(.+?)\s*$/.exec(line);
-			if (m) found.push({ file: rel, line: i + 1, body: m[1] });
-		});
-	}
+	const walk = (dir) => {
+		if (!fs.existsSync(path.join(root, dir))) return;
+		for (const entry of fs.readdirSync(path.join(root, dir), { withFileTypes: true })) {
+			const rel = path.join(dir, entry.name);
+			if (entry.isDirectory()) {
+				if (entry.name === "node_modules" || entry.name.startsWith(".")) continue;
+				walk(rel);
+				continue;
+			}
+			if (!/\.(js|mjs)$/.test(entry.name)) continue;
+			// This file's own explanatory prose quotes the marker; collecting from
+			// it would execute the documentation about the documentation.
+			if (rel === path.join("test", "doc-examples.test.js")) continue;
+			const lines = fs.readFileSync(path.join(root, rel), "utf8").split("\n");
+			lines.forEach((line, i) => {
+				const m = /@doctest\s+(.+?)\s*$/.exec(line);
+				if (m) found.push({ file: rel, line: i + 1, body: m[1] });
+			});
+		}
+	};
+	for (const dir of ["src", "scripts", "hooks", "bin", "test"]) walk(dir);
 	return found;
 }
 
 describe("documented examples actually hold", () => {
 	const doctests = collectDoctests();
 
-	// A silently-empty harness is the failure mode this whole file exists to
-	// prevent: rename the marker, lose every assertion, stay green.
-	it("finds the @doctest examples (the harness is wired)", () => {
-		assert.ok(
-			doctests.length >= 8,
-			`expected @doctest examples in src/, found ${doctests.length} — did the marker get renamed?`,
+	// The EXACT count, not a floor.
+	//
+	// A floor catches the loud failure (rename the marker, lose every assertion,
+	// stay green) and misses the likely one: erosion. Measured — with a `>= 8`
+	// floor and 12 examples, deleting FOUR of them left the suite green. Removing
+	// an inconvenient example is exactly what happens when a claim becomes
+	// awkward, which is the same pressure that produced the three stale comments
+	// this harness was built for.
+	//
+	// Pinning the count is wrong for a collection meant to grow freely and right
+	// here: changing it is always deliberate, and this line makes that choice
+	// appear in the diff instead of passing unremarked. Adding examples is
+	// encouraged — bump the number in the same commit.
+	it("executes exactly the examples the source carries", () => {
+		assert.equal(
+			doctests.length,
+			12,
+			`expected 12 @doctest examples, found ${doctests.length}. Adding some? Bump this number in the same commit. Removing some? Say why in the commit message — dropping an example is dropping a guarantee.`,
 		);
 	});
 
