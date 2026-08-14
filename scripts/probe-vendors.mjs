@@ -15,8 +15,17 @@
 //   node scripts/probe-vendors.mjs            # all cases
 //   node scripts/probe-vendors.mjs --json     # machine-readable
 //
-// Exit status is 0 when every case matched its expectation, 1 otherwise — so a
-// vendor changing its mind is a loud failure, not a quiet surprise.
+// EXIT CODES, because "verified nothing" must not look like "all verified":
+//   0  every case ran and matched
+//   1  a vendor DISAGREES with a source comment — the signal this tool exists for
+//   2  inconclusive: something could not be reached (offline, DNS, timeout)
+//   3  nothing ran at all (no keys) — no claim was checked
+//
+// A single 0/1 split was the first shape, and the review that caught it was
+// right: `--json` exists precisely because something else will eventually read
+// this, and an exit code that cannot separate "checked and fine" from "checked
+// nothing" is one `&& echo verified` away from becoming the silent green this
+// whole file was written to prevent.
 
 import { loadEnv } from "../src/env.js";
 
@@ -81,6 +90,20 @@ const CASES = [
 	},
 ];
 
+// A non-2xx expectation without a bodyMatch passes on ANY error with that
+// status — a reworded rate limit, an auth failure, a malformed-JSON complaint —
+// so the probe would print OK while the claim it backs went untested. The
+// convention was followed by every case here and enforced by nothing, which is
+// one copy-paste from a real gap.
+for (const c of CASES) {
+	if (c.expect >= 400 && !c.bodyMatch) {
+		console.error(
+			`probe-vendors: case "${c.name}" expects ${c.expect} but carries no bodyMatch — a status alone cannot tell the vendor's real objection from an unrelated one.`,
+		);
+		process.exit(2);
+	}
+}
+
 async function probe(c) {
 	const key = process.env[c.key];
 	if (!key) return { ...c, skipped: `${c.key} not set` };
@@ -103,9 +126,18 @@ async function probe(c) {
 		});
 		const body = (await res.text()).slice(0, 300);
 		const ok = res.status === c.expect && (!c.bodyMatch || c.bodyMatch.test(body));
-		return { ...c, status: res.status, body, ok };
+		return { ...c, status: res.status, body, ok, reason: ok ? "match" : "mismatch" };
 	} catch (err) {
-		return { ...c, error: err instanceof Error ? err.message : String(err), ok: false };
+		// NOT the same fact as a mismatch: the vendor said nothing, so the claim
+		// is unverified rather than refuted. Callers separate these on `reason`;
+		// the exit code separates them too (2 vs 1).
+		const message = err instanceof Error ? err.message : String(err);
+		return {
+			...c,
+			error: ctl.signal.aborted ? `timed out after 30s (${message})` : message,
+			reason: "network",
+			ok: false,
+		};
 	} finally {
 		clearTimeout(timer);
 	}
@@ -127,21 +159,41 @@ if (JSON_OUT) {
 		console.log(`${mark}  ${r.name}`);
 		console.log(`      model=${r.model} expected=${r.expect} got=${r.status ?? r.error}`);
 		console.log(`      claim: ${r.claim}`);
+		// A network failure has no body, and the old guard meant it printed LESS
+		// detail than a mismatch — backwards, since it is the harder one to read.
 		if (!r.ok && r.body) console.log(`      body: ${r.body.replace(/\s+/g, " ").slice(0, 160)}`);
+		if (!r.ok && r.error) console.log(`      unreachable: ${r.error}`);
 		console.log();
 	}
 }
 
 const ran = results.filter((r) => !r.skipped);
-const failed = ran.filter((r) => !r.ok);
+const disagreed = ran.filter((r) => !r.ok && r.reason === "mismatch");
+const unreachable = ran.filter((r) => r.reason === "network");
 const skipped = results.length - ran.length;
+
 if (!JSON_OUT) {
-	console.log(
-		`${ran.length - failed.length}/${ran.length} matched${skipped ? `, ${skipped} skipped (no key)` : ""}`,
-	);
-	if (failed.length) {
+	const matched = ran.length - disagreed.length - unreachable.length;
+	const parts = [`${matched}/${ran.length} matched`];
+	if (unreachable.length) parts.push(`${unreachable.length} unreachable`);
+	if (skipped) parts.push(`${skipped} skipped (no key)`);
+	console.log(parts.join(", "));
+	if (disagreed.length) {
 		console.log("\nA vendor no longer behaves the way a source comment says it does.");
 		console.log("Update the comment AND re-check the decision that rested on it.");
 	}
+	if (unreachable.length && !disagreed.length) {
+		console.log("\nNothing was refuted — some cases could not be reached at all.");
+		console.log("Treat this as UNVERIFIED, not as confirmation.");
+	}
+	if (!ran.length) {
+		console.log("\nNo keys, so no claim was checked. This is not a pass.");
+	}
 }
-process.exit(failed.length ? 1 : 0);
+
+// Precedence: a real disagreement outranks unreachability, which outranks
+// having run nothing — the most actionable fact wins the exit code.
+if (disagreed.length) process.exit(1);
+if (unreachable.length) process.exit(2);
+if (!ran.length) process.exit(3);
+process.exit(0);
