@@ -159,12 +159,13 @@ export function routingIdOf(model) {
 export function resolve(model, config) {
 	const { providerId, model: tail } = parseModelSelector(model, config);
 
-	// `routeId` is the inbound id with its variant suffix removed — it drives
-	// every step below that inspects the id AND is what goes upstream, because
-	// both vendors 400 on the suffixed spelling (measured; see
-	// stripVariantSuffix()). The one branch that reads neither is the
-	// registered-selector return: it decides from `providerId` alone and never
-	// looks at the id's shape, so it is suffix-safe without the split.
+	// `routeId` is the inbound id with its variant suffix removed. It drives
+	// every step below that inspects the id, and ALL FOUR returns send it
+	// upstream, because both vendors 400 on the suffixed spelling (measured;
+	// see stripVariantSuffix()). The registered-selector branch is the one that
+	// does not CONSULT it — that return decides from `providerId` alone and
+	// never looks at the id's shape — but it forwards `routeId` like the rest,
+	// since a vendor rejects the suffix however the request was routed.
 	const routeId = typeof tail === "string" ? stripVariantSuffix(tail) : tail;
 
 	if (typeof routeId === "string" && routeId.startsWith("claude-haiku-")) {
