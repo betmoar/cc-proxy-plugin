@@ -137,7 +137,8 @@ export function routingIdOf(model) {
  * Resolve which provider to route a request to, and which model id to send it
  * under:
  *   0. strip a `<provider>:` selector       → the lens never leaves the proxy
- *   0b. strip a trailing `[1m]`-style suffix → ROUTING ONLY; upstream gets it back
+ *   0b. strip a trailing `[1m]`-style suffix → neither vendor knows the spelling,
+ *                                              so it leaves too (see step 6)
  *   1. claude-haiku-*                       → Claude (internal ops, pinned)
  *   2. explicit selector, if registered     → that provider
  *   3. ranked probed route (src/routes.js)  → native provider first, then
@@ -145,6 +146,8 @@ export function routingIdOf(model) {
  *                                              providers only
  *   4. first matching predicate             → glm-* → GLM, vendor/model → OpenRouter
  *   5. no match                             → default backend
+ *   6. the id that goes upstream            → the id steps 1-5 decided ON, not
+ *                                              the one the client sent
  *
  * STEP 1 TESTS THE STRIPPED TAIL AND OUTRANKS THE SELECTOR. Pinning on the raw
  * string would let `glm:claude-haiku-…` skip the pin, and the body rewrite
