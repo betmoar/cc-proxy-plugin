@@ -498,6 +498,26 @@ describe("router", () => {
 			);
 		});
 
+		// glm-5.3 shipped 2026-08-14 and is in NO table — no ROUTES entry, no static
+		// catalog — so it reaches GLM purely through the `startsWith("glm-")`
+		// predicate. That makes it the honest test of the predicate path: the
+		// suffix must not defeat it, and the bare id must reach the vendor.
+		// Probed the same day against the live endpoint: `glm-5.3` -> 200,
+		// `glm-5.3[1m]` -> 400 [1214][modelCode: does not exist], the identical
+		// rejection glm-5.2 gives. The suffix is not a spelling Z.ai knows for
+		// ANY model, new ones included — which is why the strip goes upstream.
+		it("strips the suffix for an id that only the predicate claims (glm-5.3)", () => {
+			const glm = { port: 4000, providers: buildProviders({ GLM_API_KEY: "g" }, "claude") };
+			assert.equal(resolve2("glm-5.3", glm).provider.id, "glm");
+			const suffixed = resolve2("glm-5.3[1m]", glm);
+			assert.equal(
+				suffixed.provider.id,
+				"glm",
+				"no ROUTES entry — the predicate must still claim it",
+			);
+			assert.equal(suffixed.upstreamModel, "glm-5.3", "the vendor 400s on the suffixed spelling");
+		});
+
 		it("routes a suffixed id to the same backend as its bare form, with keys present", () => {
 			const glm = { port: 4000, providers: buildProviders({ GLM_API_KEY: "g" }, "claude") };
 			assert.equal(resolve2("glm-5.2[1m]", glm).provider.id, "glm");

@@ -1012,6 +1012,57 @@ describe("provider selector strip (the local lens must never leak upstream)", ()
 		assert.equal(JSON.parse(qwen.calls[0].body).model, "deepseek-v4-pro");
 	});
 
+	// 0.6.3 made the variant-suffix strip a body rewrite (both vendors 400 on
+	// the suffixed spelling), so the rewrite now fires on inputs where it never
+	// used to. The streaming path is SEPARATE code that never parses the body,
+	// and the qwen: selector test above exercises the LENS strip, not this one —
+	// same branch, different producer of the rewrite.
+	it("streaming path: a [1m] suffix is stripped from the body too", async () => {
+		await wire(() => ({
+			status: 200,
+			headers: { "content-type": "text/event-stream" },
+			body: 'event: message_start\ndata: {"type":"message_start"}\n\n',
+		}));
+		const res = await post(proxy.port, {
+			model: "deepseek-v4-pro[1m]",
+			stream: true,
+			messages: [{ role: "user", content: "hi" }],
+		});
+		assert.equal(res.status, 200);
+		assert.equal(
+			JSON.parse(qwen.calls[0].body).model,
+			"deepseek-v4-pro",
+			"the vendor must receive the bare id on the streaming path as well",
+		);
+	});
+
+	// A rewritten body is SHORTER than the inbound one (stripping `[1m]` drops 4
+	// bytes), so a content-length copied from the inbound request would over-
+	// declare the payload. Node would then wait for bytes that never arrive and
+	// the request would hang rather than fail cleanly. The local stubs are
+	// permissive enough to accept a wrong header, so assert the header itself
+	// rather than trusting that the request succeeded.
+	it("content-length matches the REWRITTEN body, not the inbound one", async () => {
+		await wire(okJson);
+		const inbound = { model: "deepseek-v4-pro[1m]", messages: [{ role: "user", content: "hi" }] };
+		const inboundLength = Buffer.byteLength(JSON.stringify(inbound));
+		await post(proxy.port, inbound);
+
+		const sent = qwen.calls[0];
+		const declared = Number(sent.headers["content-length"]);
+		assert.equal(
+			declared,
+			Buffer.byteLength(sent.body),
+			"declared content-length must equal the bytes actually sent",
+		);
+		assert.equal(
+			declared,
+			inboundLength - "[1m]".length,
+			"the rewritten body is exactly 4 bytes shorter than what the client sent",
+		);
+		assert.equal(sent.headers["transfer-encoding"], undefined, "no chunked alongside a length");
+	});
+
 	it("a non-prefixed body is forwarded byte-for-byte (invariant 1 intact)", async () => {
 		// The rewrite is gated on upstreamModel !== body.model, so an untouched
 		// request must still reuse the original buffer verbatim — key order and
