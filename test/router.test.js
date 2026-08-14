@@ -468,9 +468,17 @@ describe("router", () => {
 	// live defect: the day CC stops stripping, a plan-only user's headline model
 	// must not silently change backend.
 	//
-	// Every assertion checks BOTH halves — provider AND upstreamModel. Provider
-	// alone would pass for a fix that rewrote the body, which is the one thing the
-	// strip must not do: Z.ai accepts the suffixed id today.
+	// Every assertion checks BOTH halves — provider AND upstreamModel — because
+	// the two answer different questions: WHERE the request went, and WHAT the
+	// vendor was asked for. A fix can get either right while breaking the other.
+	//
+	// The upstream half is a MEASUREMENT, and it reversed mid-PR. The first cut
+	// preserved the raw suffix on the belief that Z.ai accepted it; probed
+	// 2026-08-14 with real keys, it does not — `glm-5.2[1m]` and `glm-5.3[1m]`
+	// both draw `400 [1214][modelCode: does not exist]`, the same rejection a
+	// wholly fake id gets, and the Qwen plan answers `InvalidParameter: Model
+	// not exist.` So the suffix reaches no vendor: it is stripped on the way out
+	// exactly as the `<provider>:` lens is.
 	describe("variant suffix (issue #34)", () => {
 		const planOnly = {
 			port: 4000,
@@ -564,6 +572,29 @@ describe("router", () => {
 			} finally {
 				ROUTES["deepseek-v4-pro"] = saved;
 			}
+		});
+
+		// The registered-selector branch, which the haiku test above does NOT
+		// reach: a haiku tail short-circuits before the selector is consulted, so
+		// the ordinary path — selector honored, suffix stripped — had no coverage
+		// even though the reversal changed what it returns (raw tail → routeId).
+		// Both strips must compose: the lens is cc-proxy's spelling and the suffix
+		// is Claude Code's, and no backend has heard of either.
+		it("strips BOTH the selector and the suffix on the ordinary selector path", () => {
+			const all = {
+				port: 4000,
+				providers: buildProviders({ DASHSCOPE_API_KEY: "q", DEEPSEEK_API_KEY: "d" }, "claude"),
+			};
+			const r = resolve2("qwen:deepseek-v4-pro[1m]", all);
+			assert.equal(r.provider.id, "qwen", "the selector still names the backend");
+			assert.equal(
+				r.upstreamModel,
+				"deepseek-v4-pro",
+				"the vendor receives neither cc-proxy's lens nor CC's suffix",
+			);
+			// The selector must still WIN over the ranked route, suffix or not:
+			// with a DeepSeek key registered, the bare id would go native.
+			assert.equal(resolve2("deepseek-v4-pro[1m]", all).provider.id, "deepseek");
 		});
 
 		// Invariant 4 under a suffix. The pin already tests the STRIPPED tail of a
