@@ -84,8 +84,26 @@ export function parseModelSelector(model, _config) {
  * @returns {string} the id without its variant suffix, or unchanged
  */
 export function stripVariantSuffix(model) {
-	const m = /^(.+)\[[^[\]]*\]$/.exec(model);
+	const m = /^(.+)\[.*\]$/.exec(model);
 	return m ? m[1] : model;
+}
+
+/**
+ * The id `resolve()` actually makes its decision on: the inbound model with the
+ * `<provider>:` lens and any variant suffix removed.
+ *
+ * Exists so the LOG can say what the router saw without re-implementing the
+ * normalization — two copies of that rule would drift, and the log would then
+ * explain the routing incorrectly, which is worse than not explaining it. This
+ * is a reporting helper: `resolve()` does not call it (it needs the selector's
+ * provider id as well, so it runs the two steps itself).
+ *
+ * @param {string | undefined} model
+ * @returns {string | undefined}
+ */
+export function routingIdOf(model) {
+	const { model: tail } = parseModelSelector(model);
+	return typeof tail === "string" ? stripVariantSuffix(tail) : tail;
 }
 
 /**

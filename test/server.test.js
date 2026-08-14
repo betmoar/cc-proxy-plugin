@@ -791,6 +791,41 @@ describe("server end-to-end routing", () => {
 		assert.match(route, /] glm-5\.2 -> glm \/v1\/messages\?beta=true$/);
 	});
 
+	// Issue #34 follow-up. The routing DECISION is made on a normalized id, but
+	// the log reports what the CLIENT sent — so when a `[1m]` suffix or a
+	// `<provider>:` lens is present, the line alone cannot explain why the id
+	// landed where it did. The annotation is gated on an actual difference, and
+	// BOTH halves matter: it must appear when normalization happened (or the log
+	// is unexplainable) and must NOT appear otherwise (the bare-id line above is
+	// anchored with `$`, and scripts/status.js parses these lines).
+	it("routing log annotates the normalized id, and only when it differs", async () => {
+		await wire(() => ({
+			status: 200,
+			headers: { "content-type": "application/json" },
+			body: NORMAL_200,
+		}));
+		const logged = [];
+		const orig = console.log;
+		console.log = (...a) => logged.push(a.join(" "));
+		try {
+			await post(
+				proxy.port,
+				{ model: "glm-5.2[1m]", stream: false, messages: [] },
+				{},
+				"/v1/messages",
+			);
+		} finally {
+			console.log = orig;
+		}
+		const route = logged.find((l) => / -> /.test(l));
+		assert.ok(route, "a routing line was logged");
+		assert.match(
+			route,
+			/] glm-5\.2\[1m\] -> glm \(routed as glm-5\.2\) \/v1\/messages$/,
+			"the raw id is reported, the normalized id explains the decision",
+		);
+	});
+
 	// The version handshake that fixes PROXY_PATH staleness: the SessionStart
 	// hook compares /_status.version against its own plugin tree and restarts a
 	// mismatched proxy via /_shutdown. Without version in /_status a stale proxy

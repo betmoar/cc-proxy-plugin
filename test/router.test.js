@@ -4,7 +4,11 @@ import { buildProviders } from "../src/providers.js";
 // `resolve` here is the provider-only wrapper — it keeps the ~50 pre-existing
 // `.id` assertions readable. `resolve2` is the full result, used wherever a test
 // needs to see the stripped upstream id.
-import { resolveProvider as resolve, resolve as resolve2 } from "../src/router.js";
+import {
+	resolveProvider as resolve,
+	resolve as resolve2,
+	stripVariantSuffix,
+} from "../src/router.js";
 
 const config = { port: 4000, providers: buildProviders({ GLM_API_KEY: "glm-test" }, "claude") };
 
@@ -553,13 +557,39 @@ describe("router", () => {
 			);
 		});
 
-		// A malformed bracket is not CC's shape, so it routes as the literal id it
-		// is — the strip must not invent an id out of one.
-		it("leaves a malformed or empty-stem bracket alone", () => {
-			for (const id of ["glm-5.2[", "glm-5.2]", "glm-5.2[a[b]", "[1m]"]) {
+		// A bracket that is not a well-formed TRAILING pair never routes anywhere
+		// new. Two distinct reasons, and the distinction is worth stating because
+		// the strip is not an id validator:
+		//   - `glm-5.2[`, `glm-5.2]`, `[1m]` — the regex does not fire at all
+		//     (unclosed / no pair / no stem before it).
+		//   - `glm-5.2[a[b]` — the regex DOES fire, on the well-formed tail `[b]`,
+		//     yielding the stem `glm-5.2[a`. Only the pair's INTERIOR is required
+		//     to be bracket-free, not the stem.
+		// Either way the result is not a routable id, so both land on the default
+		// backend and upstream receives the original string untouched. That last
+		// part is the assertion that matters: whatever the strip computed for
+		// ROUTING, it must never reach the vendor.
+		it("routes a malformed or stemless bracket to the default, upstream untouched", () => {
+			for (const id of ["glm-5.2[", "glm-5.2]", "glm-5.2[a[b]", "[1m]", "[]"]) {
 				const r = resolve2(id, planOnly);
 				assert.equal(r.upstreamModel, id, `${id} must reach upstream unchanged`);
 				assert.equal(r.provider.id, "claude", `${id} is not a routable id — default backend`);
+			}
+		});
+
+		// Pins the two behaviours above at the function itself, so a regex edit
+		// that changed WHICH of them applies fails here even though resolve()
+		// returns `claude` for both reasons.
+		it("fires only on a well-formed trailing pair, and never strips to empty", () => {
+			assert.equal(stripVariantSuffix("glm-5.2[1m]"), "glm-5.2");
+			assert.equal(stripVariantSuffix("glm-5.2[]"), "glm-5.2");
+			assert.equal(stripVariantSuffix("glm-5.2[a[b]"), "glm-5.2[a", "strips the tail pair only");
+			assert.equal(stripVariantSuffix("glm-5.2[1m][2m]"), "glm-5.2[1m]", "one pair, not greedy");
+			// The trailing space is written as an escape so a formatter cannot
+			// silently trim it — one did, turning this case into plain
+			// "glm-5.2[1m]" and asserting the exact opposite of what it tests.
+			for (const untouched of ["glm-5.2[", "glm-5.2]", "[1m]", "[]", "glm-5.2[1m]\u0020"]) {
+				assert.equal(stripVariantSuffix(untouched), untouched, `${untouched} must not be stripped`);
 			}
 		});
 
