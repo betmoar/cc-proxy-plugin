@@ -2,6 +2,16 @@
 
 All notable changes to cc-proxy are recorded here. Versions follow [semver](https://semver.org/); `package.json` is the single source of truth and propagates to `.claude-plugin/plugin.json` via `scripts/sync-version.mjs`.
 
+## [0.6.3] — 2026-08-14
+
+### Fixed
+- **A `[1m]` variant suffix defeated three routing lookups at once (issue #34).** Claude Code spells a long-context variant `glm-5.2[1m]` — the form `ANTHROPIC_CUSTOM_MODEL_OPTION` registers and `/model` displays. Three lookups on the routing path are exact-match, and every one of them fails on a suffixed id: `ROUTES` (`Object.hasOwn`, so `rankRoutes` returns `[]`), `QWEN_PLAN_RESELLS` (`Set.has`), and `DATED_ID` (anchored `\d{4}$`, so `deepseek-v4-flash-0731[1m]` fails the test). The exposure is a **shared id whose only non-native route is the Qwen plan** — exactly the profile the `ROUTES` fallback exists to serve: with no GLM key, `glm-5.2[1m]` matched no route and no predicate and fell through to Claude, so a plan-only user's headline model changed backend with no error anywhere.
+  **Latent, not user-facing.** CC strips the suffix before the wire today — 0 of 24070 routing lines in a real proxy log carry one — so this is a guard against that internal drifting (`[1m]` is not public API), which turns a future drift into a red test instead of a wrong backend.
+  Stripped **once** in `resolve()` rather than at the three sites: a per-site patch fixes the two the issue named and leaves `DATED_ID` broken. The strip applies to the **routing id only** — `upstreamModel` keeps the raw suffix, because Z.ai accepts it today and rewriting the body would change what the vendor receives. Malformed brackets (`glm-5.2[`, `glm-5.2[a[b]`, a bare `[1m]`) route raw, unchanged. Mutation-verified in both directions: neutering the strip fails 5 tests, rewriting `upstreamModel` to the stripped id fails 4.
+
+### Changed
+- **Documented that an inline `ANTHROPIC_BASE_URL=… claude` prefix is silently ignored (issue #25).** settings.json's `env` block overrides the process environment, so the natural way to point a session at a second proxy does nothing — and does it invisibly: the turn succeeds and the answer looks right while the request goes to whichever proxy settings.json names. Measured 2026-08-14 against two bare logging listeners, reading the *listener's* log rather than the client's stdout: the inline variant left :4400 with **zero** requests while the :4000 proxy gained 4 routing lines; `claude --settings '{"env":{…}}'` logged `POST /v1/messages?beta=true model=claude-opus-5` on :4401 with a 0 delta on :4000. The shell is not eating the variable (`node -p process.env.…` and `bash -c` both print it), so this is precedence, not plumbing. `--settings` is the form that works; any A/B between two proxy builds must read the target listener's log. Recorded as a trap in `CLAUDE.md` and a procedure in `docs/OPERATIONS.md`. This is what stalled issue #22.
+
 ## [0.6.2] — 2026-08-13
 
 ### Fixed
