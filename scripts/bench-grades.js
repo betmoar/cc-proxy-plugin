@@ -112,6 +112,15 @@ export function vendorOf(id) {
 	if (/^claude-/.test(bare)) return "Anthropic";
 	if (String(id).startsWith("moonshotai/")) return "Moonshot";
 	if (String(id).startsWith("tencent/")) return "Tencent";
+	// Google ships TWO lines under one namespace, and they must not be ranked
+	// against each other: `gemma-4` reads as version [4] and would outrank
+	// `gemini-3.7-flash` ([3,7]), taking Flagship off the hosted line with an
+	// open-weights model. `versionKey` compares numbers, so the only place to
+	// stop that is here — a separate vendor bucket per line, which is what these
+	// names are. Everything else Google publishes (lyria, embeddings) gets no
+	// vendor and so no grade, matching the "omit beats a confident lie" rule.
+	if (/^gemini/.test(bare)) return "Google";
+	if (/^gemma/.test(bare)) return "Google Gemma";
 	return undefined;
 }
 

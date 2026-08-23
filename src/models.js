@@ -85,6 +85,34 @@ export const MODEL_GRADES = {
 	"moonshotai/kimi-k2.7-code": "Specialist",
 	"moonshotai/kimi-k3": "Specialist",
 	"qwen/qwen3.7-max": "Strong",
+	// Google Gemini, reachable ONLY through OpenRouter — Google publishes no
+	// Anthropic Messages endpoint (probed 2026-08-23: /v1/messages,
+	// /v1beta/messages, /v1beta/anthropic/v1/messages and /anthropic/v1/messages
+	// all 404 with a valid key that returns 200 on :generateContent the same
+	// minute), so there is no native leg and never will be under invariant 5.
+	// The slash spellings are therefore the WHOLE Google line as far as this
+	// table is concerned, unlike deepseek/qwen where a bare sibling shares the
+	// rung.
+	//
+	// A FLASH model takes Flagship here, which reads wrong and is not. Grade is
+	// position within the vendor's own line and Google's numbering puts 3.7 above
+	// 3.1, so the newest release wins the rung — the same rule that demoted
+	// glm-5.2 under glm-5.3. benchlm corroborates rather than contradicts: on the
+	// 2026-08-23 leaderboard every Gemini Pro row sits BELOW the flash line
+	// (`Gemini 3.6 Flash` rank 9 / 75.21 supported, `Gemini 3 Pro` rank 24 /
+	// 67.17, `Gemini 3.1 Pro` rank 96 / 55.96). Google's Pro tier is a price and
+	// context class, not the top of its capability line.
+	//
+	// `google/gemma-*` is deliberately ABSENT and must stay absent: gemma is a
+	// separate open-weights LINE whose version numbers do not compare with
+	// gemini's, and `gemma-4` ([4]) would outrank `gemini-3.7-flash` ([3,7]) and
+	// steal Flagship. vendorOf() in scripts/bench-grades.js enforces the split.
+	"google/gemini-3.7-flash": "Flagship",
+	"google/gemini-3.6-flash": "Strong",
+	"google/gemini-3.5-flash": "Specialist",
+	"google/gemini-3.5-flash-lite": "Specialist",
+	"google/gemini-3.1-pro-preview": "Specialist",
+	"google/gemini-3.1-flash-lite": "Specialist",
 	// Qwen (curated, DashScope)
 	"qwen3.8-max": "Strong",
 	"qwen3.7-max": "Strong",
