@@ -33,6 +33,8 @@ const CALLABLE = {};
 {
 	const router = await import("../src/router.js");
 	const routes = await import("../src/routes.js");
+	const models = await import("../src/models.js");
+	CALLABLE.identityOf = models.identityOf;
 	CALLABLE.stripVariantSuffix = router.stripVariantSuffix;
 	CALLABLE.routingIdOf = router.routingIdOf;
 	CALLABLE.parseModelSelector = router.parseModelSelector;
@@ -178,8 +180,8 @@ describe("documented examples actually hold", () => {
 	it("executes exactly the examples the source carries", () => {
 		assert.equal(
 			doctests.length,
-			23,
-			`expected 23 @doctest examples, found ${doctests.length}. Adding some? Bump this number in the same commit. Removing some? Say why in the commit message — dropping an example is dropping a guarantee.`,
+			29,
+			`expected 29 @doctest examples, found ${doctests.length}. Adding some? Bump this number in the same commit. Removing some? Say why in the commit message — dropping an example is dropping a guarantee.`,
 		);
 	});
 

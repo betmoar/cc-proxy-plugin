@@ -5,8 +5,8 @@ import {
 	isContextLimitByStopReason,
 	isRateLimitError,
 } from "./fallback.js";
-import { collectModels } from "./models.js";
-import { defaultProvider } from "./providers.js";
+import { collectModels, dedupByIdentity } from "./models.js";
+import { defaultProvider, providerById } from "./providers.js";
 import {
 	abortUpstreamOnClientClose,
 	forward,
@@ -68,7 +68,23 @@ function handleShutdown(server, res) {
 // GET /v1/models — synthesized discovery list (not forwarded). Best-effort:
 // collectModels never rejects except the test seam; the .catch keeps a throw from
 // killing the shared proxy process (one request must not take the process down).
-async function handleModels(res, config) {
+//
+// `dedup` is the ONE query parameter this endpoint reads, and it is opt-in: with
+// no parameter the response is byte-identical to what it has always been.
+// collectModels() keeps its `(config)` signature — the view is applied to its
+// output rather than threaded into the builder, so the collector stays unaware
+// of HTTP.
+async function handleModels(res, config, dedup) {
+	// An unrecognized value is a 400, not a silent full list. A consumer that
+	// typos `?dedup=identiy` and receives all 414 entries gets a WRONG answer that
+	// looks like a right one — the duplicate models it asked to collapse are still
+	// there, and nothing says so.
+	if (dedup !== undefined && dedup !== "identity") {
+		sendJson(res, 400, {
+			error: { message: `unsupported dedup=${dedup} (the only supported value is "identity")` },
+		});
+		return;
+	}
 	let result;
 	try {
 		result = await collectModels(config);
@@ -79,7 +95,8 @@ async function handleModels(res, config) {
 		console.error(`[models] collectModels threw: ${err?.message || err}`);
 		result = { data: [], _errors: [{ provider: "proxy", message: "internal error" }] };
 	}
-	const { data, _errors } = result;
+	const { _errors } = result;
+	const data = dedup === "identity" ? dedupByIdentity(result.data) : result.data;
 	const payload = {
 		data,
 		has_more: false,
@@ -89,8 +106,53 @@ async function handleModels(res, config) {
 	if (_errors.length) payload._errors = _errors;
 	// One summary line (not the routing-log format — status.js's parseRoutingLines
 	// keys on `[<iso>] <model> -> <provider> <path>`, which this does not match).
-	console.log(`[models] ${data.length} models, ${_errors.length} errors`);
+	const view = dedup === "identity" ? ` (deduped from ${result.data.length})` : "";
+	console.log(`[models] ${data.length} models${view}, ${_errors.length} errors`);
 	sendJson(res, 200, payload);
+}
+
+/**
+ * The DashScope-native media path, tunnelled to the Qwen plan host (issue #40).
+ *
+ * A TUNNEL, NOT A TRANSLATION. Invariant 5 bars an OpenAI↔Anthropic layer and
+ * this adds none: the body is forwarded byte-for-byte, the response is whatever
+ * the vendor sent, and the proxy knows nothing about either schema. All it
+ * contributes is the credential — which is the point, since the plan key already
+ * lives here and a caller with its own image client otherwise has to hold it too.
+ *
+ * PATH-ROUTED, uniquely. Every other request routes on `body.model`, and that is
+ * exactly why this needs its own branch: `wan2.7-image` matches no provider
+ * predicate (no slash, no `qwen` prefix, not dated, not a plan resell), so it
+ * would fall through resolve() to the DEFAULT backend and be sent to Anthropic.
+ * Nothing in the id says "plan"; only the path does.
+ */
+const MEDIA_GENERATION_PATH = "/api/v1/services/aigc/multimodal-generation/generation";
+
+function handleMediaGeneration(req, res, bodyBuffer, config) {
+	const qwen = providerById(config, "qwen");
+	// No key, no tunnel — and say so. Falling through to handleProxy here would
+	// route a plan-only path at the default backend on the user's OAuth
+	// credentials, which is invariant 3 in the least visible way possible.
+	if (!qwen?.mediaBaseUrl) {
+		sendJson(res, 503, {
+			error: { message: "media generation requires DASHSCOPE_API_KEY (qwen plan)" },
+		});
+		return;
+	}
+	// A derived provider, so upstreamRequestOptions() stays the single place that
+	// builds an upstream request (a second copy shipped the query-string bug
+	// twice). Only baseUrl differs: same host, same bearer auth, no
+	// `/apps/anthropic` — see the mediaBaseUrl comment in providers.js.
+	const tunnel = { ...qwen, baseUrl: qwen.mediaBaseUrl };
+	console.log(`[${new Date().toISOString()}] media -> ${tunnel.id} ${req.url}`);
+	// DashScope streams this endpoint via a REQUEST header, not a body field, so
+	// the usual `body.stream === true` check would miss it and send an SSE
+	// response down the buffering path.
+	if (String(req.headers["x-dashscope-sse"] || "").toLowerCase() === "enable") {
+		forward(req, res, tunnel, bodyBuffer);
+		return;
+	}
+	forwardBuffered(req, res, tunnel, bodyBuffer, "media");
 }
 
 // Cap on buffering a non-streaming response. The overflow signal is tiny (an
@@ -236,6 +298,22 @@ function handleProxy(req, res, body, bodyBuffer, config) {
 	forwardBuffered(req, res, provider, outboundBuffer, inboundModel);
 }
 
+/**
+ * The `dedup` query value, or undefined when absent.
+ *
+ * URLSearchParams on the query slice only, NOT `new URL(req.url)`: a malformed
+ * request target throws there, inside the shared long-running process, and the
+ * rest of this dispatcher deliberately avoids it for the same reason.
+ * @param {string} url
+ * @returns {string | undefined}
+ */
+function dedupParam(url) {
+	const q = url.indexOf("?");
+	if (q < 0) return undefined;
+	const v = new URLSearchParams(url.slice(q + 1)).get("dedup");
+	return v === null ? undefined : v;
+}
+
 function parseJsonOrEmpty(buffer) {
 	try {
 		return JSON.parse(buffer.toString());
@@ -281,11 +359,20 @@ export function createServer(config) {
 				else sendJson(res, 405, { error: { message: "POST required" } });
 				return;
 			}
-			// GET /v1/models — synthesized, query-string tolerant, exact path only.
-			// (/v1/models/<id> retrieve falls through to forwarding.)
+			// GET /v1/models — synthesized, exact path only. (/v1/models/<id>
+			// retrieve falls through to forwarding.) The query string is parsed for
+			// `dedup` and ignored otherwise, so an unrelated `?t=…` still matches.
 			if (pathname === "/v1/models") {
-				if (req.method === "GET") handleModels(res, config);
+				if (req.method === "GET") handleModels(res, config, dedupParam(req.url));
 				else sendJson(res, 405, { error: { message: "GET required" } });
+				return;
+			}
+			// POST <MEDIA_GENERATION_PATH> — the plan's image tunnel. Ahead of
+			// handleProxy because routing is body-driven everywhere else and this
+			// path's ids match no predicate; see handleMediaGeneration.
+			if (pathname === MEDIA_GENERATION_PATH) {
+				if (req.method === "POST") handleMediaGeneration(req, res, bodyBuffer, config);
+				else sendJson(res, 405, { error: { message: "POST required" } });
 				return;
 			}
 			handleProxy(req, res, parseJsonOrEmpty(bodyBuffer), bodyBuffer, config);

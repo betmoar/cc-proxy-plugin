@@ -48,6 +48,13 @@ Each is locked by tests; the test names tell you what you broke.
    The pin tests the STRIPPED tail — pinning the raw id lets
    `glm:claude-haiku-…` skip it. → `router.test.js`
 5. **Anthropic Messages only.** No OpenAI↔Anthropic translation layer, ever.
+   The media tunnel (`POST /api/v1/services/aigc/multimodal-generation/generation`,
+   0.7.0) is NOT an exception and must not become one: it forwards a
+   DashScope-shaped body byte-for-byte to a DashScope endpoint and returns the
+   vendor's own response. The proxy knows neither schema; it adds the credential.
+   An `/v1/images/generations` in front of every backend that can draw — the
+   version of this that WOULD argue with the invariant — was declined.
+   → `models.test.js` "media generation tunnel (issue #40)"
 6. **Client abort propagates upstream**, or a cancelled turn bills into a dead
    socket. → "client abort mid-stream aborts the upstream request"
 7. **Loopback bind by default.** `PROXY_HOST` is the explicit opt-out.
@@ -92,8 +99,10 @@ there if you forget. The ones marked ⚠ have no test and drift silently.
 | `QWEN_PLAN_RESELLS` (`providers.js`) | `QWEN_PLAN_ALSO` (`render-models.js`) must cover it, or the Qwen card under-reports the plan |
 | a statusline gauge | the `GAUGES` table in `statusline.js` — the render path and the background refresher both read it; adding to one only means the gauge shows but never refreshes (or refreshes but never shows) |
 | ⚠ `MODEL_GRADES` | nothing — it is the only copy IN THE REPO, but `gradeOf()` overlays `~/.claude/cc-proxy/grades.json` on top of it, so a reader is not reading this table alone. `render-models.js` re-exports it for coverage assertions only — rendering goes through `gradeOf()` |
+| `identityOf` (`models.js`) | its `@doctest` lines — and keep an example carrying TWO slashes, or `indexOf`→`lastIndexOf` passes the whole suite (measured) |
 | ⚠ a static catalog | confirm the id has a `ROUTES` entry |
-| ⚠ the `/v1/models` wire shape | README + OPERATIONS + ARCHITECTURE, by hand |
+| ⚠ the `/v1/models` wire shape | README + OPERATIONS + ARCHITECTURE, by hand — including `?dedup=identity` |
+| ⚠ `mediaBaseUrl` (`providers.js`) | the media branch in `server.js` is its only reader; changing one alone silently routes at the skin, which 404s |
 
 Three questions, three places, never merged: a **catalog** says what a backend
 serves, **`ROUTES`** who serves it cheapest, **`ownsId`** how it is spelled.

@@ -123,6 +123,31 @@ it was a cost word living on the capability axis.
 simply has no `grade` key. Most of the ~320 discovered ids are unassessed, and
 a default made the field claim otherwise about every one of them.
 
+**Identity is the third axis, and unlike the other two it needs no table.** An id
+names a route as well as a model, so one model appears under several ids — 17
+such groups on a live 414-id catalogue. `?dedup=identity` returns one entry per
+model, lowest `tier` winning (`identityOf()` / `dedupByIdentity()` in
+`src/models.js`, both pure). It adds no field and publishes no new fact: the
+alternative was an `origin:` field, rejected because a published attribution is a
+fact that can go stale, while `provider` and `tier` are things the proxy
+observes. What made it worth centralizing at all is that the rule is easy to get
+wrong — splitting on the LAST separator instead of the first merges every
+OpenRouter `:batch` variant into one identity across seven vendors, which is
+exactly the mistake a consumer re-deriving it would make.
+
+## The media tunnel
+
+`POST /api/v1/services/aigc/multimodal-generation/generation` is the one
+**path-routed** request in the proxy. Everything else routes on `body.model`,
+which is precisely why this needs its own branch: the plan's image ids
+(`wan2.7-image`) match no provider predicate and would fall through to the
+default backend. It is a tunnel, not a translation — byte-for-byte body, the
+vendor's own response, no schema knowledge here — so invariant 5 is untouched;
+all the proxy contributes is the credential it already holds. The qwen provider
+carries a second base URL (`mediaBaseUrl`, the same host at its root) because
+`upstreamRequestOptions()` concatenates `baseUrl + req.url` with no rewriting,
+and there is deliberately no path-rewriting layer to add one.
+
 ## Route selection
 
 A model id does not name a backend. `deepseek-v4-pro` is served by three of

@@ -14,6 +14,8 @@ import {
 	DEFAULT_QWEN_MODELS,
 	coerceCreated,
 	collectModels,
+	dedupByIdentity,
+	identityOf,
 	parseOpenRouterModels,
 	withContextWindow,
 } from "../src/models.js";
@@ -221,6 +223,86 @@ describe("models.js pure helpers", () => {
 	});
 });
 
+describe("identityOf / dedupByIdentity (issue #39)", () => {
+	// The trap the issue's own first draft fell into. Splitting on the LAST
+	// separator merges every `:batch` variant into one identity named "batch",
+	// spanning seven vendors — 48 ids on the live catalogue. Assert the two
+	// separators are NOT interchangeable.
+	it("splits on the FIRST separator, so an OpenRouter variant stays attached", () => {
+		assert.equal(identityOf("google/gemini-3.7-flash:batch"), "gemini-3.7-flash:batch");
+		assert.equal(identityOf("z-ai/glm-5.2:batch"), "glm-5.2:batch");
+		assert.notEqual(
+			identityOf("google/gemini-3.7-flash:batch"),
+			identityOf("z-ai/glm-5.2:batch"),
+			"two vendors' :batch variants must not collapse into one identity",
+		);
+		// The SLASH half of the same claim, and it needs an id carrying two of them
+		// — with only single-slash ids in the suite, indexOf and lastIndexOf agree
+		// and a regression to last-separator splitting passes unnoticed (measured:
+		// swapping to lastIndexOf left every other test in this file green).
+		assert.equal(identityOf("vendor/family/model-1"), "family/model-1");
+	});
+
+	it("strips a known provider lens but leaves an unknown prefix whole", () => {
+		assert.equal(identityOf("qwen:deepseek-v4-pro"), "deepseek-v4-pro");
+		// A future vendor id containing a colon must survive intact — same guard
+		// parseModelSelector uses.
+		assert.equal(identityOf("bogus:thing"), "bogus:thing");
+	});
+
+	it("collapses the three deepseek-v4-pro spellings onto the LOWEST tier", () => {
+		const data = [
+			{ id: "deepseek-v4-pro", tier: 3 },
+			{ id: "qwen:deepseek-v4-pro", tier: 2 },
+			{ id: "deepseek/deepseek-v4-pro", tier: 4 },
+			{ id: "glm-5.3", tier: 2 },
+		];
+		const out = dedupByIdentity(data);
+		assert.deepEqual(
+			out.map((m) => m.id),
+			["qwen:deepseek-v4-pro", "glm-5.3"],
+		);
+	});
+
+	it("prefers a usable entry over a cheaper unusable one", () => {
+		// Cost must not outrank reachability: a `usable: false` entry cannot
+		// complete a turn, so it is no substitute however cheap its route is.
+		const out = dedupByIdentity([
+			{ id: "qwen:thing", tier: 2, usable: false },
+			{ id: "thing", tier: 4 },
+		]);
+		assert.deepEqual(
+			out.map((m) => m.id),
+			["thing"],
+		);
+	});
+
+	it("an entry with no tier does not win by virtue of the missing field", () => {
+		const out = dedupByIdentity([
+			{ id: "vendor/thing" },
+			{ id: "thing", tier: 3 },
+			{ id: "other", tier: 1 },
+		]);
+		assert.deepEqual(
+			out.map((m) => m.id),
+			["thing", "other"],
+		);
+	});
+
+	it("winners keep the original array order (provider grouping survives)", () => {
+		const out = dedupByIdentity([
+			{ id: "glm-5.3", tier: 2 },
+			{ id: "deepseek-v4-pro", tier: 3 },
+			{ id: "z-ai/glm-5.3", tier: 4 },
+			{ id: "claude-opus-5", tier: 1 },
+		]);
+		assert.deepEqual(
+			out.map((m) => m.id),
+			["glm-5.3", "deepseek-v4-pro", "claude-opus-5"],
+		);
+	});
+});
+
 /** Start a stub HTTP backend; handler returns { status, headers, body }. */
 function startBackend(handler) {
 	const calls = [];
@@ -306,6 +388,11 @@ function wireConfig(
 	// and fetchQwenModels() GETs ${stub}/compatible-mode/v1/models.
 	const qw = providers.find((p) => p.id === "qwen");
 	if (qw && qwenBaseUrl) qw.baseUrl = `${qwenBaseUrl}/apps/anthropic`;
+	// The media tunnel is the SAME host at its root — rebase it the same way, so a
+	// test asserts the real concatenation (stub root + inbound path) rather than a
+	// hand-built URL. Deliberately not `${qwenBaseUrl}/apps/anthropic`: the missing
+	// suffix is precisely what the tunnel exists for.
+	if (qw && qwenBaseUrl) qw.mediaBaseUrl = qwenBaseUrl;
 	return {
 		providers,
 		claudeModels: claudeModels ?? DEFAULT_CLAUDE_MODELS,
@@ -712,6 +799,39 @@ function getReq(port, path, extraHeaders = {}) {
 	});
 }
 
+/** POST a body to the proxy, resolving { status, headers, body }. */
+function postReq(port, path, body, extraHeaders = {}) {
+	return new Promise((resolve, reject) => {
+		const payload = Buffer.from(body);
+		const req = http.request(
+			{
+				hostname: "127.0.0.1",
+				port,
+				path,
+				method: "POST",
+				headers: {
+					"content-type": "application/json",
+					"content-length": payload.length,
+					...extraHeaders,
+				},
+			},
+			(res) => {
+				const chunks = [];
+				res.on("data", (c) => chunks.push(c));
+				res.on("end", () =>
+					resolve({
+						status: res.statusCode,
+						headers: res.headers,
+						body: Buffer.concat(chunks).toString(),
+					}),
+				);
+			},
+		);
+		req.on("error", reject);
+		req.end(payload);
+	});
+}
+
 function reqOn(port, path, method) {
 	return new Promise((resolve, reject) => {
 		const req = http.request({ hostname: "127.0.0.1", port, path, method }, (res) => {
@@ -756,7 +876,15 @@ describe("GET /v1/models endpoint", () => {
 			headers: { "content-type": "application/json" },
 			body: JSON.stringify({ id: "m", type: "model" }),
 		}));
-		const config = wireConfig(glm.baseUrl, { ...opts.configOpts, claudeBaseUrl: claude.baseUrl });
+		const config = wireConfig(glm.baseUrl, {
+			// Point every live leg at the one stub. Without this a test passing
+			// qwenKey would send the qwen leg at the REAL plan host — no test may
+			// touch the network. The stub answers per path, so each leg can still
+			// return its own catalog.
+			qwenBaseUrl: glm.baseUrl,
+			...opts.configOpts,
+			claudeBaseUrl: claude.baseUrl,
+		});
 		proxy = await startProxy(config);
 		return config;
 	}
@@ -830,6 +958,55 @@ describe("GET /v1/models endpoint", () => {
 		assert.ok(JSON.parse(res.body).data.length > 0);
 	});
 
+	it("?dedup=identity collapses duplicate ids; no parameter changes nothing", async () => {
+		// glm + deepseek + qwen all registered and all pointed at one stub, which
+		// answers per PATH so each leg publishes its own catalog — each fetcher uses
+		// a different one (`/v1/models` glm, `/models` deepseek,
+		// `/compatible-mode/v1/models` qwen). Only deepseek and the plan serve
+		// deepseek-v4-pro, so it appears bare (native, tier 3) and as
+		// `qwen:deepseek-v4-pro` (plan, tier 2) — the collision from issue #39.
+		const catalog = (ids) =>
+			JSON.stringify({ data: ids.map((id) => ({ id, display_name: id, type: "model" })) });
+		await up({
+			glmHandler: (req) => {
+				const ids = req.url.includes("compatible-mode")
+					? ["qwen3.8-max", "deepseek-v4-pro"]
+					: req.url.startsWith("/v1/models")
+						? ["glm-5.3"]
+						: ["deepseek-v4-pro"];
+				return { status: 200, headers: { "content-type": "application/json" }, body: catalog(ids) };
+			},
+			configOpts: { dsKey: "ds-test", qwenKey: "qw-test" },
+		});
+		const plain = JSON.parse((await getReq(proxy.port, "/v1/models")).body);
+		const deduped = JSON.parse((await getReq(proxy.port, "/v1/models?dedup=identity")).body);
+
+		const ids = (b) => b.data.map((m) => m.id);
+		const dsSpellings = ids(plain).filter((id) => identityOf(id) === "deepseek-v4-pro");
+		assert.ok(dsSpellings.length > 1, `expected a collision to dedup, saw ${dsSpellings}`);
+		assert.deepEqual(
+			ids(deduped).filter((id) => identityOf(id) === "deepseek-v4-pro"),
+			["qwen:deepseek-v4-pro"],
+			"the tier-2 plan route must be the survivor",
+		);
+		assert.ok(deduped.data.length < plain.data.length);
+		// The envelope is recomputed over the FILTERED list, not carried over.
+		assert.equal(deduped.first_id, deduped.data[0].id);
+		assert.equal(deduped.last_id, deduped.data[deduped.data.length - 1].id);
+		// Opt-in: the default response is untouched.
+		assert.deepEqual(ids(JSON.parse((await getReq(proxy.port, "/v1/models")).body)), ids(plain));
+	});
+
+	it("an unrecognized dedup value is 400, never a silent full list", async () => {
+		await up();
+		const res = await getReq(proxy.port, "/v1/models?dedup=identiy");
+		assert.equal(res.status, 400);
+		assert.match(JSON.parse(res.body).error.message, /identity/);
+		// An unrelated parameter still matches and returns the normal list.
+		const ok = await getReq(proxy.port, "/v1/models?t=123");
+		assert.equal(ok.status, 200);
+	});
+
 	it("non-GET on /v1/models is 405 (not forwarded) — POST, PUT, DELETE", async () => {
 		await up();
 		for (const method of ["POST", "PUT", "DELETE"]) {
@@ -875,6 +1052,111 @@ describe("GET /v1/models endpoint", () => {
 		// proxy still serving:
 		const status = await getReq(proxy.port, "/_status");
 		assert.equal(status.status, 200);
+	});
+});
+
+describe("media generation tunnel (issue #40)", () => {
+	const PATH = "/api/v1/services/aigc/multimodal-generation/generation";
+	const IMAGE_BODY = JSON.stringify({
+		model: "wan2.7-image",
+		input: { messages: [{ role: "user", content: [{ text: "a red cube on white" }] }] },
+		parameters: { size: "1024*1024" },
+	});
+
+	let qwen;
+	let claude;
+	let proxy;
+	afterEach(async () => {
+		await close(proxy?.server, qwen?.server, claude?.server);
+		qwen = claude = proxy = undefined;
+	});
+
+	// `noKey` rather than `qwenKey: undefined` — the destructuring default would
+	// silently reinstate the key and the 503 test would pass against a live tunnel.
+	async function up({ noKey = false } = {}) {
+		const qwenKey = noKey ? undefined : "qw-test";
+		qwen = await startBackend(() => ({
+			status: 200,
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				output: { choices: [{ message: { content: [{ type: "image" }] } }] },
+			}),
+		}));
+		// Stands in for api.anthropic.com. Its call count is the assertion that the
+		// tunnel never falls through to the default backend.
+		claude = await startBackend(() => ({ status: 200, headers: {}, body: "{}" }));
+		const config = wireConfig("http://127.0.0.1:1", {
+			qwenKey,
+			qwenBaseUrl: qwen.baseUrl,
+			claudeBaseUrl: claude.baseUrl,
+		});
+		proxy = await startProxy(config);
+	}
+
+	it("reaches the plan host at the BARE path — no /apps/anthropic prefix", async () => {
+		// The whole reason mediaBaseUrl exists. upstreamRequestOptions concatenates
+		// baseUrl + req.url with no rewriting, so routing this through the skin's
+		// baseUrl would produce /apps/anthropic/api/v1/... and 404 at the vendor.
+		await up();
+		const res = await postReq(proxy.port, PATH, IMAGE_BODY);
+		assert.equal(res.status, 200);
+		assert.equal(qwen.calls.length, 1);
+		assert.equal(qwen.calls[0].url, PATH);
+		assert.equal(claude.calls.length, 0, "must never fall through to the default backend");
+	});
+
+	it("forwards the body byte-for-byte (a tunnel, not a translation)", async () => {
+		await up();
+		await postReq(proxy.port, PATH, IMAGE_BODY);
+		assert.equal(qwen.calls[0].body, IMAGE_BODY);
+	});
+
+	it("drops inbound credentials and injects the plan key (invariant 3)", async () => {
+		await up();
+		await postReq(proxy.port, PATH, IMAGE_BODY, {
+			authorization: "Bearer leak",
+			"x-api-key": "leak",
+		});
+		const h = qwen.calls[0].headers;
+		assert.equal(h.authorization, "Bearer qw-test");
+		assert.equal(h["x-api-key"], undefined);
+	});
+
+	it("preserves the query string", async () => {
+		await up();
+		await postReq(proxy.port, `${PATH}?foo=bar`, IMAGE_BODY);
+		assert.equal(qwen.calls[0].url, `${PATH}?foo=bar`);
+	});
+
+	it("without DASHSCOPE_API_KEY it is 503, never a silent default-backend route", async () => {
+		await up({ noKey: true });
+		const res = await postReq(proxy.port, PATH, IMAGE_BODY);
+		assert.equal(res.status, 503);
+		assert.match(JSON.parse(res.body).error.message, /DASHSCOPE_API_KEY/);
+		assert.equal(claude.calls.length, 0);
+	});
+
+	it("GET on the media path is 405", async () => {
+		await up();
+		const res = await reqOn(proxy.port, PATH, "GET");
+		assert.equal(res.status, 405);
+		assert.equal(qwen.calls.length, 0);
+	});
+
+	it("x-dashscope-sse: enable takes the streaming path, not the buffering one", async () => {
+		await up();
+		await postReq(proxy.port, PATH, IMAGE_BODY, { "x-dashscope-sse": "enable" });
+		// The observable difference between the two paths: forwardBuffered forces
+		// accept-encoding: identity so it can JSON.parse the response, the streaming
+		// pipe does not.
+		assert.equal(qwen.calls[0].headers["accept-encoding"], undefined);
+		assert.equal(qwen.calls[0].url, PATH);
+	});
+
+	it("the buffered path forces identity encoding (the two paths really differ)", async () => {
+		await up();
+		await postReq(proxy.port, PATH, IMAGE_BODY);
+		assert.equal(qwen.calls[0].headers["accept-encoding"], "identity");
 	});
 });
 
