@@ -2,7 +2,7 @@
 
 All notable changes to cc-proxy are recorded here. Versions follow [semver](https://semver.org/); `package.json` is the single source of truth and propagates to `.claude-plugin/plugin.json` via `scripts/sync-version.mjs`.
 
-## [Unreleased]
+## [0.7.0] — 2026-08-25
 
 ### Added
 - **`GET /v1/models?dedup=identity` — one entry per MODEL, not per id (issue #39).** An id names the ROUTE as well as the model, so the same weights appear several times: `deepseek-v4-pro` (native, tier 3), `qwen:deepseek-v4-pro` (plan, tier 2) and `deepseek/deepseek-v4-pro` (reseller, tier 4) are one model on three routes. The natural way to pick a diverse set — one model per `provider`, best `grade` — therefore picks the same model twice, and no duplicate check catches it because the id strings genuinely differ. It reads as independent agreement, which for a consumer seating models against each other is the one thing that must never be manufactured. The parameter collapses each group to its **lowest tier** (same weights, cheaper route), with a `usable` entry always beating an unusable one whatever its tier. Opt-in: with no parameter the response is unchanged, and an unrecognized value is a `400` rather than a quietly un-deduped list — a consumer that typos `?dedup=identiy` would otherwise get a wrong answer that looks right.
