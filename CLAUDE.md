@@ -102,6 +102,7 @@ there if you forget. The ones marked ⚠ have no test and drift silently.
 | `identityOf` (`models.js`) | its `@doctest` lines — and keep an example carrying TWO slashes, or `indexOf`→`lastIndexOf` passes the whole suite (measured) |
 | ⚠ a static catalog | confirm the id has a `ROUTES` entry |
 | ⚠ the `/v1/models` wire shape | README + OPERATIONS + ARCHITECTURE, by hand — including `?dedup=identity` |
+| a handler dispatched without `await`/`.catch` (`server.js`) | wrap its whole body in a `try` — an unhandled rejection TERMINATES the shared process, and no `uncaughtException` handler exists. `handleModels` is the worked example |
 | ⚠ `mediaBaseUrl` (`providers.js`) | the media branch in `server.js` is its only reader; changing one alone silently routes at the skin, which 404s |
 
 Three questions, three places, never merged: a **catalog** says what a backend

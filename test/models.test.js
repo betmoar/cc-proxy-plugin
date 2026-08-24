@@ -289,6 +289,23 @@ describe("identityOf / dedupByIdentity (issue #39)", () => {
 		);
 	});
 
+	it("at equal tier the FIRST entry wins (the documented tie-break)", () => {
+		// `beats()` uses a strict `<` so a tie leaves the incumbent in place. With
+		// every other case in this block using distinct tiers, relaxing that to
+		// `<=` — which silently reverses the rule to last-seen — passed all 62
+		// tests in this file (measured). Two entries at the same tier is the only
+		// shape that separates the two.
+		const out = dedupByIdentity([
+			{ id: "glm-5.2", tier: 2 },
+			{ id: "qwen:glm-5.2", tier: 2 },
+		]);
+		assert.deepEqual(
+			out.map((m) => m.id),
+			["glm-5.2"],
+			"a tie must not hand the rung to the later entry",
+		);
+	});
+
 	it("winners keep the original array order (provider grouping survives)", () => {
 		const out = dedupByIdentity([
 			{ id: "glm-5.3", tier: 2 },
@@ -965,18 +982,24 @@ describe("GET /v1/models endpoint", () => {
 		// `/compatible-mode/v1/models` qwen). Only deepseek and the plan serve
 		// deepseek-v4-pro, so it appears bare (native, tier 3) and as
 		// `qwen:deepseek-v4-pro` (plan, tier 2) — the collision from issue #39.
+		// `claudeModels: []` so the QWEN leg is last, and its last id is a loser
+		// (`qwen:glm-5.2` ties glm-5.2 on tier and loses the tie to the earlier
+		// entry). That is what makes `last_id` DISCRIMINATING below: with claude's
+		// static list present, the final entry is a claude id that dedup never
+		// touches, so a pre-dedup `last_id` reads identically and the assertion
+		// proves nothing.
 		const catalog = (ids) =>
 			JSON.stringify({ data: ids.map((id) => ({ id, display_name: id, type: "model" })) });
 		await up({
 			glmHandler: (req) => {
 				const ids = req.url.includes("compatible-mode")
-					? ["qwen3.8-max", "deepseek-v4-pro"]
+					? ["qwen3.8-max", "deepseek-v4-pro", "glm-5.2"]
 					: req.url.startsWith("/v1/models")
-						? ["glm-5.3"]
+						? ["glm-5.3", "glm-5.2"]
 						: ["deepseek-v4-pro"];
 				return { status: 200, headers: { "content-type": "application/json" }, body: catalog(ids) };
 			},
-			configOpts: { dsKey: "ds-test", qwenKey: "qw-test" },
+			configOpts: { dsKey: "ds-test", qwenKey: "qw-test", claudeModels: [] },
 		});
 		const plain = JSON.parse((await getReq(proxy.port, "/v1/models")).body);
 		const deduped = JSON.parse((await getReq(proxy.port, "/v1/models?dedup=identity")).body);
@@ -990,18 +1013,87 @@ describe("GET /v1/models endpoint", () => {
 			"the tier-2 plan route must be the survivor",
 		);
 		assert.ok(deduped.data.length < plain.data.length);
-		// The envelope is recomputed over the FILTERED list, not carried over.
-		assert.equal(deduped.first_id, deduped.data[0].id);
-		assert.equal(deduped.last_id, deduped.data[deduped.data.length - 1].id);
+		// The envelope is recomputed over the FILTERED list, not carried over —
+		// asserted against LITERAL ids, not against deduped.data's own ends. The
+		// self-referential form (`deduped.first_id === deduped.data[0].id`) is
+		// tautological: computing the envelope from the PRE-dedup array leaves it
+		// green, because both sides move together. Measured — that mutation passed
+		// all 62 tests in this file.
+		//
+		// `last_id` is the discriminating half, and only because the fixture was
+		// built for it: the plain list ENDS on `qwen:glm-5.2`, which dedup drops,
+		// so reading the envelope off the pre-dedup array yields that id instead of
+		// `qwen3.8-max`. `first_id` cannot discriminate at all — first-seen wins its
+		// group, so the head entry survives every dedup by construction — and it is
+		// pinned only to catch a wholesale reordering.
+		assert.equal(deduped.first_id, "glm-5.3");
+		assert.equal(deduped.last_id, "qwen:deepseek-v4-pro");
+		assert.notEqual(
+			deduped.last_id,
+			plain.last_id,
+			"the fixture must keep the two envelopes different, or this proves nothing",
+		);
+		assert.deepEqual(
+			ids(deduped),
+			["glm-5.3", "glm-5.2", "qwen3.8-max", "qwen:deepseek-v4-pro"],
+			"the full deduped list, so a change to WHICH entry survives shows up here",
+		);
 		// Opt-in: the default response is untouched.
 		assert.deepEqual(ids(JSON.parse((await getReq(proxy.port, "/v1/models")).body)), ids(plain));
 	});
 
+	it("a throw inside the handler is 500 and the proxy stays up (containment)", async () => {
+		// handleModels is dispatched WITHOUT await and without a .catch, so a throw
+		// anywhere in it is an unhandled rejection — which Node terminates the
+		// process for, taking every session on the machine with it. Measured before
+		// the outer try existed: exit code 1, no response written, and the comment
+		// above the function credited a `.catch` that never existed.
+		//
+		// The poison goes on the ENTRY, not into dedupByIdentity, so this stays a
+		// black-box test of the handler's containment: identityOf reads `.id`, and a
+		// getter that throws is the cheapest stand-in for the careless future edit
+		// the guard exists for.
+		const config = await up();
+		// The poison has to survive INTO the payload, so a throwing getter is no
+		// good: collectModels copies every entry into a fresh object (push() spreads
+		// it), so a getter fires during collection — inside the inner try — and
+		// yields a 200 with `_errors`, which is the collection contract rather than
+		// the containment under test here. Measured: 5 reads during collection, 0
+		// afterwards.
+		//
+		// A BigInt does survive the copy, and JSON.stringify refuses to serialize
+		// one ("Do not know how to serialize a BigInt"), so the throw lands in
+		// sendJson — genuinely downstream of every inner catch, which is the shape
+		// that used to take the process down.
+		config.claudeModels = [
+			{
+				type: "model",
+				id: "claude-boom",
+				display_name: "boom",
+				created_at: null,
+				context_window: 1n,
+			},
+		];
+		const res = await getReq(proxy.port, "/v1/models?dedup=identity");
+		assert.equal(res.status, 500, "a handler throw must answer, not hang or crash");
+		assert.match(JSON.parse(res.body).error.message, /internal error/);
+		// The assertion that matters: the shared listener is still serving.
+		const status = await getReq(proxy.port, "/_status");
+		assert.equal(status.status, 200, "one bad request must not take the proxy down");
+	});
+
 	it("an unrecognized dedup value is 400, never a silent full list", async () => {
 		await up();
-		const res = await getReq(proxy.port, "/v1/models?dedup=identiy");
-		assert.equal(res.status, 400);
-		assert.match(JSON.parse(res.body).error.message, /identity/);
+		for (const bad of ["identiy", "Identity", "IDENTITY", ""]) {
+			// Wrong CASE is rejected like any other wrong value, and pinning that here
+			// is what keeps the two halves of the decision from drifting apart: with a
+			// separate `=== "identity"` on the dedup branch, relaxing only the gate
+			// would let `Identity` through to a 200 carrying the FULL list — the exact
+			// silent-wrong-answer this 400 exists to prevent.
+			const res = await getReq(proxy.port, `/v1/models?dedup=${bad}`);
+			assert.equal(res.status, 400, `dedup=${bad || "<empty>"} must 400`);
+			assert.match(JSON.parse(res.body).error.message, /identity/);
+		}
 		// An unrelated parameter still matches and returns the normal list.
 		const ok = await getReq(proxy.port, "/v1/models?t=123");
 		assert.equal(ok.status, 200);
@@ -1151,6 +1243,20 @@ describe("media generation tunnel (issue #40)", () => {
 		// pipe does not.
 		assert.equal(qwen.calls[0].headers["accept-encoding"], undefined);
 		assert.equal(qwen.calls[0].url, PATH);
+	});
+
+	it("the SSE header value is matched case-insensitively", async () => {
+		// The code lowercases the value deliberately — a header VALUE has no
+		// case guarantee — but with only a lowercase `enable` under test, dropping
+		// the .toLowerCase() left the suite green (measured). `Enable` on the
+		// buffering path would be a silently broken stream, so pin it.
+		await up();
+		await postReq(proxy.port, PATH, IMAGE_BODY, { "x-dashscope-sse": "Enable" });
+		assert.equal(
+			qwen.calls[0].headers["accept-encoding"],
+			undefined,
+			"a capitalised value must still select the streaming path",
+		);
 	});
 
 	it("the buffered path forces identity encoding (the two paths really differ)", async () => {

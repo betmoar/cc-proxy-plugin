@@ -21,9 +21,17 @@ function debug(...args) {
 	if (process.env.PROXY_DEBUG) console.log(...args);
 }
 
+// SERIALIZE FIRST, then write the head. Doing it in the other order commits the
+// status line and headers before JSON.stringify has had a chance to throw (a
+// BigInt or a circular reference in a payload assembled from vendor data will do
+// it), which leaves the caller unable to send an error response — headersSent is
+// already true — so the client sees a socket hang up instead of a status. With
+// the body in hand first, a serialization failure is still a throw, but it is a
+// throw the caller's error path can turn into a real 500.
 function sendJson(res, status, payload) {
+	const body = JSON.stringify(payload);
 	res.writeHead(status, { "content-type": "application/json" });
-	res.end(JSON.stringify(payload));
+	res.end(body);
 }
 
 function writeBufferedResponse(clientRes, status, headers, bodyBuffer) {
@@ -66,8 +74,24 @@ function handleShutdown(server, res) {
 }
 
 // GET /v1/models — synthesized discovery list (not forwarded). Best-effort:
-// collectModels never rejects except the test seam; the .catch keeps a throw from
-// killing the shared proxy process (one request must not take the process down).
+// one request must never take the shared process down.
+//
+// THE WHOLE BODY IS INSIDE A try, and that is load-bearing rather than tidy.
+// This is an `async` function dispatched WITHOUT `await` and without a `.catch`
+// (see the call site), so a throw anywhere in it becomes an unhandled rejection
+// — and Node's default disposition for that is to TERMINATE THE PROCESS, taking
+// every session on the machine with it. Measured: a throw in this shape exits 1
+// with no response written, and this repo installs no `uncaughtException` or
+// `unhandledRejection` handler.
+//
+// The inner try around collectModels() stays, because it means something
+// different: a failed COLLECTION degrades to a 200 with `_errors`, which is the
+// endpoint's best-effort contract. The outer one is pure containment.
+//
+// (An earlier version of this comment credited a `.catch` at the call site that
+// has never existed. It described the protection correctly and pointed at the
+// wrong mechanism, which is the worse of the two failure modes — a reader
+// checking the claim finds a plausible sentence and no code.)
 //
 // `dedup` is the ONE query parameter this endpoint reads, and it is opt-in: with
 // no parameter the response is byte-identical to what it has always been.
@@ -75,40 +99,61 @@ function handleShutdown(server, res) {
 // output rather than threaded into the builder, so the collector stays unaware
 // of HTTP.
 async function handleModels(res, config, dedup) {
-	// An unrecognized value is a 400, not a silent full list. A consumer that
-	// typos `?dedup=identiy` and receives all 414 entries gets a WRONG answer that
-	// looks like a right one — the duplicate models it asked to collapse are still
-	// there, and nothing says so.
-	if (dedup !== undefined && dedup !== "identity") {
-		sendJson(res, 400, {
-			error: { message: `unsupported dedup=${dedup} (the only supported value is "identity")` },
-		});
-		return;
-	}
-	let result;
 	try {
-		result = await collectModels(config);
+		// An unrecognized value is a 400, not a silent full list. A consumer that
+		// typos `?dedup=identiy` and receives all 415 entries gets a WRONG answer
+		// that looks like a right one — the duplicate models it asked to collapse
+		// are still there, and nothing says so. Case-sensitive, like the value of
+		// any other query parameter: `?dedup=Identity` is a typo and gets the 400.
+		//
+		// ONE decision, reused below, rather than two `=== "identity"` comparisons.
+		// With two, relaxing only the gate (say to a case-insensitive match) lets a
+		// value through that the second comparison still rejects — and the request
+		// then 200s with the FULL list, which is precisely the silent-wrong-answer
+		// this endpoint refuses to give.
+		const wantsDedup = dedup === "identity";
+		if (dedup !== undefined && !wantsDedup) {
+			sendJson(res, 400, {
+				error: {
+					message: `unsupported dedup=${dedup} (the only supported value is "identity")`,
+				},
+			});
+			return;
+		}
+		let result;
+		try {
+			result = await collectModels(config);
+		} catch (err) {
+			// Log the real bug rather than returning a generic 200 with an empty list
+			// and no trace — collectModels only throws via the test seam, so a hit
+			// here is a genuine regression worth surfacing in the proxy log.
+			console.error(`[models] collectModels threw: ${err?.message || err}`);
+			result = { data: [], _errors: [{ provider: "proxy", message: "internal error" }] };
+		}
+		const { _errors } = result;
+		const data = wantsDedup ? dedupByIdentity(result.data) : result.data;
+		const payload = {
+			data,
+			has_more: false,
+			first_id: data.length ? data[0].id : null,
+			last_id: data.length ? data[data.length - 1].id : null,
+		};
+		if (_errors.length) payload._errors = _errors;
+		// One summary line (not the routing-log format — status.js's
+		// parseRoutingLines keys on `[<iso>] <model> -> <provider> <path>`, which
+		// this does not match).
+		const view = wantsDedup ? ` (deduped from ${result.data.length})` : "";
+		console.log(`[models] ${data.length} models${view}, ${_errors.length} errors`);
+		sendJson(res, 200, payload);
 	} catch (err) {
-		// Log the real bug rather than returning a generic 200 with an empty list
-		// and no trace — collectModels only throws via the test seam, so a hit here
-		// is a genuine regression worth surfacing in the proxy log.
-		console.error(`[models] collectModels threw: ${err?.message || err}`);
-		result = { data: [], _errors: [{ provider: "proxy", message: "internal error" }] };
+		// Containment, per the header. Anything reaching here is a bug in THIS
+		// function (dedupByIdentity on a malformed entry, a serialization failure),
+		// so log it loudly — the proxy log is the only debugging surface — and
+		// answer the one request rather than dropping the process.
+		console.error(`[models] handler threw: ${err?.stack || err}`);
+		if (!res.headersSent) sendJson(res, 500, { error: { message: "internal error" } });
+		else res.destroy();
 	}
-	const { _errors } = result;
-	const data = dedup === "identity" ? dedupByIdentity(result.data) : result.data;
-	const payload = {
-		data,
-		has_more: false,
-		first_id: data.length ? data[0].id : null,
-		last_id: data.length ? data[data.length - 1].id : null,
-	};
-	if (_errors.length) payload._errors = _errors;
-	// One summary line (not the routing-log format — status.js's parseRoutingLines
-	// keys on `[<iso>] <model> -> <provider> <path>`, which this does not match).
-	const view = dedup === "identity" ? ` (deduped from ${result.data.length})` : "";
-	console.log(`[models] ${data.length} models${view}, ${_errors.length} errors`);
-	sendJson(res, 200, payload);
 }
 
 /**

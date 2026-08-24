@@ -347,9 +347,9 @@ export function withContextWindow(entry) {
  * the issue's own first draft got it wrong. `/` and `:` are not interchangeable:
  * `/` marks OpenRouter's vendor namespace, `:` marks a cc-proxy provider lens —
  * but OpenRouter ALSO spells its structural variants with a trailing colon
- * (`google/gemini-3.7-flash:batch`, `:free`). Measured over a live 414-id
+ * (`google/gemini-3.7-flash:batch`, `:free`). Measured over a live 415-id
  * catalogue: 66 ids carry both separators. Last-separator splitting collapses
- * 48 of them into one identity called `batch`, spanning seven vendors. So the
+ * 50 of them into one identity called `batch`, spanning seven vendors. So the
  * variant stays ATTACHED — it names a different way to reach the model, and
  * two ids differing only in variant are not interchangeable seats.
  *
@@ -363,6 +363,7 @@ export function withContextWindow(entry) {
  * @doctest identityOf("google/gemini-3.7-flash:batch") -> "gemini-3.7-flash:batch"
  * @doctest identityOf("bogus:thing") -> "bogus:thing"
  * @doctest identityOf("z-ai/glm-5.3") -> "glm-5.3"
+ * @doctest identityOf("vendor/family/model-1") -> "family/model-1"
  *
  * @param {string} id
  * @returns {string}

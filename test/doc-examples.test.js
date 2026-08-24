@@ -180,8 +180,8 @@ describe("documented examples actually hold", () => {
 	it("executes exactly the examples the source carries", () => {
 		assert.equal(
 			doctests.length,
-			29,
-			`expected 29 @doctest examples, found ${doctests.length}. Adding some? Bump this number in the same commit. Removing some? Say why in the commit message — dropping an example is dropping a guarantee.`,
+			30,
+			`expected 30 @doctest examples, found ${doctests.length}. Adding some? Bump this number in the same commit. Removing some? Say why in the commit message — dropping an example is dropping a guarantee.`,
 		);
 	});
 

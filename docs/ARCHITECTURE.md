@@ -125,7 +125,7 @@ a default made the field claim otherwise about every one of them.
 
 **Identity is the third axis, and unlike the other two it needs no table.** An id
 names a route as well as a model, so one model appears under several ids — 17
-such groups on a live 414-id catalogue. `?dedup=identity` returns one entry per
+such groups on a live 415-id catalogue. `?dedup=identity` returns one entry per
 model, lowest `tier` winning (`identityOf()` / `dedupByIdentity()` in
 `src/models.js`, both pure). It adds no field and publishes no new fact: the
 alternative was an `origin:` field, rejected because a published attribution is a

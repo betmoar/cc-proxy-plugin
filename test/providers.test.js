@@ -160,6 +160,19 @@ describe("buildProviders", () => {
 			qwen.baseUrl,
 			"https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic",
 		);
+		// The media tunnel's base: SAME HOST, at its ROOT. The missing
+		// `/apps/anthropic` is the entire reason the field exists —
+		// upstreamRequestOptions() concatenates `baseUrl + req.url` with no
+		// rewriting, so the skin's baseUrl would send the DashScope media path to
+		// `/apps/anthropic/api/v1/…` and 404. Asserted HERE because the end-to-end
+		// tests rebase it onto a local stub (wireConfig in models.test.js), so the
+		// production value itself is otherwise never checked — corrupting it left
+		// both suites green (measured).
+		assert.equal(qwen.mediaBaseUrl, "https://token-plan.ap-southeast-1.maas.aliyuncs.com");
+		assert.ok(
+			!qwen.mediaBaseUrl.endsWith("/apps/anthropic"),
+			"the media base must not carry the Anthropic skin suffix",
+		);
 		assert.equal(qwen.quirks, undefined);
 		// claude stays last / default.
 		assert.equal(providers[providers.length - 1].id, "claude");

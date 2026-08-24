@@ -167,7 +167,16 @@ function probeWebSocketTask(c, key) {
 			done({ error: err instanceof Error ? err.message : String(err), reason: "network" });
 			return;
 		}
+		// FIRST RESULT WINS, explicitly. `finish` calls ws.close(), which fires
+		// onclose, which calls finish again — so the close handler below would
+		// otherwise overwrite a real `task-failed` verdict with "closed before a
+		// task result". Promise `resolve` already ignores the second call, but that
+		// is a subtlety one refactor away from being wrong, and getting it wrong
+		// turns a measured vendor fact into a fake network error.
+		let settled = false;
 		const finish = (r) => {
+			if (settled) return;
+			settled = true;
 			clearTimeout(timer);
 			try {
 				ws.close();
@@ -194,7 +203,24 @@ function probeWebSocketTask(c, key) {
 			);
 		ws.onmessage = (e) => {
 			if (typeof e.data !== "string") return; // audio frames, not events
-			const msg = JSON.parse(e.data);
+			// PARSE INSIDE A try. This runs in an event-emitter callback, outside the
+			// Promise executor's synchronous frame, so a throw here is an unhandled
+			// exception that kills the whole probe RUN — and exits 1, which this
+			// script's own exit-code contract already spends on "a vendor disagrees
+			// with a source comment". A crash would be indistinguishable from the one
+			// signal the file exists to deliver, and every case after this one would
+			// go unreported while the summary line never printed. Distrusting the
+			// vendor's frames is the entire premise; that has to include their shape.
+			let msg;
+			try {
+				msg = JSON.parse(e.data);
+			} catch {
+				finish({
+					error: `unparseable frame: ${e.data.slice(0, 120)}`,
+					reason: "network",
+				});
+				return;
+			}
 			const event = msg?.header?.event;
 			if (event !== "task-failed" && event !== "task-finished") return;
 			const body = JSON.stringify(msg.header);
@@ -202,6 +228,12 @@ function probeWebSocketTask(c, key) {
 		};
 		ws.onerror = (e) =>
 			finish({ error: e?.message || String(e?.error || "websocket error"), reason: "network" });
+		// A CLEAN CLOSE before any terminal event is its own fact. Without this the
+		// promise sits until the 30s timeout and reports "timed out", which reads as
+		// "the vendor never answered" when the vendor in fact answered immediately by
+		// hanging up — a different thing to debug, and 30s slower to learn.
+		ws.onclose = (e) =>
+			finish({ error: `closed before a task result (code ${e.code})`, reason: "network" });
 	});
 }
 
