@@ -365,8 +365,20 @@ export function withContextWindow(entry) {
  * @doctest identityOf("z-ai/glm-5.3") -> "glm-5.3"
  * @doctest identityOf("vendor/family/model-1") -> "family/model-1"
  *
- * @param {string} id
- * @returns {string}
+ * TAKES `unknown`, NOT `string`, and that is the honest signature rather than a
+ * loosened one. The ids come from live vendor catalogues, and `coerceEntry()`
+ * admits an entry on a TRUTHY `id` (`if (!e || !e.id) return null`) — so a
+ * vendor sending `id: 123` reaches this function, and the guard below is
+ * load-bearing rather than defensive dressing. Annotating the parameter
+ * `string` made the guard's own branch narrow to `never`, which type-checks
+ * clean while promising a `string` return this function cannot honour for a
+ * non-string input: the id is returned unchanged, on purpose, because dropping
+ * or stringifying it would invent an identity the catalogue never published.
+ * `unknown` in / `unknown` out states exactly that, and makes the one caller
+ * (dedupByIdentity's Map key) obviously correct — a Map keys on anything.
+ *
+ * @param {unknown} id
+ * @returns {unknown} the identity when `id` is a string; `id` itself otherwise
  */
 export function identityOf(id) {
 	if (typeof id !== "string") return id;

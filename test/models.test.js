@@ -243,6 +243,29 @@ describe("identityOf / dedupByIdentity (issue #39)", () => {
 		assert.equal(identityOf("vendor/family/model-1"), "family/model-1");
 	});
 
+	it("returns a non-string id unchanged rather than inventing an identity", () => {
+		// Not hypothetical: coerceEntry admits an entry on a TRUTHY id
+		// (`if (!e || !e.id) return null`), so a vendor catalogue sending
+		// `id: 123` reaches identityOf. Returning it unchanged is the deliberate
+		// choice — stringifying or dropping it would publish an identity the
+		// vendor never did. The signature says `unknown` in / `unknown` out for
+		// exactly this reason.
+		for (const weird of [123, null, undefined, { id: 1 }]) {
+			assert.equal(identityOf(weird), weird, `${JSON.stringify(weird)} must pass through`);
+		}
+		// The consequence that matters: two non-string ids must stay DISTINCT.
+		// Coercing them to a common key would silently merge unrelated models,
+		// which is the exact failure dedup exists to prevent.
+		assert.deepEqual(
+			dedupByIdentity([
+				{ id: 123, tier: 2 },
+				{ id: 456, tier: 2 },
+				{ id: 123, tier: 4 },
+			]).map((e) => e.id),
+			[123, 456],
+		);
+	});
+
 	it("strips a known provider lens but leaves an unknown prefix whole", () => {
 		assert.equal(identityOf("qwen:deepseek-v4-pro"), "deepseek-v4-pro");
 		// A future vendor id containing a colon must survive intact — same guard
