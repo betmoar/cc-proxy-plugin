@@ -115,6 +115,64 @@ describe("gradeByVendorPosition", () => {
 		const g = gradeByVendorPosition(["totally-unknown-id"]);
 		assert.equal(g.has("totally-unknown-id"), false);
 	});
+
+	// Google is the only vendor shipping two unrelated LINES under one namespace
+	// prefix, and their version numbers collide numerically: gemma-4 reads as [4]
+	// and gemini-3.7-flash as [3,7], so one bucket hands Flagship to the
+	// open-weights model. vendorOf() splits them ("Google" / "Google Gemma");
+	// these pin that the split holds, because the failure is silent — a wrong
+	// grade on a published field, not an error.
+	it("does not let gemma outrank gemini — they are separate lines, one prefix", () => {
+		const g = gradeByVendorPosition([
+			"google/gemini-3.7-flash",
+			"google/gemini-3.6-flash",
+			"google/gemma-4-31b-it",
+		]);
+		assert.equal(
+			g.get("google/gemini-3.7-flash").grade,
+			"Flagship",
+			"gemma-4 ([4]) must not outrank gemini-3.7 ([3,7]) — different product lines",
+		);
+		assert.equal(g.get("google/gemini-3.6-flash").grade, "Strong");
+		assert.equal(g.get("google/gemma-4-31b-it").vendor, "Google Gemma");
+	});
+
+	it("grades Gemini by Google's own numbering, flash line included", () => {
+		// A flash model taking Flagship is correct, not a bug: grade is position
+		// within the vendor's line and 3.7 is the newest release. benchlm agrees —
+		// every Gemini Pro row sat below the flash line on 2026-08-23.
+		const g = gradeByVendorPosition([
+			"google/gemini-3.7-flash",
+			"google/gemini-3.6-flash",
+			"google/gemini-3.1-pro-preview",
+		]);
+		assert.equal(g.get("google/gemini-3.7-flash").grade, "Flagship");
+		assert.equal(g.get("google/gemini-3.6-flash").grade, "Strong");
+		assert.equal(g.get("google/gemini-3.1-pro-preview").grade, "Specialist");
+	});
+
+	it("attributes no vendor to Google's non-Gemini, non-Gemma ids", () => {
+		// lyria (music) and friends are routable but not gradeable on this axis;
+		// omitting beats inventing a rung for them.
+		const g = gradeByVendorPosition(["google/lyria-3-pro-preview"]);
+		assert.equal(g.has("google/lyria-3-pro-preview"), false);
+	});
+
+	// vendorOf() is what decides whether an id can be graded AT ALL, and a miss
+	// is silent: `bench grades` writes the entry with no `grade` key, so a
+	// refresh QUIETLY strips a curated grade off the wire rather than failing.
+	// Every id in MODEL_GRADES must therefore be attributable. This caught the
+	// Google gap — the six gemini ids were graded in the table while vendorOf()
+	// returned undefined for all of them.
+	it("attributes every id the built-in table grades", async () => {
+		const { MODEL_GRADES } = await import("../src/models.js");
+		for (const id of Object.keys(MODEL_GRADES)) {
+			assert.ok(
+				vendorOf(id),
+				`vendorOf(${id}) is undefined, so \`bench grades\` would drop its grade on refresh`,
+			);
+		}
+	});
 });
 
 describe("buildGrades", () => {

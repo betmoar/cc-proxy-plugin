@@ -85,7 +85,28 @@ Entries a backend serves but this proxy cannot use — multimodal ids wanting a
 different request schema, `:batch` variants, `~latest` aliases — are published
 with `usable: false` rather than dropped, so a consumer can show them greyed out
 instead of wondering where they went. The field is **absent** on usable entries;
-check with `entry.usable !== false`.
+check with `entry.usable !== false`. It means "cannot complete a **turn**", not
+"unreachable" — the plan's image models are flagged and still work, on the
+separate endpoint below.
+
+### `?dedup=identity` — one entry per model
+
+The same model is reachable under several ids, because the id names the ROUTE as
+well as the model: `deepseek-v4-pro` (native), `qwen:deepseek-v4-pro` (plan) and
+`deepseek/deepseek-v4-pro` (OpenRouter) are one model on three routes. Picking
+"one model per `provider`" therefore picks the same model twice, silently.
+
+`GET /v1/models?dedup=identity` collapses those to one entry each, keeping the
+**lowest `tier`** — same weights, cheapest route. A `usable` entry always beats
+an unusable one, whatever its tier. Opt-in: with no parameter the response is
+exactly what it has always been, and an unrecognized `dedup=` value is a `400`
+rather than a quietly un-deduped list.
+
+The identity is the id after its **first** separator (`qwen:deepseek-v4-pro` →
+`deepseek-v4-pro`, `z-ai/glm-5.3` → `glm-5.3`). An OpenRouter variant suffix
+stays attached — `google/gemini-3.7-flash:batch` is not `gemini-3.7-flash` —
+because the batch endpoint is a different way to reach the model, not a
+substitute for it.
 
 Entries whose id has a curated context window also carry a non-standard
 `context_window` — an **integer token count** (`1000000`, not `"1M"`). ids
@@ -138,6 +159,32 @@ and every foreign id it serves under the `<provider>:` lens. So `deepseek-v4-pro
 is bare under DeepSeek and `qwen:deepseek-v4-pro` under the plan — whichever of
 the two the bare id resolves to. Listing and routing are deliberately
 independent.
+
+## Image generation on the Qwen plan
+
+The Token Plan includes `wan2.7-image` and `wan2.7-image-pro`. They cannot serve
+a `/model` turn — the Anthropic skin rejects their body shape, which is why they
+carry `usable: false` — but they answer on DashScope's own media path, and the
+proxy forwards it:
+
+```bash
+curl -X POST http://127.0.0.1:4000/api/v1/services/aigc/multimodal-generation/generation \
+  -H 'content-type: application/json' \
+  -d '{"model":"wan2.7-image",
+       "input":{"messages":[{"role":"user","content":[{"text":"a red cube on white"}]}]},
+       "parameters":{"size":"1024*1024"}}'
+```
+
+A **tunnel, not a translation** — the body is forwarded byte-for-byte and the
+response is the vendor's own. All the proxy adds is the credential, so a caller
+needs no `DASHSCOPE_API_KEY` of its own. Requires the key to be configured; with
+none, the path answers `503` rather than routing anywhere else. Set
+`x-dashscope-sse: enable` to stream.
+
+The image comes back as a **signed URL with an `Expires`**, not inline base64 —
+fetch it before that passes. The plan's audio ids (`qwen-audio-3.0-tts-plus`,
+`-realtime-plus`) have **no working route**: measured 2026-08-25, every HTTP path
+rejects them and the WebSocket task fails inside the vendor's engine.
 
 ## Commands
 

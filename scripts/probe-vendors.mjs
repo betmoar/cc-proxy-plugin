@@ -95,6 +95,45 @@ const CASES = [
 		expect: 400,
 		bodyMatch: /not exist/i,
 	},
+	{
+		// The measurement the media tunnel rests on. If this stops answering 200,
+		// `mediaBaseUrl` is routing at a dead endpoint and the entry in
+		// UNUSABLE_MODALITY's comment saying image "works, elsewhere" is a lie.
+		name: "qwen plan serves images on the multimodal-generation path",
+		claim: "src/providers.js mediaBaseUrl + src/models.js UNUSABLE_MODALITY — issue #40",
+		url: "https://token-plan.ap-southeast-1.maas.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation",
+		auth: (k) => ({ authorization: `Bearer ${k}` }),
+		key: "DASHSCOPE_API_KEY",
+		model: "wan2.7-image",
+		// Not the Anthropic Messages shape the default body uses — that is the
+		// whole point of the separate endpoint (the skin 400s this model).
+		body: (model) => ({
+			model,
+			input: { messages: [{ role: "user", content: [{ text: "a red cube on white" }] }] },
+			parameters: { size: "1024*1024" },
+		}),
+		expect: 200,
+		// Pin the payload shape too: a 200 whose body no longer carries an image URL
+		// would be a different fact from the one the comment states.
+		bodyMatch: /"image"\s*:\s*"https?:/,
+	},
+	{
+		// A NEGATIVE claim, and the reason to keep re-measuring it: the comment in
+		// UNUSABLE_MODALITY says plan TTS is broken vendor-side. If Alibaba fixes
+		// it, this case flips to FAIL and the comment gets revisited — which is the
+		// only way a "does not work" claim ever gets re-examined.
+		name: "qwen plan TTS still fails vendor-side (411)",
+		claim: "src/models.js UNUSABLE_MODALITY — audio stays usable:false",
+		transport: "ws",
+		url: "wss://token-plan.ap-southeast-1.maas.aliyuncs.com/api-ws/v1/inference",
+		auth: (k) => ({ authorization: `Bearer ${k}` }),
+		key: "DASHSCOPE_API_KEY",
+		model: "qwen-audio-3.0-tts-plus",
+		// The task is ACCEPTED (task-started arrives, so model + auth are valid) and
+		// then fails in the engine — status records which of the two happened.
+		expect: "task-failed",
+		bodyMatch: /Engine error \[411\]/,
+	},
 ];
 
 // A non-2xx expectation without a bodyMatch passes on ANY error with that
@@ -103,7 +142,7 @@ const CASES = [
 // convention was followed by every case here and enforced by nothing, which is
 // one copy-paste from a real gap.
 for (const c of CASES) {
-	if (c.expect >= 400 && !c.bodyMatch) {
+	if (c.expect !== 200 && !c.bodyMatch) {
 		console.error(
 			`probe-vendors: case "${c.name}" expects ${c.expect} but carries no bodyMatch — a status alone cannot tell the vendor's real objection from an unrelated one.`,
 		);
@@ -111,9 +150,102 @@ for (const c of CASES) {
 	}
 }
 
+/**
+ * A DashScope WebSocket task. Its own transport because the audio claim cannot
+ * be measured over HTTP at all: every HTTP path 400s with `url error` (measured
+ * 2026-08-25), so a probe restricted to fetch() could only record "unreachable"
+ * — which reads as "we could not check" rather than the fact it is, that the
+ * vendor accepts the task and its engine then fails. `status` is the terminal
+ * event name, so a mismatch names which of the two the vendor did.
+ */
+function probeWebSocketTask(c, key) {
+	return new Promise((done) => {
+		let ws;
+		try {
+			ws = new WebSocket(c.url, { headers: c.auth(key) });
+		} catch (err) {
+			done({ error: err instanceof Error ? err.message : String(err), reason: "network" });
+			return;
+		}
+		// FIRST RESULT WINS, explicitly. `finish` calls ws.close(), which fires
+		// onclose, which calls finish again — so the close handler below would
+		// otherwise overwrite a real `task-failed` verdict with "closed before a
+		// task result". Promise `resolve` already ignores the second call, but that
+		// is a subtlety one refactor away from being wrong, and getting it wrong
+		// turns a measured vendor fact into a fake network error.
+		let settled = false;
+		const finish = (r) => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			try {
+				ws.close();
+			} catch {}
+			done(r);
+		};
+		const timer = setTimeout(
+			() => finish({ error: "timed out after 30s", reason: "network" }),
+			30_000,
+		);
+		ws.onopen = () =>
+			ws.send(
+				JSON.stringify({
+					header: { action: "run-task", task_id: "probe", streaming: "out" },
+					payload: {
+						model: c.model,
+						task_group: "audio",
+						task: "tts",
+						function: "SpeechSynthesizer",
+						input: { text: "hello world" },
+						parameters: { text_type: "PlainText", voice: "Cherry", format: "wav" },
+					},
+				}),
+			);
+		ws.onmessage = (e) => {
+			if (typeof e.data !== "string") return; // audio frames, not events
+			// PARSE INSIDE A try. This runs in an event-emitter callback, outside the
+			// Promise executor's synchronous frame, so a throw here is an unhandled
+			// exception that kills the whole probe RUN — and exits 1, which this
+			// script's own exit-code contract already spends on "a vendor disagrees
+			// with a source comment". A crash would be indistinguishable from the one
+			// signal the file exists to deliver, and every case after this one would
+			// go unreported while the summary line never printed. Distrusting the
+			// vendor's frames is the entire premise; that has to include their shape.
+			let msg;
+			try {
+				msg = JSON.parse(e.data);
+			} catch {
+				finish({
+					error: `unparseable frame: ${e.data.slice(0, 120)}`,
+					reason: "network",
+				});
+				return;
+			}
+			const event = msg?.header?.event;
+			if (event !== "task-failed" && event !== "task-finished") return;
+			const body = JSON.stringify(msg.header);
+			finish({ status: event, body });
+		};
+		ws.onerror = (e) =>
+			finish({ error: e?.message || String(e?.error || "websocket error"), reason: "network" });
+		// A CLEAN CLOSE before any terminal event is its own fact. Without this the
+		// promise sits until the 30s timeout and reports "timed out", which reads as
+		// "the vendor never answered" when the vendor in fact answered immediately by
+		// hanging up — a different thing to debug, and 30s slower to learn.
+		ws.onclose = (e) =>
+			finish({ error: `closed before a task result (code ${e.code})`, reason: "network" });
+	});
+}
+
 async function probe(c) {
 	const key = process.env[c.key];
 	if (!key) return { ...c, skipped: `${c.key} not set` };
+	if (c.transport === "ws") {
+		const r = await probeWebSocketTask(c, key);
+		if (r.reason === "network") return { ...c, ...r, ok: false };
+		const ok = r.status === c.expect && (!c.bodyMatch || c.bodyMatch.test(r.body));
+		return { ...c, ...r, ok, reason: ok ? "match" : "mismatch" };
+	}
 	const ctl = new AbortController();
 	const timer = setTimeout(() => ctl.abort(), 30_000);
 	try {
@@ -125,11 +257,17 @@ async function probe(c) {
 				"anthropic-version": "2023-06-01",
 				...c.auth(key),
 			},
-			body: JSON.stringify({
-				model: c.model,
-				max_tokens: 4,
-				messages: [{ role: "user", content: "hi" }],
-			}),
+			// The Messages shape is the default because most cases probe the
+			// Anthropic skin; a case carrying `body` speaks its endpoint's own schema.
+			body: JSON.stringify(
+				c.body
+					? c.body(c.model)
+					: {
+							model: c.model,
+							max_tokens: 4,
+							messages: [{ role: "user", content: "hi" }],
+						},
+			),
 		});
 		const body = (await res.text()).slice(0, 300);
 		const ok = res.status === c.expect && (!c.bodyMatch || c.bodyMatch.test(body));

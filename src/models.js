@@ -3,7 +3,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { providerById } from "./providers.js";
+import { PROVIDER_IDS, providerById } from "./providers.js";
 import { tierOf } from "./routes.js";
 
 /**
@@ -85,6 +85,34 @@ export const MODEL_GRADES = {
 	"moonshotai/kimi-k2.7-code": "Specialist",
 	"moonshotai/kimi-k3": "Specialist",
 	"qwen/qwen3.7-max": "Strong",
+	// Google Gemini, reachable ONLY through OpenRouter — Google publishes no
+	// Anthropic Messages endpoint (probed 2026-08-23: /v1/messages,
+	// /v1beta/messages, /v1beta/anthropic/v1/messages and /anthropic/v1/messages
+	// all 404 with a valid key that returns 200 on :generateContent the same
+	// minute), so there is no native leg and never will be under invariant 5.
+	// The slash spellings are therefore the WHOLE Google line as far as this
+	// table is concerned, unlike deepseek/qwen where a bare sibling shares the
+	// rung.
+	//
+	// A FLASH model takes Flagship here, which reads wrong and is not. Grade is
+	// position within the vendor's own line and Google's numbering puts 3.7 above
+	// 3.1, so the newest release wins the rung — the same rule that demoted
+	// glm-5.2 under glm-5.3. benchlm corroborates rather than contradicts: on the
+	// 2026-08-23 leaderboard every Gemini Pro row sits BELOW the flash line
+	// (`Gemini 3.6 Flash` rank 9 / 75.21 supported, `Gemini 3 Pro` rank 24 /
+	// 67.17, `Gemini 3.1 Pro` rank 96 / 55.96). Google's Pro tier is a price and
+	// context class, not the top of its capability line.
+	//
+	// `google/gemma-*` is deliberately ABSENT and must stay absent: gemma is a
+	// separate open-weights LINE whose version numbers do not compare with
+	// gemini's, and `gemma-4` ([4]) would outrank `gemini-3.7-flash` ([3,7]) and
+	// steal Flagship. vendorOf() in scripts/bench-grades.js enforces the split.
+	"google/gemini-3.7-flash": "Flagship",
+	"google/gemini-3.6-flash": "Strong",
+	"google/gemini-3.5-flash": "Specialist",
+	"google/gemini-3.5-flash-lite": "Specialist",
+	"google/gemini-3.1-pro-preview": "Specialist",
+	"google/gemini-3.1-flash-lite": "Specialist",
 	// Qwen (curated, DashScope)
 	"qwen3.8-max": "Strong",
 	"qwen3.7-max": "Strong",
@@ -304,6 +332,114 @@ export function withContextWindow(entry) {
 	return { ...entry, context_window: CONTEXT_WINDOW[entry.id] };
 }
 
+/**
+ * The MODEL IDENTITY behind a discovery id: strip the ROUTE, keep the model.
+ *
+ * Identity is the third axis, alongside `tier` (what a route costs) and `grade`
+ * (what a model can do) — and unlike those two it needs no table, because it is
+ * already recoverable from the id. Three spellings reach the same DeepSeek
+ * weights (`deepseek-v4-pro`, `qwen:deepseek-v4-pro`, `deepseek/deepseek-v4-pro`)
+ * and nothing in the payload said so, which let a consumer picking one model per
+ * `provider` seat the SAME model twice and read the result as agreement
+ * (issue #39).
+ *
+ * SPLIT ON THE FIRST SEPARATOR, NOT THE LAST. This is the whole subtlety, and
+ * the issue's own first draft got it wrong. `/` and `:` are not interchangeable:
+ * `/` marks OpenRouter's vendor namespace, `:` marks a cc-proxy provider lens —
+ * but OpenRouter ALSO spells its structural variants with a trailing colon
+ * (`google/gemini-3.7-flash:batch`, `:free`). Measured over a live 415-id
+ * catalogue: 66 ids carry both separators. Last-separator splitting collapses
+ * 50 of them into one identity called `batch`, spanning seven vendors. So the
+ * variant stays ATTACHED — it names a different way to reach the model, and
+ * two ids differing only in variant are not interchangeable seats.
+ *
+ * The `:` strip reuses PROVIDER_IDS (the same guard parseModelSelector uses in
+ * router.js) rather than splitting on any colon, so an unknown `foo:bar` is left
+ * whole — a future vendor id containing a colon must not be silently truncated.
+ *
+ * @doctest identityOf("qwen:deepseek-v4-pro") -> "deepseek-v4-pro"
+ * @doctest identityOf("deepseek/deepseek-v4-pro") -> "deepseek-v4-pro"
+ * @doctest identityOf("deepseek-v4-pro") -> "deepseek-v4-pro"
+ * @doctest identityOf("google/gemini-3.7-flash:batch") -> "gemini-3.7-flash:batch"
+ * @doctest identityOf("bogus:thing") -> "bogus:thing"
+ * @doctest identityOf("z-ai/glm-5.3") -> "glm-5.3"
+ * @doctest identityOf("vendor/family/model-1") -> "family/model-1"
+ *
+ * TAKES `unknown`, NOT `string`, and that is the honest signature rather than a
+ * loosened one. The ids come from live vendor catalogues, and `coerceEntry()`
+ * admits an entry on a TRUTHY `id` (`if (!e || !e.id) return null`) — so a
+ * vendor sending `id: 123` reaches this function, and the guard below is
+ * load-bearing rather than defensive dressing. Annotating the parameter
+ * `string` made the guard's own branch narrow to `never`, which type-checks
+ * clean while promising a `string` return this function cannot honour for a
+ * non-string input: the id is returned unchanged, on purpose, because dropping
+ * or stringifying it would invent an identity the catalogue never published.
+ * `unknown` in / `unknown` out states exactly that, and makes the one caller
+ * (dedupByIdentity's Map key) obviously correct — a Map keys on anything.
+ *
+ * @param {unknown} id
+ * @returns {unknown} the identity when `id` is a string; `id` itself otherwise
+ */
+export function identityOf(id) {
+	if (typeof id !== "string") return id;
+	const slash = id.indexOf("/");
+	if (slash > 0) return id.slice(slash + 1);
+	const colon = id.indexOf(":");
+	if (colon <= 0) return id;
+	const head = id.slice(0, colon);
+	const tail = id.slice(colon + 1);
+	if (!tail || !PROVIDER_IDS.has(head)) return id;
+	return tail;
+}
+
+/**
+ * Collapse discovery entries to one per model identity — the `?dedup=identity`
+ * view of `GET /v1/models`.
+ *
+ * PUBLISHES NO NEW FACT. `tier` and `usable` already ship on every entry and
+ * `identityOf` reads the id; this applies the rule once, centrally, instead of
+ * asking every consumer to re-derive it — which is the failure this exists to
+ * prevent, since the re-derivation is exactly what went wrong in issue #39's
+ * own first draft.
+ *
+ * The winner within a group, in order: usable beats `usable: false` (an entry
+ * that cannot complete a turn is not a substitute for one that can), then the
+ * LOWEST tier (same weights, cheaper route — `deepseek-v4-pro` is tier 3 native
+ * while `qwen:deepseek-v4-pro` is tier 2 plan-served), then first-seen. An entry
+ * with no `tier` sorts last rather than winning by virtue of a missing field.
+ *
+ * Winners keep the original array order, so the provider grouping consumers rely
+ * on (see push() in collectModels) survives.
+ *
+ * @param {ModelEntry[]} data
+ * @returns {ModelEntry[]}
+ */
+export function dedupByIdentity(data) {
+	/** @type {Map<string, { entry: ModelEntry, at: number }>} */
+	const best = new Map();
+	data.forEach((entry, at) => {
+		const key = identityOf(entry.id);
+		const prior = best.get(key);
+		if (!prior || beats(entry, prior.entry)) best.set(key, { entry, at });
+	});
+	return [...best.values()].sort((a, b) => a.at - b.at).map((w) => w.entry);
+}
+
+/**
+ * Is `candidate` the better representative of an identity than `incumbent`?
+ * Ties go to the incumbent, which is the earlier entry — hence first-seen.
+ * @param {ModelEntry} candidate
+ * @param {ModelEntry} incumbent
+ * @returns {boolean}
+ */
+function beats(candidate, incumbent) {
+	const usable = (e) => (e.usable === false ? 1 : 0);
+	if (usable(candidate) !== usable(incumbent)) return usable(candidate) < usable(incumbent);
+	// A missing tier must not win by comparing as undefined; sort it last.
+	const tier = (e) => (typeof e.tier === "number" ? e.tier : Number.POSITIVE_INFINITY);
+	return tier(candidate) < tier(incumbent);
+}
+
 /** Reachable Claude ids advertised on discovery. Not public-API-stable — re-confirm
  * before each release touching Claude compat. claude-haiku-* omitted (internal ops
  * pin); claude-mythos-5 omitted (Project Glasswing-gated — unreachable by default). */
@@ -503,7 +639,34 @@ async function fetchGlmModels(glm, timeoutMs) {
  * cannot actually use: they resolve (so they are NOT "model not exist") and then
  * fail on BODY SHAPE — `"Input should be a valid list: input.messages.0"`,
  * `"url error"` — because they want an image/audio request schema. Invariant 5
- * keeps a translation layer out, so they stay unusable here.
+ * keeps a translation layer out, so they stay unusable HERE, on `/v1/messages`.
+ *
+ * `usable: false` means "cannot complete a TURN", never "unreachable". Two of
+ * these are reachable, on another path, and the flag must not be read as a
+ * verdict on the model. Both halves measured 2026-08-25 against the Token Plan
+ * host with a live key; the re-runnable form is `pnpm probe:vendors`.
+ *
+ * IMAGE — WORKS, via the tunnel (issue #40). `wan2.7-image` / `-pro` answer 200
+ * on `POST /api/v1/services/aigc/multimodal-generation/generation` with the
+ * DashScope-native body (`input.messages[].content` a list of typed parts,
+ * `parameters.size`), returning a SIGNED OSS URL with an `Expires` — see the
+ * `mediaBaseUrl` comment in providers.js. cc-proxy forwards that path untouched,
+ * so a plan holder reaches these without paying for a metered alternative. They
+ * stay `usable: false` regardless, because that is still true of `/v1/messages`
+ * and putting them in `/model` would offer a turn that cannot complete.
+ *
+ * AUDIO — DOES NOT WORK, and that is now a measurement rather than an
+ * assumption. `qwen-audio-3.0-tts-plus`: every HTTP candidate 400s with
+ * `InvalidParameter: url error` (`/text2speech/speech-synthesis`,
+ * `/speech-generation/generation`, `/services/audio/tts`, and
+ * multimodal-generation with a TTS body); `/compatible-mode/v1/audio/speech`
+ * 404s; `/compatible-mode/v1/chat/completions` with `modalities:["audio"]` 500s.
+ * The one route that ACCEPTS the task is WebSocket `wss://…/api-ws/v1/inference`
+ * — `task-started` arrives, so model and auth are valid, and then `task-failed`,
+ * `[cosyvoice:]Engine error [411]`, for every voice (Cherry / Ethan /
+ * longxiaochun), format (wav / mp3), and language tried. Vendor-side breakage,
+ * not a shape we have yet to guess. It is also untunnellable here: the proxy has
+ * no `upgrade` handler, so WebSocket is not a passthrough candidate.
  *
  * Published anyway, flagged: dropping them would make discovery lie about what
  * the plan includes, while listing them silently would hand `/model` four

@@ -13,6 +13,9 @@
  * @property {AuthStrategy} auth
  * @property {(model: string | undefined) => boolean} match
  * @property {boolean} [isDefault]
+ * @property {string} [mediaBaseUrl] host root for the media-generation tunnel;
+ *   see the qwen entry in buildProviders(). Present only where the backend
+ *   serves media on a path OUTSIDE its Anthropic skin.
  */
 
 /**
@@ -222,10 +225,28 @@ export function buildProviders(env = process.env, defaultId = env.DEFAULT_BACKEN
 	// segment yields `/v1/v1/messages` → 404.
 	//
 	// No quirks: Qwen has no Z.ai-style 1313 flag or 200-stop_reason overflow signal.
+	//
+	// `mediaBaseUrl` is the SAME HOST at its ROOT, and the missing `/apps/anthropic`
+	// is the entire point. The plan includes image models (`wan2.7-image`,
+	// `wan2.7-image-pro`) that the Anthropic skin cannot express — it rejects their
+	// body shape (issue #40) — but that reach the DashScope-native
+	// multimodal-generation path on this host. Since upstreamRequestOptions()
+	// concatenates `baseUrl + req.url` with no rewriting (proxy.js), routing that
+	// path through the skin's baseUrl would produce
+	// `/apps/anthropic/api/v1/services/…` and 404. A second base URL is the whole
+	// mechanism; there is no path-rewriting layer and there must not be one.
+	// Measured 2026-08-25 with a live Token Plan key: POST
+	// `/api/v1/services/aigc/multimodal-generation/generation` with
+	// `{"model":"wan2.7-image","input":{"messages":[{"role":"user",
+	// "content":[{"text":"…"}]}]},"parameters":{"size":"1024*1024"}}` → 200, and the
+	// body carries `output.choices[0].message.content[0].image` as a SIGNED OSS URL
+	// with an `Expires` query param (not inline base64) — a caller must fetch it
+	// before that passes. Re-measured by `pnpm probe:vendors`.
 	if (env.DASHSCOPE_API_KEY) {
 		providers.push({
 			id: "qwen",
 			baseUrl: "https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic",
+			mediaBaseUrl: "https://token-plan.ap-southeast-1.maas.aliyuncs.com",
 			apiKey: env.DASHSCOPE_API_KEY,
 			auth: "bearer",
 			// Three disjoint claims, no slash ids (those are OpenRouter's):
