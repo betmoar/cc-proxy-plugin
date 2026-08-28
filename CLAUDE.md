@@ -254,7 +254,10 @@ apply *if* it fires); **8** the `<provider>:` selector, the cross-host probe
 matrix, and the measured +79-token plan preamble; **9** grades — the
 `Specialist` default and `Economy` are gone as of 0.6.1 (an unassessed id now
 omits `grade`); what remains open is where assessments come from at all;
-**12** `ROUTES` is hand-probed and rots silently, and no test can catch it.
+**12** `ROUTES` is hand-probed and rots silently, and no test can catch it;
+**16–20** the free-claude-code recon (2026-08-28): gateway model discovery,
+optional proxy auth, request-id correlation, the Kimi provider candidate, and
+the declined-features register with per-feature invariant reasons (#44–#48).
 
 ## Operator
 
