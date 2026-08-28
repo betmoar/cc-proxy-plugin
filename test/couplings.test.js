@@ -280,17 +280,20 @@ describe("cross-file couplings", () => {
 		// The literal must still be built the way this test models it. If the
 		// template changes shape, this assertion fails FIRST with a pointer,
 		// rather than the sample lines below silently testing a stale format.
+		// The formatter may wrap the call across lines, so whitespace between
+		// the tokens is matched loosely — the TEMPLATE ITSELF is pinned, not
+		// its line wrapping.
 		assert.match(
 			src,
-			/console\.log\(`\[\$\{new Date\(\)\.toISOString\(\)\}\] \$\{inboundModel\} -> \$\{provider\.id\}\$\{via\} \$\{req\.url\}`\)/,
+			/console\.log\(\s*`\[\$\{new Date\(\)\.toISOString\(\)\}\] \{\$\{reqId\}\} \$\{inboundModel\} -> \$\{provider\.id\}\$\{via\} \$\{req\.url\}`\s*,?\s*\)/,
 			"the routing log template in src/server.js changed — update scripts/status.js parseRoutingLines() and this test together",
 		);
 
 		const stamp = "2026-08-14T11:15:10.068Z";
 		const lines = [
-			`[${stamp}] glm-5.2 -> qwen /v1/messages`,
-			`[${stamp}] glm-5.2[1m] -> qwen (routed as glm-5.2) /v1/messages`,
-			`[${stamp}] qwen:deepseek-v4-pro -> qwen (routed as deepseek-v4-pro) /v1/messages`,
+			`[${stamp}] {a1b2c3d4} glm-5.2 -> qwen /v1/messages`,
+			`[${stamp}] {a1b2c3d4} glm-5.2[1m] -> qwen (routed as glm-5.2) /v1/messages`,
+			`[${stamp}] {a1b2c3d4} qwen:deepseek-v4-pro -> qwen (routed as deepseek-v4-pro) /v1/messages`,
 			`[${stamp}] unknown -> claude /v1/messages/count_tokens`,
 		];
 		assert.deepEqual(

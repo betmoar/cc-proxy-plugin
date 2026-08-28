@@ -788,7 +788,7 @@ describe("server end-to-end routing", () => {
 		}
 		const route = logged.find((l) => / -> /.test(l));
 		assert.ok(route, "a routing line was logged");
-		assert.match(route, /] glm-5\.2 -> glm \/v1\/messages\?beta=true$/);
+		assert.match(route, /\] \{[0-9a-f]+\} glm-5\.2 -> glm \/v1\/messages\?beta=true$/);
 	});
 
 	// Issue #34 follow-up. The routing DECISION is made on a normalized id, but
@@ -821,7 +821,7 @@ describe("server end-to-end routing", () => {
 		assert.ok(route, "a routing line was logged");
 		assert.match(
 			route,
-			/] glm-5\.2\[1m\] -> glm \(routed as glm-5\.2\) \/v1\/messages$/,
+			/\] \{[0-9a-f]+\} glm-5\.2\[1m\] -> glm \(routed as glm-5\.2\) \/v1\/messages$/,
 			"the raw id is reported, the normalized id explains the decision",
 		);
 
@@ -948,7 +948,7 @@ describe("server end-to-end routing", () => {
 		}
 		const route = logged.find((l) => / -> /.test(l));
 		assert.ok(route, "a routing line was logged");
-		assert.match(route, /] unknown -> claude \/v1\/messages\/count_tokens$/);
+		assert.match(route, /\] \{[0-9a-f]+\} unknown -> claude \/v1\/messages\/count_tokens$/);
 	});
 });
 
@@ -1193,5 +1193,100 @@ describe("LM Studio provider (selector-only, base-URL gated)", () => {
 		assert.match(res.body, /message_stop/);
 		assert.equal(lmstudio.calls.length, 1);
 		assert.equal(JSON.parse(lmstudio.calls[0].body).model, "openai/gpt-oss-20b");
+	});
+});
+
+describe("request-id correlation (x-request-id + log stamp)", () => {
+	let qwen;
+	let claude;
+	let proxy;
+
+	afterEach(async () => {
+		await close(qwen?.server, claude?.server, proxy?.server);
+		qwen = claude = proxy = undefined;
+	});
+
+	async function wire(qwenHandler) {
+		qwen = await startBackend(qwenHandler);
+		claude = await startBackend(() => ({
+			status: 200,
+			headers: { "content-type": "application/json" },
+			body: NORMAL_200,
+		}));
+		const providers = buildProviders({ GLM_API_KEY: "g", DASHSCOPE_API_KEY: "q" }, "claude");
+		providers.find((p) => p.id === "qwen").baseUrl = qwen.baseUrl;
+		providers.find((p) => p.id === "claude").baseUrl = claude.baseUrl;
+		// GLM registers here but has NO stub — same trap the selector-strip suite
+		// documents: a glm- id would leave for the REAL api.z.ai with a fake key
+		// (observed as a 401 "token expired or incorrect", which reads like a
+		// proxy bug). Point it at a closed port so the failure is instant.
+		providers.find((p) => p.id === "glm").baseUrl = "http://127.0.0.1:1";
+		proxy = await startProxy({ port: 0, providers });
+	}
+
+	it("echoes x-request-id and stamps the SAME id on the routing line", async () => {
+		await wire(() => ({
+			status: 200,
+			headers: { "content-type": "application/json" },
+			body: NORMAL_200,
+		}));
+		const logged = [];
+		const orig = console.log;
+		console.log = (...a) => logged.push(a.join(" "));
+		let res;
+		try {
+			res = await post(proxy.port, {
+				model: "qwen:deepseek-v4-pro",
+				messages: [{ role: "user", content: "hi" }],
+			});
+		} finally {
+			console.log = orig;
+		}
+		const echoed = res.headers["x-request-id"];
+		assert.ok(echoed, "every response carries x-request-id");
+		assert.match(echoed, /^[0-9a-f]{8}$/);
+		const route = logged.find((l) => / -> /.test(l));
+		assert.ok(route.includes(`{${echoed}}`), `the routing line must carry the echoed id: ${route}`);
+	});
+
+	it("honors an inbound x-request-id instead of minting one (correlation survives a chain)", async () => {
+		// A client (or an outer gateway) that already assigns an id gets it back —
+		// that is the whole point of correlation. Truncated at 64 chars so a
+		// hostile inbound header cannot bloat the log line.
+		await wire(() => ({
+			status: 200,
+			headers: { "content-type": "application/json" },
+			body: NORMAL_200,
+		}));
+		const res = await post(
+			proxy.port,
+			{ model: "qwen:deepseek-v4-pro", messages: [{ role: "user", content: "hi" }] },
+			{ "x-request-id": "my-correlation-id-42" },
+		);
+		assert.equal(res.headers["x-request-id"], "my-correlation-id-42");
+	});
+
+	it("harvests the vendor request_id from a buffered error onto the log", async () => {
+		await wire(() => ({
+			status: 429,
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				error: { code: 1313, message: "FUP", request_id: "gen-abc123" },
+			}),
+		}));
+		const logged = [];
+		const orig = console.log;
+		console.log = (...a) => logged.push(a.join(" "));
+		try {
+			await post(proxy.port, {
+				model: "qwen:deepseek-v4-pro",
+				messages: [{ role: "user", content: "hi" }],
+			});
+		} finally {
+			console.log = orig;
+		}
+		const harvest = logged.find((l) => l.includes("[vendor-request-id]"));
+		assert.ok(harvest, "the vendor id was not harvested");
+		assert.match(harvest, /gen-abc123/);
 	});
 });

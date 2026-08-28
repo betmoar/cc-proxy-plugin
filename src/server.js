@@ -173,7 +173,7 @@ async function handleModels(res, config, dedup) {
  */
 const MEDIA_GENERATION_PATH = "/api/v1/services/aigc/multimodal-generation/generation";
 
-function handleMediaGeneration(req, res, bodyBuffer, config) {
+function handleMediaGeneration(req, res, bodyBuffer, config, reqId) {
 	const qwen = providerById(config, "qwen");
 	// No key, no tunnel — and say so. Falling through to handleProxy here would
 	// route a plan-only path at the default backend on the user's OAuth
@@ -189,7 +189,7 @@ function handleMediaGeneration(req, res, bodyBuffer, config) {
 	// twice). Only baseUrl differs: same host, same bearer auth, no
 	// `/apps/anthropic` — see the mediaBaseUrl comment in providers.js.
 	const tunnel = { ...qwen, baseUrl: qwen.mediaBaseUrl };
-	console.log(`[${new Date().toISOString()}] media -> ${tunnel.id} ${req.url}`);
+	console.log(`[${new Date().toISOString()}] {${reqId}} media -> ${tunnel.id} ${req.url}`);
 	// DashScope streams this endpoint via a REQUEST header, not a body field, so
 	// the usual `body.stream === true` check would miss it and send an SSE
 	// response down the buffering path.
@@ -197,7 +197,7 @@ function handleMediaGeneration(req, res, bodyBuffer, config) {
 		forward(req, res, tunnel, bodyBuffer);
 		return;
 	}
-	forwardBuffered(req, res, tunnel, bodyBuffer, "media");
+	forwardBuffered(req, res, tunnel, bodyBuffer, "media", reqId);
 }
 
 // Cap on buffering a non-streaming response. The overflow signal is tiny (an
@@ -209,7 +209,7 @@ const NON_STREAM_BUFFER_LIMIT = 1024 * 1024;
 // Non-streaming path. Buffer the response so a GLM context-overflow (200 +
 // empty content + stop_reason) can be converted into a real error instead of a
 // silent empty turn. Larger-than-cap and everything else pass through unchanged.
-function forwardBuffered(clientReq, clientRes, provider, outboundBuffer, inboundModel) {
+function forwardBuffered(clientReq, clientRes, provider, outboundBuffer, inboundModel, reqId) {
 	// `true` = force accept-encoding: identity upstream. The inspections below
 	// JSON.parse the raw response bytes; a gzipped body would fail to parse and
 	// both the overflow→400 conversion and the 1302 Retry-After injection would
@@ -246,6 +246,13 @@ function forwardBuffered(clientReq, clientRes, provider, outboundBuffer, inbound
 		upstreamRes.on("end", () => {
 			if (passthrough) return;
 			const bodyBuf = Buffer.concat(chunks);
+			// A vendor-side rejection carries the vendor's own request id (OpenRouter
+			// `gen-…`, Anthropic `req_…`). Landing it on a log line the user can find
+			// — same line as the routing decision — is what makes a vendor error
+			// traceable without reading raw bodies. Buffered path only: the streaming
+			// path is a pipe by invariant 1 and never inspects bytes.
+			const vendorId = status >= 400 ? vendorRequestIdOf(parseMaybeJson(bodyBuf)) : undefined;
+			if (vendorId) console.log(`[vendor-request-id] {${reqId}} ${vendorId}`);
 			if (status === 200 && isContextLimitByStopReason(parseMaybeJson(bodyBuf))) {
 				console.log(`[ctx-overflow] ${inboundModel} 200 -> 400 (context window exceeded)`);
 				sendJson(clientRes, 400, {
@@ -281,7 +288,7 @@ function forwardBuffered(clientReq, clientRes, provider, outboundBuffer, inbound
 	upstream.end();
 }
 
-function handleProxy(req, res, body, bodyBuffer, config) {
+function handleProxy(req, res, body, bodyBuffer, config, reqId) {
 	const { provider, upstreamModel } = resolve(body.model, config);
 	const inboundModel = body.model || "unknown";
 
@@ -327,7 +334,9 @@ function handleProxy(req, res, body, bodyBuffer, config) {
 	// " -> " and start with "[", so a trailing annotation is safe there.
 	const routedAs = routingIdOf(inboundModel);
 	const via = routedAs === inboundModel ? "" : ` (routed as ${routedAs})`;
-	console.log(`[${new Date().toISOString()}] ${inboundModel} -> ${provider.id}${via} ${req.url}`);
+	console.log(
+		`[${new Date().toISOString()}] {${reqId}} ${inboundModel} -> ${provider.id}${via} ${req.url}`,
+	);
 	debug(
 		"  metadata:",
 		JSON.stringify(body.metadata),
@@ -340,7 +349,7 @@ function handleProxy(req, res, body, bodyBuffer, config) {
 		forward(req, res, provider, outboundBuffer);
 		return;
 	}
-	forwardBuffered(req, res, provider, outboundBuffer, inboundModel);
+	forwardBuffered(req, res, provider, outboundBuffer, inboundModel, reqId);
 }
 
 /**
@@ -367,8 +376,51 @@ function parseJsonOrEmpty(buffer) {
 	}
 }
 
+/**
+ * One short opaque correlation id per request, stamped on the routing-log line
+ * and echoed to the client as `x-request-id`. The routing log answers "where
+ * did this model go" but not "which of these interleaved lines was MY request"
+ * — and the proxy is normally shared across several live sessions, so the
+ * question comes up constantly. Also harvested from error responses: when an
+ * upstream body carries a vendor `request_id`, it lands on the same log line,
+ * so correlating a vendor-side rejection with our routing decision stops being
+ * manual archaeology.
+ *
+ * NOT a tracing system: no spans, no persistence, no config. 8 hex chars —
+ * uniqueness within a log-rotation window is all the contract needs, and
+ * `Math.random` is sufficient for that (collision odds across a 5 MB window
+ * of lines are negligible; the failure mode of a collision is two lines
+ * sharing a tag, not a wrong route).
+ *
+ * @param {http.IncomingMessage} req
+ * @returns {string}
+ */
+function requestIdOf(req) {
+	return (
+		req.headers["x-request-id"]?.toString().slice(0, 64) || Math.random().toString(16).slice(2, 10)
+	);
+}
+
+/**
+ * The vendor's own request id, when an error body carries one (OpenRouter:
+ * `request_id` like `gen-…`; Anthropic: `request.id`). Unknown shapes yield
+ * undefined and the log line simply omits the tag.
+ * @param {unknown} body
+ * @returns {string | undefined}
+ */
+export function vendorRequestIdOf(body) {
+	const b = /** @type {any} */ (body);
+	const v = b?.error?.request_id ?? b?.request_id ?? b?.error?.requestId ?? b?.request?.id;
+	return typeof v === "string" && v.length > 0 && v.length <= 128 ? v : undefined;
+}
+
 export function createServer(config) {
 	const server = http.createServer((req, res) => {
+		const reqId = requestIdOf(req);
+		// Echo before any branch: every response the proxy emits — routed,
+		// intercepted, or error — is correlatable to its log line. setHeader
+		// (not writeHead-merge) so each handler keeps owning its own head.
+		res.setHeader("x-request-id", reqId);
 		const chunks = [];
 		// A client that resets the connection mid-upload emits 'error' on the
 		// request stream; without a listener that is an uncaught exception that
@@ -416,11 +468,11 @@ export function createServer(config) {
 			// handleProxy because routing is body-driven everywhere else and this
 			// path's ids match no predicate; see handleMediaGeneration.
 			if (pathname === MEDIA_GENERATION_PATH) {
-				if (req.method === "POST") handleMediaGeneration(req, res, bodyBuffer, config);
+				if (req.method === "POST") handleMediaGeneration(req, res, bodyBuffer, config, reqId);
 				else sendJson(res, 405, { error: { message: "POST required" } });
 				return;
 			}
-			handleProxy(req, res, parseJsonOrEmpty(bodyBuffer), bodyBuffer, config);
+			handleProxy(req, res, parseJsonOrEmpty(bodyBuffer), bodyBuffer, config, reqId);
 		});
 	});
 	return server;
