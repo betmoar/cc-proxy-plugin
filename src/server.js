@@ -1,5 +1,6 @@
 // @ts-check
 import http from "node:http";
+import { randomBytes } from "node:crypto";
 import {
 	RATE_LIMIT_RETRY_AFTER_SECONDS,
 	isContextLimitByStopReason,
@@ -402,13 +403,21 @@ function parseJsonOrEmpty(buffer) {
  * — anything else (and the whole header, if a newline somehow made it past
  * Node's header parser) falls back to a minted id. Still truncated to 64.
  *
+ * MINTED IDS ARE ALWAYS EXACTLY 8 CHARS, via randomBytes rather than
+ * `Math.random().toString(16)`: that older form returns fewer than 8
+ * characters when the float's hex expansion is short — provably the empty
+ * string when Math.random() lands exactly on 0 (a 2^-52 event per process;
+ * also any value under 1/2^32 shortens the leading zeros away). A regex
+ * `[0-9a-f]{8}` in tests plus the log contract should not rest on a
+ * probabilistic length.
+ *
  * @param {http.IncomingMessage} req
  * @returns {string}
  */
 function requestIdOf(req) {
 	const inbound = req.headers["x-request-id"]?.toString().slice(0, 64);
 	if (inbound && /^[A-Za-z0-9._-]+$/.test(inbound)) return inbound;
-	return Math.random().toString(16).slice(2, 10);
+	return randomBytes(4).toString("hex");
 }
 
 /**
