@@ -392,13 +392,23 @@ function parseJsonOrEmpty(buffer) {
  * of lines are negligible; the failure mode of a collision is two lines
  * sharing a tag, not a wrong route).
  *
+ * INBOUND IDS ARE SANITIZED, not just length-capped, and that is log-forging
+ * defense, not tidiness. The id is interpolated into a log line that
+ * scripts/status.js parseRoutingLines() filters on `starts with "[" and
+ * contains " -> "`; an id carrying `] ` + a fake `[ts] x -> y` shape would
+ * otherwise let any client able to set one header invent routing history in
+ * /cc-proxy:status output (measured: `} fake-line [2026-01-01T00:00:00Z] evil
+ * -> pwned` landed as a plausible extra route). Only `[A-Za-z0-9._-]` survive
+ * — anything else (and the whole header, if a newline somehow made it past
+ * Node's header parser) falls back to a minted id. Still truncated to 64.
+ *
  * @param {http.IncomingMessage} req
  * @returns {string}
  */
 function requestIdOf(req) {
-	return (
-		req.headers["x-request-id"]?.toString().slice(0, 64) || Math.random().toString(16).slice(2, 10)
-	);
+	const inbound = req.headers["x-request-id"]?.toString().slice(0, 64);
+	if (inbound && /^[A-Za-z0-9._-]+$/.test(inbound)) return inbound;
+	return Math.random().toString(16).slice(2, 10);
 }
 
 /**

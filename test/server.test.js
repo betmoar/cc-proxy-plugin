@@ -1290,3 +1290,54 @@ describe("request-id correlation (x-request-id + log stamp)", () => {
 		assert.match(harvest, /gen-abc123/);
 	});
 });
+
+describe("request-id sanitization (log-forging defense)", () => {
+	it("drops an inbound id carrying log-shape payload and mints a clean one instead", async () => {
+		let lm;
+		let claude;
+		let proxy;
+		try {
+			lm = await startBackend(() => ({
+				status: 200,
+				headers: { "content-type": "application/json" },
+				body: NORMAL_200,
+			}));
+			claude = await startBackend(() => ({
+				status: 200,
+				headers: { "content-type": "application/json" },
+				body: NORMAL_200,
+			}));
+			const providers = buildProviders({ LMSTUDIO_BASE_URL: lm.baseUrl }, "claude");
+			providers.find((p) => p.id === "lmstudio").baseUrl = lm.baseUrl;
+			providers.find((p) => p.id === "claude").baseUrl = claude.baseUrl;
+			proxy = await startProxy({ port: 0, providers });
+
+			const logged = [];
+			const orig = console.log;
+			console.log = (...a) => logged.push(a.join(" "));
+			let res;
+			try {
+				res = await post(
+					proxy.port,
+					{ model: "lmstudio:openai/gpt-oss-20b", messages: [{ role: "user", content: "hi" }] },
+					// Measured attack: the `] ` closes the log timestamp, the rest
+					// parses as a plausible extra routing line in /cc-proxy:status.
+					{
+						"x-request-id":
+							"} fake-line [2026-01-01T00:00:00Z] evil -> pwned",
+					},
+				);
+			} finally {
+				console.log = orig;
+			}
+			assert.equal(res.status, 200);
+			const echoed = res.headers["x-request-id"];
+			assert.match(echoed, /^[0-9a-f]{8}$/, "hostile id must be replaced by a minted one");
+			const route = logged.find((l) => / -> /.test(l));
+			assert.ok(!route.includes("evil"), "no attacker-controlled text may reach the log");
+			assert.match(route, /^\[[^\]]+\] \{[0-9a-f]{8}\} lmstudio:/u);
+		} finally {
+			await close(lm?.server, claude?.server, proxy?.server);
+		}
+	});
+});
