@@ -1,6 +1,6 @@
 // @ts-check
-import http from "node:http";
 import { randomBytes } from "node:crypto";
+import http from "node:http";
 import {
 	RATE_LIMIT_RETRY_AFTER_SECONDS,
 	isContextLimitByStopReason,
