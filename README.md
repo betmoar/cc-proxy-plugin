@@ -281,7 +281,7 @@ The statusline runs as its own subprocess and only inherits `settings.json`'s `e
 | `OPENROUTER_API_KEY` | — | Enable OpenRouter (slash-namespaced models; lives in `~/.env`) |
 | `DEEPSEEK_API_KEY` | — | Enable DeepSeek (bare `deepseek-*` models; lives in `~/.env`) |
 | `DASHSCOPE_API_KEY` | — | Enable Qwen (bare `qwen`-prefixed models, Token Plan skin; lives in `~/.env`) |
-| `LMSTUDIO_BASE_URL` | — | Enable LM Studio (self-hosted Anthropic skin, e.g. `http://mini.lan:1234`). Selector-only: reach models as `lmstudio:<model-id>` — no bare id routes there. Lives in `~/.env` |
+| `LMSTUDIO_BASE_URL` | — | Enable LM Studio (self-hosted Anthropic skin, e.g. `http://192.168.1.50:1234`). Selector-only: reach models as `lmstudio:<model-id>` — no bare id routes there. Lives in `~/.env` |
 | `LMSTUDIO_API_KEY` | — | LM Studio token when "Require Authentication" is on; optional (a dummy token is sent otherwise and ignored when auth is off). Lives in `~/.env` |
 | `OPENROUTER_MODELS` | live | Pin the OpenRouter ids in `GET /v1/models` (comma-separated); set = skip the live fetch, unset = fetch live with a curated fallback. Discovery only |
 | `PROXY_PATH` | auto | Legacy override for the proxy entry point; the plugin tree's own `bin/cc-proxy.js` wins when present |

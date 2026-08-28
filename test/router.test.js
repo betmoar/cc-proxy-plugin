@@ -684,7 +684,7 @@ describe("router", () => {
 	describe("LM Studio (selector-only)", () => {
 		const withLm = {
 			port: 4000,
-			providers: buildProviders({ LMSTUDIO_BASE_URL: "http://mini.lan:1234" }, "claude"),
+			providers: buildProviders({ LMSTUDIO_BASE_URL: "http://localhost:1234" }, "claude"),
 		};
 		const crowded = {
 			port: 4000,
@@ -694,7 +694,7 @@ describe("router", () => {
 					OPENROUTER_API_KEY: "o",
 					DEEPSEEK_API_KEY: "d",
 					DASHSCOPE_API_KEY: "q",
-					LMSTUDIO_BASE_URL: "http://mini.lan:1234",
+					LMSTUDIO_BASE_URL: "http://localhost:1234",
 				},
 				"claude",
 			),
@@ -792,7 +792,7 @@ describe("LM Studio as DEFAULT_BACKEND (the documented explicit exception)", () 
 	// the haiku pin still outranks even that.
 	const lmDefault = {
 		port: 4000,
-		providers: buildProviders({ LMSTUDIO_BASE_URL: "http://mini.lan:1234" }, "lmstudio"),
+		providers: buildProviders({ LMSTUDIO_BASE_URL: "http://localhost:1234" }, "lmstudio"),
 	};
 
 	it("unmatched ids fall through to lmstudio when it is the explicit default", () => {

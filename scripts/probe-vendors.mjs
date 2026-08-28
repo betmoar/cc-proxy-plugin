@@ -152,7 +152,7 @@ const CASES = [
 		// own Claude Code example uses). Skipped when no host is configured, so it
 		// never invents reachability for a server this machine does not have.
 		// The URL derives from the env var, NOT a literal: the host is per-user
-		// infrastructure (mini.lan vs an IP vs localhost), so a hardcoded one
+		// infrastructure (a LAN hostname vs an IP vs localhost), so a hardcoded one
 		// probes a machine the operator does not have.
 		name: "lmstudio answers the Anthropic Messages skin",
 		claim: "src/providers.js lmstudio entry — /v1/messages is the one documented endpoint",

@@ -283,7 +283,7 @@ export function buildProviders(env = process.env, defaultId = env.DEFAULT_BACKEN
 	// skin at `/v1/messages` (lmstudio.ai/docs/developer/anthropic-compat — its
 	// only documented Anthropic endpoint, and baseUrl passthrough lands on it
 	// exactly). Opt-in gated on LMSTUDIO_BASE_URL, NOT on a key — the host is
-	// per-user infrastructure (e.g. `http://mini.lan:1234`, another machine on the
+	// per-user infrastructure (e.g. `http://192.168.1.50:1234`, another machine on the
 	// LAN), and the server often runs with authentication OFF, in which case there
 	// is no key at all: gating on LMSTUDIO_API_KEY would make an auth-off server
 	// unregistrable. LMSTUDIO_API_KEY stays optional; with auth enabled the server

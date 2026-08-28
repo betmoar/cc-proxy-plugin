@@ -51,7 +51,7 @@ until a key is added, then move on.
 
 **LM Studio — optional (self-hosted).** Ask the user whether they also run an LM Studio server they want reachable. If yes and `LMSTUDIO_BASE_URL` is missing or empty in `~/.env`, ask:
 
-> "Enter your LM Studio server base URL (e.g. http://mini.lan:1234 — the server must have 'Serve on Local Network' enabled to be reachable from another machine). It will be stored in ~/.env:"
+> "Enter your LM Studio server base URL (e.g. http://192.168.1.50:1234 — the server must have 'Serve on Local Network' enabled to be reachable from another machine). It will be stored in ~/.env:"
 
 If the user's server has "Require Authentication" enabled and `LMSTUDIO_API_KEY` is missing or empty, also ask:
 

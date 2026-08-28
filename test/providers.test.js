@@ -245,11 +245,11 @@ describe("buildProviders", () => {
 	});
 
 	it("registers LM Studio (bearer, selector-only) when its base URL is set", () => {
-		const providers = buildProviders({ LMSTUDIO_BASE_URL: "http://mini.lan:1234" });
+		const providers = buildProviders({ LMSTUDIO_BASE_URL: "http://localhost:1234" });
 		const lm = providers.find((p) => p.id === "lmstudio");
 		assert.ok(lm, "lmstudio provider present");
 		assert.equal(lm.auth, "bearer");
-		assert.equal(lm.baseUrl, "http://mini.lan:1234");
+		assert.equal(lm.baseUrl, "http://localhost:1234");
 		// Auth-off server: the dummy token LM Studio's own docs use for Claude
 		// Code. Harmless when auth is off (ignored), valid when auth is on.
 		assert.equal(lm.apiKey, "lmstudio");
@@ -259,7 +259,7 @@ describe("buildProviders", () => {
 
 	it("LM Studio uses the provided key when one is set", () => {
 		const lm = buildProviders({
-			LMSTUDIO_BASE_URL: "http://mini.lan:1234",
+			LMSTUDIO_BASE_URL: "http://localhost:1234",
 			LMSTUDIO_API_KEY: "real-secret",
 		}).find((p) => p.id === "lmstudio");
 		assert.equal(lm.apiKey, "real-secret");
