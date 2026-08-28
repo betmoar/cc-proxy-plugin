@@ -115,6 +115,12 @@ without a curated window (the OpenRouter-prefixed `vendor/model` ids, and
 `claude-*`) **omit the field entirely** rather than sending `null`, so a
 consumer tells "unknown" from "known" with `"context_window" in entry`.
 
+Claude Code itself can consume this list: `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` makes
+CC fetch `/v1/models` at startup and populate the `/model` picker. Measured (CC 2.1.250): CC keeps
+**only ids matching `claude` or `anthropic`**, requires `ANTHROPIC_AUTH_TOKEN` to be set (which
+demotes the claude.ai OAuth login), and ignores every other backend's ids — so for third-party
+models the one-custom-slot workflow above remains the way. See [`docs/OPERATIONS.md`](docs/OPERATIONS.md).
+
 Every entry also carries `provider` (which backend serves it) and `tier`, plus
 `grade` **when the model has been assessed**. **`tier` and `grade` are different
 axes and must not be read off one another:** `tier` is what the route COSTS

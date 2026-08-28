@@ -498,20 +498,18 @@ notes referencing "backlog item N" still resolve.
     copy fails 2 tests). Exporting `handleProxy` for a direct test is the real
     fix; weigh that against widening the module's surface.
 
-16. **Gateway model discovery** (`CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY`)
-    — CC ≥2.1.129 populates the native `/model` picker from the gateway's
-    `/v1/models` when this env var is set (opt-in since v2.1.129; see
-    anthropics/claude-code#56492). cc-proxy already publishes that endpoint as
-    its downstream publishing contract, so adoption is documentation-first:
-    set the flag in `/cc-proxy:setup`'s env block and the one-custom-slot
-    constraint dissolves — every curated id becomes pickable. Three things
-    must be MEASURED before wiring it in, not assumed: CC's tolerance of our
-    non-standard fields (`provider`/`tier`/`grade`, `created_at: null`,
-    `_errors`); the ~320-id OpenRouter flood into the picker (throttle =
-    existing `OPENROUTER_MODELS`, recommend pinning the graded six by
-    default); and whether CC reads `context_window` from a discovered model
-    or needs `CLAUDE_CODE_AUTO_COMPACT_WINDOW` separately for 1M GLM to
-    compact correctly. → issue #44.
+16. ~~**Gateway model discovery**
+    (`CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY`)** — DONE as a measured
+    opt-in (0.7.x). Measured against CC 2.1.250 (2026-08-28): CC's gate is
+    flag + firstParty base URL + a credential (`ANTHROPIC_AUTH_TOKEN`), and
+    the fetch is `GET /v1/models?limit=1000` whose result is filtered to
+    ids matching `/claude|anthropic/i` — zero matches aborts discovery. So
+    the picker gains only the `claude-*`/`~anthropic/*` ids it mostly
+    already has, the third-party one-slot constraint stands, and enabling
+    costs OAuth precedence (connectors disabled). The original premise
+    ("every curated id becomes pickable") was wrong; the measurement is the
+    deliverable, cc-proxy needed zero code changes. Documented in README +
+    OPERATIONS. Full evidence: issue #44.
 
 17. **Optional proxy auth for the off-loopback escape hatch.** `PROXY_HOST`
     is the documented opt-out of the loopback bind (invariant 7), and that
