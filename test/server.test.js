@@ -1113,3 +1113,85 @@ describe("provider selector strip (the local lens must never leak upstream)", ()
 		assert.equal(JSON.parse(claude.calls[0].body).model, "claude-haiku-4-5-20251001");
 	});
 });
+
+describe("LM Studio provider (selector-only, base-URL gated)", () => {
+	let lmstudio;
+	let claude;
+	let proxy;
+
+	afterEach(async () => {
+		await close(lmstudio?.server, claude?.server, proxy?.server);
+		lmstudio = claude = proxy = undefined;
+	});
+
+	async function wire(lmHandler) {
+		lmstudio = await startBackend(lmHandler);
+		claude = await startBackend(() => ({
+			status: 200,
+			headers: { "content-type": "application/json" },
+			body: NORMAL_200,
+		}));
+		const providers = buildProviders({ LMSTUDIO_BASE_URL: lmstudio.baseUrl }, "claude");
+		providers.find((p) => p.id === "lmstudio").baseUrl = lmstudio.baseUrl;
+		providers.find((p) => p.id === "claude").baseUrl = claude.baseUrl;
+		proxy = await startProxy({ port: 0, providers });
+	}
+
+	it("buffered: lmstudio:<id> reaches the LM Studio stub with the bare id and bearer auth", async () => {
+		await wire(() => ({
+			status: 200,
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				id: "msg_lm",
+				type: "message",
+				role: "assistant",
+				content: [{ type: "text", text: "from-lmstudio" }],
+				stop_reason: "end_turn",
+			}),
+		}));
+		const res = await post(proxy.port, {
+			model: "lmstudio:openai/gpt-oss-20b",
+			messages: [{ role: "user", content: "hi" }],
+		});
+		assert.equal(res.status, 200);
+		assert.match(res.body, /from-lmstudio/);
+		assert.equal(lmstudio.calls.length, 1);
+		assert.equal(
+			JSON.parse(lmstudio.calls[0].body).model,
+			"openai/gpt-oss-20b",
+			"the vendor receives its own id, not the lens",
+		);
+		assert.match(
+			lmstudio.calls[0].headers.authorization,
+			/^Bearer lmstudio$/,
+			"the dummy token from LM Studio's own docs",
+		);
+		assert.equal(
+			lmstudio.calls[0].headers["x-api-key"],
+			undefined,
+			"inbound x-api-key dropped — credential isolation",
+		);
+		assert.equal(claude.calls.length, 0);
+	});
+
+	it("streaming: SSE passes through untouched", async () => {
+		// Separate code from the buffered path. LM Studio's Anthropic skin emits
+		// standard message_start/content_block_delta/message_stop framing
+		// (probed live 2026-08-28), so the pipe must not disturb it.
+		await wire(() => ({
+			status: 200,
+			headers: { "content-type": "text/event-stream" },
+			body: 'event: message_start\ndata: {"type":"message_start"}\n\nevent: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"1"}}\n\nevent: message_stop\ndata: {"type":"message_stop"}\n\n',
+		}));
+		const res = await post(proxy.port, {
+			model: "lmstudio:openai/gpt-oss-20b",
+			stream: true,
+			messages: [{ role: "user", content: "count to five" }],
+		});
+		assert.equal(res.status, 200);
+		assert.match(res.body, /content_block_delta/);
+		assert.match(res.body, /message_stop/);
+		assert.equal(lmstudio.calls.length, 1);
+		assert.equal(JSON.parse(lmstudio.calls[0].body).model, "openai/gpt-oss-20b");
+	});
+});

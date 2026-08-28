@@ -1,7 +1,8 @@
 # cc-proxy — maintainer handoff
 
 A local HTTP proxy that lets Claude Code use GLM (Z.ai), OpenRouter, DeepSeek,
-Qwen, and Claude in one session. Claude Code points `ANTHROPIC_BASE_URL` at it;
+Qwen, LM Studio (self-hosted, `lmstudio:`-selector-only), and Claude in one
+session. Claude Code points `ANTHROPIC_BASE_URL` at it;
 the proxy routes each request **by model name** and forwards. That's the whole
 product. Resist making it more than that.
 

@@ -1,6 +1,6 @@
 ---
 name: setup
-description: One-time setup for the cc-proxy plugin. Writes API keys (all optional — GLM_API_KEY, OPENROUTER_API_KEY, DEEPSEEK_API_KEY, DASHSCOPE_API_KEY) to ~/.env, and configures ANTHROPIC_BASE_URL and the glm-5.3[1m] custom model option in ~/.claude/settings.json so the SessionStart hook can auto-start the proxy and /model can route to GLM. Invoke via /cc-proxy:setup.
+description: One-time setup for the cc-proxy plugin. Writes API keys (all optional — GLM_API_KEY, OPENROUTER_API_KEY, DEEPSEEK_API_KEY, DASHSCOPE_API_KEY, LMSTUDIO_BASE_URL, LMSTUDIO_API_KEY) to ~/.env, and configures ANTHROPIC_BASE_URL and the glm-5.3[1m] custom model option in ~/.claude/settings.json so the SessionStart hook can auto-start the proxy and /model can route to GLM. Invoke via /cc-proxy:setup.
 ---
 
 # cc-proxy setup
@@ -49,15 +49,25 @@ until a key is added, then move on.
 
 > "Enter your QwenCloud Token Plan API key (ANTHROPIC_AUTH_TOKEN from the QwenCloud console). It will be stored in ~/.env:"
 
+**LM Studio — optional (self-hosted).** Ask the user whether they also run an LM Studio server they want reachable. If yes and `LMSTUDIO_BASE_URL` is missing or empty in `~/.env`, ask:
+
+> "Enter your LM Studio server base URL (e.g. http://mini.lan:1234 — the server must have 'Serve on Local Network' enabled to be reachable from another machine). It will be stored in ~/.env:"
+
+If the user's server has "Require Authentication" enabled and `LMSTUDIO_API_KEY` is missing or empty, also ask:
+
+> "Enter your LM Studio API key. It will be stored in ~/.env:"
+
+(Auth-off servers need no key; a dummy token is sent and ignored. `LMSTUDIO_BASE_URL` is the opt-in — the key alone registers nothing.)
+
 Write each collected key to `~/.env` as a `KEY=value` line, one per line (e.g. `GLM_API_KEY=<value>`). If `~/.env` already exists, **merge** — update only the key lines you collected and preserve every other line unchanged. If it does not exist, create it with just the key line(s).
 
-The proxy only registers OpenRouter when `OPENROUTER_API_KEY` is set, and routes any model id containing a slash to it (e.g. `z-ai/glm-4.7`, `anthropic/claude-opus-4`). It only registers DeepSeek when `DEEPSEEK_API_KEY` is set, and routes any bare `deepseek-*` id to it (e.g. `deepseek-v4-pro`, `deepseek-v4-flash`). It only registers Qwen when `DASHSCOPE_API_KEY` is set, and routes any bare `qwen`-prefixed id to it (e.g. `qwen3.7-max`, `qwen3.6-flash`). **Tell the user this constraint:** Claude Code allows only **one** custom `/model` picker entry, and GLM uses it — so OpenRouter, DeepSeek, and Qwen models do **not** appear in the `/model` picker. They are reached only by (a) setting `DEFAULT_BACKEND=openrouter` (or `deepseek`, `qwen`) so unmatched requests fall through to it, or (b) a subagent/slash-command whose frontmatter pins the model id (which the proxy then routes verbatim).
+The proxy only registers OpenRouter when `OPENROUTER_API_KEY` is set, and routes any model id containing a slash to it (e.g. `z-ai/glm-4.7`, `anthropic/claude-opus-4`). It only registers DeepSeek when `DEEPSEEK_API_KEY` is set, and routes any bare `deepseek-*` id to it (e.g. `deepseek-v4-pro`, `deepseek-v4-flash`). It only registers Qwen when `DASHSCOPE_API_KEY` is set, and routes any bare `qwen`-prefixed id to it (e.g. `qwen3.7-max`, `qwen3.6-flash`). It only registers LM Studio when `LMSTUDIO_BASE_URL` is set, and routes **only** explicit `lmstudio:<model-id>` selectors to it — never a bare id (local model names would collide with the GLM/Qwen/OpenRouter predicates above). **Tell the user this constraint:** Claude Code allows only **one** custom `/model` picker entry, and GLM uses it — so OpenRouter, DeepSeek, Qwen, and LM Studio models do **not** appear in the `/model` picker. They are reached only by (a) setting `DEFAULT_BACKEND=openrouter` (or `deepseek`, `qwen`) so unmatched requests fall through to it, (b) a subagent/slash-command whose frontmatter pins the model id (which the proxy then routes verbatim), or — for LM Studio only — (c) any `/model lmstudio:<model-id>`-style selector, since bare local ids could not route anyway.
 
-**Migrate existing keys (one source of truth).** Read `~/.claude/settings.json`. If its `env` block contains `GLM_API_KEY`, `OPENROUTER_API_KEY`, `DEEPSEEK_API_KEY`, or `DASHSCOPE_API_KEY` (legacy setups), move them to `~/.env`: if `~/.env` already has the key, keep the `~/.env` value and just drop the settings.json copy; otherwise copy the value over then **remove** the key from settings.json `env`. After setup, keys must exist **only** in `~/.env`.
+**Migrate existing keys (one source of truth).** Read `~/.claude/settings.json`. If its `env` block contains `GLM_API_KEY`, `OPENROUTER_API_KEY`, `DEEPSEEK_API_KEY`, `DASHSCOPE_API_KEY`, `LMSTUDIO_BASE_URL`, or `LMSTUDIO_API_KEY` (legacy setups), move them to `~/.env`: if `~/.env` already has the key, keep the `~/.env` value and just drop the settings.json copy; otherwise copy the value over then **remove** the key from settings.json `env`. After setup, keys must exist **only** in `~/.env`.
 
 ### 3. Update `~/.claude/settings.json` (plumbing only — no keys)
 
-Read the current file, then merge the following into the `env` object (create `env` if missing). Preserve every other existing key unchanged, **except `PROXY_PATH`: delete it if present** (legacy version-pinned path; the hook resolves the binary from its own tree now). **Do not add `GLM_API_KEY`, `OPENROUTER_API_KEY`, `DEEPSEEK_API_KEY`, or `DASHSCOPE_API_KEY` here** — they go in `~/.env` (step 2).
+Read the current file, then merge the following into the `env` object (create `env` if missing). Preserve every other existing key unchanged, **except `PROXY_PATH`: delete it if present** (legacy version-pinned path; the hook resolves the binary from its own tree now). **Do not add `GLM_API_KEY`, `OPENROUTER_API_KEY`, `DEEPSEEK_API_KEY`, `DASHSCOPE_API_KEY`, `LMSTUDIO_BASE_URL`, or `LMSTUDIO_API_KEY` here** — they go in `~/.env` (step 2).
 
 ```json
 {

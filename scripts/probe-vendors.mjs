@@ -33,6 +33,17 @@ loadEnv();
 
 const JSON_OUT = process.argv.includes("--json");
 
+// LM Studio's server is per-user infrastructure, so its URL comes from the same
+// env var the provider gates on — a literal here would probe a machine the
+// operator does not have. Read inside the function, not at module top: an
+// import hoisted above a caller's loadEnv() would capture the pre-~/.env
+// environment (the scripts/quota.js coupling).
+function lmstudioMessagesUrl() {
+	const base = process.env.LMSTUDIO_BASE_URL;
+	if (!base) return "";
+	return `${base.replace(/\/+$/, "")}/v1/messages`;
+}
+
 /**
  * Each case pins what a source comment claims, WHERE it claims it, and what the
  * vendor must answer for that claim to still hold. `expect` is the status; the
@@ -133,6 +144,60 @@ const CASES = [
 		// then fails in the engine — status records which of the two happened.
 		expect: "task-failed",
 		bodyMatch: /Engine error \[411\]/,
+	},
+	{
+		// LM Studio's Anthropic skin accepts a Messages body. Keyed on
+		// LMSTUDIO_BASE_URL (the same gate the provider uses — the key is optional,
+		// server auth is often off, and the dummy token below is what LM Studio's
+		// own Claude Code example uses). Skipped when no host is configured, so it
+		// never invents reachability for a server this machine does not have.
+		// The URL derives from the env var, NOT a literal: the host is per-user
+		// infrastructure (mini.lan vs an IP vs localhost), so a hardcoded one
+		// probes a machine the operator does not have.
+		name: "lmstudio answers the Anthropic Messages skin",
+		claim: "src/providers.js lmstudio entry — /v1/messages is the one documented endpoint",
+		url: lmstudioMessagesUrl(),
+		auth: (k) => ({ authorization: `Bearer ${k}` }),
+		key: "LMSTUDIO_BASE_URL",
+		model: "openai/gpt-oss-20b",
+		// Any loaded model answers; the dummy key satisfies auth-on servers and is
+		// ignored by auth-off ones (both measured 2026-08-28 against a live server).
+		expect: 200,
+		bodyMatch: /"stop_reason"/,
+	},
+	{
+		// The make-or-break claim: tool use over the SKIN, which LM Studio's docs
+		// do not state (tools are documented only under its OpenAI compat). Claude
+		// Code is useless without it. Measured working 2026-08-28; if LM Studio
+		// regresses, this fails and the provider needs a re-think.
+		name: "lmstudio serves tool_use over the Anthropic skin",
+		claim: "src/providers.js lmstudio entry — CC sessions need tool_use",
+		url: lmstudioMessagesUrl(),
+		auth: (k) => ({ authorization: `Bearer ${k}` }),
+		key: "LMSTUDIO_BASE_URL",
+		model: "openai/gpt-oss-20b",
+		body: (model) => ({
+			model,
+			// 64 was measured too tight: the model sometimes spends the budget on
+			// reasoning and returns stop_reason:max_tokens with EMPTY content — a
+			// 200 that carries no tool_use, indistinguishable in the gate from a
+			// compat regression. 300/5/5 gave 5/5 tool_use.
+			max_tokens: 300,
+			messages: [{ role: "user", content: "Use the get_weather tool for Tokyo, then stop." }],
+			tools: [
+				{
+					name: "get_weather",
+					description: "Get current weather",
+					input_schema: {
+						type: "object",
+						properties: { location: { type: "string" } },
+						required: ["location"],
+					},
+				},
+			],
+		}),
+		expect: 200,
+		bodyMatch: /"type"\s*:\s*"tool_use"/,
 	},
 ];
 

@@ -30,6 +30,7 @@ describe("cross-file couplings", () => {
 			OPENROUTER_API_KEY: "o",
 			DEEPSEEK_API_KEY: "d",
 			DASHSCOPE_API_KEY: "q",
+			LMSTUDIO_BASE_URL: "http://x:1234",
 		}).map((p) => p.id);
 		const missing = registrable.filter((id) => !PROVIDER_IDS.has(id));
 		assert.deepEqual(
@@ -338,6 +339,7 @@ describe("cross-file couplings", () => {
 			DEEPSEEK_API_KEY: "d",
 			DASHSCOPE_API_KEY: "q",
 			OPENROUTER_API_KEY: "o",
+			LMSTUDIO_BASE_URL: "http://x:1234",
 		});
 		for (const [id, config, expected, branch] of [
 			["claude-haiku-4-5-20251001[1m]", allKeys, "claude-haiku-4-5-20251001", "haiku pin"],

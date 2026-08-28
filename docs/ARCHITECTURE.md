@@ -4,7 +4,7 @@ Design and rationale for cc-proxy. For runtime facts and debugging, see [`OPERAT
 
 ## Goal
 
-Use GLM (Z.ai), DeepSeek, OpenRouter, Qwen, and Claude in one Claude Code session, switching with `/model` and no restart. Code-heavy turns can run on GLM (cheaper per token); conversational turns stay on Claude. Quotas visible at a glance.
+Use GLM (Z.ai), DeepSeek, OpenRouter, Qwen, LM Studio, and Claude in one Claude Code session, switching with `/model` and no restart. Code-heavy turns can run on GLM (cheaper per token); conversational turns stay on Claude. Quotas visible at a glance.
 
 A local HTTP proxy sits between Claude Code and the upstream APIs. Claude Code points `ANTHROPIC_BASE_URL` at it; the proxy routes each request by model name and forwards. **Every provider becomes a native Claude Code model** — every CC tool, subagent, and prompt-cache works unchanged.
 
@@ -33,7 +33,7 @@ Provider = {
 }
 ```
 
-`resolve(model, config)` picks the first non-default provider whose `match()` wins, else the default. Adding a backend is one entry — no router or server changes.
+`resolve(model, config)` picks the first non-default provider whose `match()` wins, else the default. Adding a backend is one entry — no router or server changes. **LM Studio is the one selector-only provider**: its served ids are the user's own loaded models, whose names are arbitrary and churn with every load/unload, so `match()` refuses everything and `lmstudio:<id>` is the only way in — the selector is the disambiguation, and no bare id can be stolen from the glm/qwen/OpenRouter predicates.
 
 ### Routing priority
 
@@ -47,7 +47,7 @@ Provider = {
 
 - **oauth** — pass the inbound `Authorization` through (Claude Pro/Max).
 - **apiKey** — drop `Authorization`, set `x-api-key` (GLM's Z.ai endpoint; DeepSeek's Anthropic skin).
-- **bearer** — drop `Authorization`, set `Authorization: Bearer` (OpenRouter's and Qwen's Anthropic skins).
+- **bearer** — drop `Authorization`, set `Authorization: Bearer` (OpenRouter's, Qwen's, and LM Studio's Anthropic skins).
 
 `applyAuth` / `buildUpstreamHeaders` centralize header construction.
 

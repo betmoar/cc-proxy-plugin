@@ -69,6 +69,7 @@ Switch backends with `/model`:
 - An OpenRouter id like `anthropic/claude-opus-4` or `z-ai/glm-4.7` — OpenRouter (set `OPENROUTER_API_KEY` first)
 - A DeepSeek id like `deepseek-v4-pro` or `deepseek-v4-flash` — DeepSeek (set `DEEPSEEK_API_KEY` first)
 - A Qwen id like `qwen3.7-max` or `qwen3.6-flash` — Qwen (set `DASHSCOPE_API_KEY` first)
+- `lmstudio:<model-id>` — LM Studio, e.g. `lmstudio:openai/gpt-oss-20b` (set `LMSTUDIO_BASE_URL` first). Selector-only: local model ids are arbitrary and change as you load/unload models, so no bare id ever routes to LM Studio — and ids like `glm-…` or `openai/…` loaded there would otherwise be stolen by the GLM/OpenRouter routing above
 
 Routing decisions land in `~/.claude/cc-proxy/cc-proxy.log` (`PROXY_DEBUG=1` for per-request detail).
 
@@ -274,6 +275,8 @@ The statusline runs as its own subprocess and only inherits `settings.json`'s `e
 | `OPENROUTER_API_KEY` | — | Enable OpenRouter (slash-namespaced models; lives in `~/.env`) |
 | `DEEPSEEK_API_KEY` | — | Enable DeepSeek (bare `deepseek-*` models; lives in `~/.env`) |
 | `DASHSCOPE_API_KEY` | — | Enable Qwen (bare `qwen`-prefixed models, Token Plan skin; lives in `~/.env`) |
+| `LMSTUDIO_BASE_URL` | — | Enable LM Studio (self-hosted Anthropic skin, e.g. `http://mini.lan:1234`). Selector-only: reach models as `lmstudio:<model-id>` — no bare id routes there. Lives in `~/.env` |
+| `LMSTUDIO_API_KEY` | — | LM Studio token when "Require Authentication" is on; optional (a dummy token is sent otherwise and ignored when auth is off). Lives in `~/.env` |
 | `OPENROUTER_MODELS` | live | Pin the OpenRouter ids in `GET /v1/models` (comma-separated); set = skip the live fetch, unset = fetch live with a curated fallback. Discovery only |
 | `PROXY_PATH` | auto | Legacy override for the proxy entry point; the plugin tree's own `bin/cc-proxy.js` wins when present |
 | `PROXY_PORT` | `4000` | Proxy listen port |
