@@ -1289,6 +1289,45 @@ describe("request-id correlation (x-request-id + log stamp)", () => {
 		assert.ok(harvest, "the vendor id was not harvested");
 		assert.match(harvest, /gen-abc123/);
 	});
+
+	it("drops a HOSTILE vendor request_id carrying log-forging shape (same class as a51a661)", async () => {
+		// The vendor body is attacker-controllable in exactly the ways that
+		// matter: a compromised vendor, a MITM, or any host LMSTUDIO_BASE_URL
+		// points at. `" -> "` alone is enough to make parseRoutingLines keep a
+		// forged line; an embedded newline manufactures a full fake
+		// [timestamp] {id} model -> provider line. Same charset allowlist as
+		// the inbound-header path — a hostile value must be DROPPED, not logged.
+		await wire(() => ({
+			status: 429,
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				error: {
+					code: 1313,
+					request_id:
+						"z\n[2026-01-01T00:00:00.000Z] {ffffffff} claude-opus-4-6 -> claude /v1/messages",
+				},
+			}),
+		}));
+		const logged = [];
+		const orig = console.log;
+		console.log = (...a) => logged.push(a.join(" "));
+		try {
+			await post(proxy.port, {
+				model: "qwen:deepseek-v4-pro",
+				messages: [{ role: "user", content: "hi" }],
+			});
+		} finally {
+			console.log = orig;
+		}
+		assert.ok(
+			!logged.some((l) => l.includes("evil") || l.includes("{ffffffff}")),
+			"no forged content may reach the log",
+		);
+		assert.ok(
+			!logged.some((l) => l.includes("[vendor-request-id]")),
+			"a hostile id is dropped entirely, not sanitized-partially",
+		);
+	});
 });
 
 describe("request-id sanitization (log-forging defense)", () => {
@@ -1323,8 +1362,7 @@ describe("request-id sanitization (log-forging defense)", () => {
 					// Measured attack: the `] ` closes the log timestamp, the rest
 					// parses as a plausible extra routing line in /cc-proxy:status.
 					{
-						"x-request-id":
-							"} fake-line [2026-01-01T00:00:00Z] evil -> pwned",
+						"x-request-id": "} fake-line [2026-01-01T00:00:00Z] evil -> pwned",
 					},
 				);
 			} finally {

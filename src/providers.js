@@ -297,8 +297,11 @@ export function buildProviders(env = process.env, defaultId = env.DEFAULT_BACKEN
 	// sit beside slash ids like `openai/gpt-oss-20b`). A prefix predicate would
 	// collide with glm-/qwen- routing, a slash predicate with OpenRouter, and any
 	// allowlist would rot the moment a GGUF is swapped. So no bare id ever routes
-	// here by shape; `lmstudio:<id>` is the only way in (resolve() step 2, which
+	// here BY SHAPE; `lmstudio:<id>` is the only way in (resolve() step 2, which
 	// needs no match() and no ROUTES entry — the selector is the disambiguation).
+	// One deliberate exception outside shape-routing: DEFAULT_BACKEND=lmstudio
+	// makes it the fallback for unmatched ids too — that is the user explicitly
+	// pointing the default at their local box, same contract as =openrouter.
 	// Consequence, deliberate: bare slash ids keep meaning OpenRouter, and the
 	// discovered local models never appear in GET /v1/models (a per-machine
 	// catalog has no place in the repo's curated publishing contract).

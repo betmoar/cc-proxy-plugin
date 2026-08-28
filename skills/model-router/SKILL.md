@@ -30,7 +30,7 @@ Each entry carries:
 |---|---|
 | `id` | The exact id to give a subagent or `/model`. May carry a `<provider>:` lens — keep it, it names the route |
 | `provider` | Which backend serves it |
-| `tier` | Route cost: `1` OAuth/Anthropic, `2` prepaid plan, `3` metered credits, `4` reseller. Lower is cheaper; for local models this can differ from remote plans |
+| `tier` | Route cost: `1` OAuth/Anthropic, `2` prepaid plan, `3` metered credits, `4` reseller. Lower is cheaper |
 | `grade` | Model capability, **only when assessed**: `Flagship` (hardest reasoning), `Strong` (solid general work), `Specialist` (narrow remit — cheap models, old generations, single-purpose builds). Absent = never assessed. `grade` and `tier` are independent axes — never derive one from the other |
 | `context_window` | Integer tokens, when curated. Omitted when unknown |
 

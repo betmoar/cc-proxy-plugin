@@ -415,13 +415,22 @@ function requestIdOf(req) {
  * The vendor's own request id, when an error body carries one (OpenRouter:
  * `request_id` like `gen-…`; Anthropic: `request.id`). Unknown shapes yield
  * undefined and the log line simply omits the tag.
+ *
+ * SAME CHARSET RULE AS requestIdOf, and for the same measured reason: this
+ * string is interpolated into a log line that scripts/status.js filters on
+ * `starts with "[" and contains " -> "`, so a vendor-controlled value with
+ * `" -> "` or an embedded newline (a compromised vendor, a MITM, or any host
+ * LMSTUDIO_BASE_URL points at) would forge routing history in
+ * /cc-proxy:status output. `gen-…`/`req_…` shapes are all `[A-Za-z0-9._-]`;
+ * anything outside that is not worth logging.
+ *
  * @param {unknown} body
  * @returns {string | undefined}
  */
 export function vendorRequestIdOf(body) {
 	const b = /** @type {any} */ (body);
 	const v = b?.error?.request_id ?? b?.request_id ?? b?.error?.requestId ?? b?.request?.id;
-	return typeof v === "string" && v.length > 0 && v.length <= 128 ? v : undefined;
+	return typeof v === "string" && /^[A-Za-z0-9._-]{1,128}$/.test(v) ? v : undefined;
 }
 
 export function createServer(config) {

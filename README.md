@@ -69,7 +69,7 @@ Switch backends with `/model`:
 - An OpenRouter id like `anthropic/claude-opus-4` or `z-ai/glm-4.7` — OpenRouter (set `OPENROUTER_API_KEY` first)
 - A DeepSeek id like `deepseek-v4-pro` or `deepseek-v4-flash` — DeepSeek (set `DEEPSEEK_API_KEY` first)
 - A Qwen id like `qwen3.7-max` or `qwen3.6-flash` — Qwen (set `DASHSCOPE_API_KEY` first)
-- `lmstudio:<model-id>` — LM Studio, e.g. `lmstudio:openai/gpt-oss-20b` (set `LMSTUDIO_BASE_URL` first). Selector-only: local model ids are arbitrary and change as you load/unload models, so no bare id ever routes to LM Studio — and ids like `glm-…` or `openai/…` loaded there would otherwise be stolen by the GLM/OpenRouter routing above
+- `lmstudio:<model-id>` — LM Studio, e.g. `lmstudio:openai/gpt-oss-20b` (set `LMSTUDIO_BASE_URL` first). Selector-only: local model ids are arbitrary and change as you load/unload models, so no bare id routes to LM Studio by shape — and ids like `glm-…` or `openai/…` loaded there would otherwise be stolen by the GLM/OpenRouter routing above. (One explicit exception: `DEFAULT_BACKEND=lmstudio` also makes it the fallback for unmatched ids — that is you deliberately pointing the default at your local box.)
 
 Routing decisions land in `~/.claude/cc-proxy/cc-proxy.log` (`PROXY_DEBUG=1` for per-request detail).
 

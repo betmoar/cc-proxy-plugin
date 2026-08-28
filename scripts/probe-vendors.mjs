@@ -157,7 +157,15 @@ const CASES = [
 		name: "lmstudio answers the Anthropic Messages skin",
 		claim: "src/providers.js lmstudio entry — /v1/messages is the one documented endpoint",
 		url: lmstudioMessagesUrl(),
-		auth: (k) => ({ authorization: `Bearer ${k}` }),
+		// The TOKEN must mirror the provider's own choice (LMSTUDIO_API_KEY, or
+		// the docs' dummy) — NOT the base URL. `key` here is the GATE (the env
+		// var whose absence skips the case), and LMSTUDIO_BASE_URL being a URL
+		// made `Bearer http://…` the header on the first cut — wrong on any
+		// auth-ON server, and invisible there because auth-off servers ignore
+		// every Bearer value alike (found in the PR #49 adversarial review).
+		auth: () => ({
+			authorization: `Bearer ${process.env.LMSTUDIO_API_KEY || "lmstudio"}`,
+		}),
 		key: "LMSTUDIO_BASE_URL",
 		model: "openai/gpt-oss-20b",
 		// Any loaded model answers; the dummy key satisfies auth-on servers and is
@@ -173,7 +181,10 @@ const CASES = [
 		name: "lmstudio serves tool_use over the Anthropic skin",
 		claim: "src/providers.js lmstudio entry — CC sessions need tool_use",
 		url: lmstudioMessagesUrl(),
-		auth: (k) => ({ authorization: `Bearer ${k}` }),
+		// Same token rule as the case above: provider's choice, not the URL.
+		auth: () => ({
+			authorization: `Bearer ${process.env.LMSTUDIO_API_KEY || "lmstudio"}`,
+		}),
 		key: "LMSTUDIO_BASE_URL",
 		model: "openai/gpt-oss-20b",
 		body: (model) => ({

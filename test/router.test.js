@@ -782,3 +782,27 @@ describe("router", () => {
 		});
 	});
 });
+
+describe("LM Studio as DEFAULT_BACKEND (the documented explicit exception)", () => {
+	// The selector-only claim is about SHAPE routing: no predicate claims a bare
+	// id for lmstudio. DEFAULT_BACKEND is a different mechanism — the user
+	// explicitly pointing the fallback at their local box — and it must WORK,
+	// not be refused. This pins both halves so the docs and the code stay in
+	// step: bare ids DO fall through to lmstudio when it is the default, and
+	// the haiku pin still outranks even that.
+	const lmDefault = {
+		port: 4000,
+		providers: buildProviders({ LMSTUDIO_BASE_URL: "http://mini.lan:1234" }, "lmstudio"),
+	};
+
+	it("unmatched ids fall through to lmstudio when it is the explicit default", () => {
+		assert.equal(resolve("totally-unknown-model", lmDefault).id, "lmstudio");
+		assert.equal(resolve2("lmstudio:openai/gpt-oss-20b", lmDefault).provider.id, "lmstudio");
+	});
+
+	it("invariant 4 outranks even the lmstudio default (haiku stays on Claude)", () => {
+		const r = resolve2("claude-haiku-4-5-20251001", lmDefault);
+		assert.equal(r.provider.id, "claude");
+		assert.equal(r.upstreamModel, "claude-haiku-4-5-20251001");
+	});
+});

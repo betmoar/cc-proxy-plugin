@@ -33,7 +33,7 @@ Provider = {
 }
 ```
 
-`resolve(model, config)` picks the first non-default provider whose `match()` wins, else the default. Adding a backend is one entry — no router or server changes. **LM Studio is the one selector-only provider**: its served ids are the user's own loaded models, whose names are arbitrary and churn with every load/unload, so `match()` refuses everything and `lmstudio:<id>` is the only way in — the selector is the disambiguation, and no bare id can be stolen from the glm/qwen/OpenRouter predicates.
+`resolve(model, config)` picks the first non-default provider whose `match()` wins, else the default. Adding a backend is one entry — no router or server changes. **LM Studio is the one selector-only provider**: its served ids are the user's own loaded models, whose names are arbitrary and churn with every load/unload, so `match()` refuses everything and `lmstudio:<id>` is the only way in by shape — the selector is the disambiguation, and no bare id can be stolen from the glm/qwen/OpenRouter predicates. (`DEFAULT_BACKEND=lmstudio` additionally makes it the unmatched-id fallback — an explicit user choice, like `=openrouter`.)
 
 ### Routing priority
 
