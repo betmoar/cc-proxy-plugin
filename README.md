@@ -6,7 +6,7 @@
 
 A Claude Code plugin + local proxy that lets you use **GLM (Z.ai)**, **OpenRouter**, **DeepSeek**, **Qwen**, and **Claude** side-by-side in one session. Switch backends with `/model` — no restart. Zero runtime dependencies.
 
-The proxy sits at `http://localhost:4000`, routes each request by its model name, applies the right auth per backend, and forwards to the upstream API. It stays a transparent pipe — every Claude Code tool, subagent, and prompt-cache works unchanged.
+The proxy sits at `http://localhost:4000`, routes each request by its model name, applies the right auth per backend, and forwards to the upstream API. It stays a transparent pipe — every Claude Code tool, subagent, and prompt-cache works unchanged. (Caching is measured, not assumed: see [prompt caching](docs/OPERATIONS.md#prompt-caching) for the per-backend matrix and the reason the thinking-strip does not break it.)
 
 ## How routing works
 

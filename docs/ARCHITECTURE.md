@@ -6,7 +6,7 @@ Design and rationale for cc-proxy. For runtime facts and debugging, see [`OPERAT
 
 Use GLM (Z.ai), DeepSeek, OpenRouter, Qwen, LM Studio, and Claude in one Claude Code session, switching with `/model` and no restart. Code-heavy turns can run on GLM (cheaper per token); conversational turns stay on Claude. Quotas visible at a glance.
 
-A local HTTP proxy sits between Claude Code and the upstream APIs. Claude Code points `ANTHROPIC_BASE_URL` at it; the proxy routes each request by model name and forwards. **Every provider becomes a native Claude Code model** — every CC tool, subagent, and prompt-cache works unchanged.
+A local HTTP proxy sits between Claude Code and the upstream APIs. Claude Code points `ANTHROPIC_BASE_URL` at it; the proxy routes each request by model name and forwards. **Every provider becomes a native Claude Code model** — every CC tool, subagent, and prompt-cache works unchanged. The cache claim rests on the thinking-strip being deterministic (same history in, byte-identical bytes out, so the backend's cache key is stable); it is measured and locked, see [OPERATIONS](OPERATIONS.md#prompt-caching).
 
 ## Invariants
 

@@ -146,4 +146,78 @@ describe("identity of the returned body (what handleProxy relies on)", () => {
 		assert.notEqual(out.body, body, "a strip must not edit the caller's object either");
 		assert.equal(body.messages[0].content.length, 1, "the original is left intact");
 	});
+
+	// PROMPT CACHING DEPENDS ON THIS, and nothing said so until 0.8.0.
+	//
+	// Every backend prices a cache read at a fraction of input (0.1x on Anthropic,
+	// DeepSeek and Qwen; ~0.2x on Z.ai), and all of them key the cache on the
+	// exact prefix bytes the BACKEND receives. The proxy rewrites those bytes —
+	// the strip removes thinking blocks the client sent — so caching only survives
+	// because the rewrite is a pure function of the input: same history in, same
+	// bytes out, same cache key every turn.
+	//
+	// Measured 2026-08-29 through the live proxy (Z.ai): a repeat turn whose
+	// prefix contained a stripped thinking block still read 4416 tokens from
+	// cache. Make this depend on anything request-varying — a timestamp, a
+	// counter, iteration order over a Set — and every turn becomes a cache MISS:
+	// no error, no failing test, roughly 4x the token bill. Invariant 2 forbids
+	// that state for other reasons; this is the second, quieter reason.
+	it("the strip is deterministic — identical input yields byte-identical output", () => {
+		const build = () => ({
+			model: "glm-5.2",
+			system: [{ type: "text", text: "cached prefix", cache_control: { type: "ephemeral" } }],
+			messages: [
+				{ role: "user", content: [{ type: "text", text: "q1" }] },
+				{
+					role: "assistant",
+					content: [
+						{ type: "thinking", thinking: "reasoning", signature: "sig-1" },
+						{ type: "text", text: "a1" },
+						{ type: "redacted_thinking", data: "opaque" },
+					],
+				},
+				{ role: "user", content: [{ type: "text", text: "q2" }] },
+			],
+		});
+		const first = JSON.stringify(stripAssistantThinking(build()).body);
+		for (let i = 0; i < 5; i++) {
+			assert.equal(
+				JSON.stringify(stripAssistantThinking(build()).body),
+				first,
+				"a varying result would silently turn every cached turn into a full-price miss",
+			);
+		}
+	});
+
+	// The other half of the caching contract: the strip filters whole blocks and
+	// must never rewrite the ones it keeps, or a `cache_control` breakpoint the
+	// client placed would be lost — and on Qwen, where caching is explicit-only,
+	// losing the marker means no caching at all rather than a stale key.
+	it("preserves cache_control breakpoints on the blocks it keeps", () => {
+		const body = {
+			system: [{ type: "text", text: "big", cache_control: { type: "ephemeral" } }],
+			messages: [
+				{
+					role: "user",
+					content: [{ type: "text", text: "q", cache_control: { type: "ephemeral" } }],
+				},
+				{
+					role: "assistant",
+					content: [
+						{ type: "thinking", thinking: "t", signature: "s" },
+						{ type: "text", text: "a", cache_control: { type: "ephemeral" } },
+					],
+				},
+			],
+		};
+		const out = stripAssistantThinking(body);
+		assert.equal(out.modified, true);
+		assert.deepEqual(out.body.system[0].cache_control, { type: "ephemeral" });
+		assert.deepEqual(out.body.messages[0].content[0].cache_control, { type: "ephemeral" });
+		assert.deepEqual(
+			out.body.messages[1].content,
+			[{ type: "text", text: "a", cache_control: { type: "ephemeral" } }],
+			"the surviving block keeps its breakpoint verbatim",
+		);
+	});
 });
