@@ -1331,6 +1331,102 @@ describe("request-id correlation (x-request-id + log stamp)", () => {
 	});
 });
 
+// GAP CLOSED (PR #49 review). `DEFAULT_BACKEND=lmstudio` was pinned at the
+// resolve() level only — the routing DECISION was locked, the forward itself
+// never exercised. That is the half CLAUDE.md's "if you change forwarding and
+// no test fails, you haven't tested it" is aimed at: the fallback is what makes
+// a selector-only provider reachable by a bare id at all, so bytes actually
+// arriving (with the right credential, on both paths) is the claim that matters.
+describe("DEFAULT_BACKEND=lmstudio forwards end-to-end", () => {
+	let lmstudio;
+	let claude;
+	let proxy;
+
+	afterEach(async () => {
+		await close(lmstudio?.server, claude?.server, proxy?.server);
+		lmstudio = claude = proxy = undefined;
+	});
+
+	async function wire(lmHandler) {
+		lmstudio = await startBackend(lmHandler);
+		// Present so a fallthrough to the OLD default is a visible failure (a
+		// call count) rather than a silent pass.
+		claude = await startBackend(() => ({
+			status: 200,
+			headers: { "content-type": "application/json" },
+			body: NORMAL_200,
+		}));
+		const providers = buildProviders({ LMSTUDIO_BASE_URL: lmstudio.baseUrl }, "lmstudio");
+		providers.find((p) => p.id === "lmstudio").baseUrl = lmstudio.baseUrl;
+		providers.find((p) => p.id === "claude").baseUrl = claude.baseUrl;
+		proxy = await startProxy({ port: 0, providers });
+	}
+
+	it("buffered: an unmatched bare id reaches the LM Studio stub with bearer auth", async () => {
+		await wire(() => ({
+			status: 200,
+			headers: { "content-type": "application/json" },
+			body: NORMAL_200,
+		}));
+		// A local GGUF name no predicate claims — the exact shape the fallback exists for.
+		const res = await post(proxy.port, {
+			model: "some-locally-loaded-gguf-name",
+			messages: [{ role: "user", content: "hi" }],
+		});
+		assert.equal(res.status, 200);
+		assert.equal(lmstudio.calls.length, 1, "bytes must actually arrive at the default backend");
+		assert.equal(claude.calls.length, 0, "and must not fall through to claude");
+		assert.equal(
+			JSON.parse(lmstudio.calls[0].body).model,
+			"some-locally-loaded-gguf-name",
+			"the id is forwarded unchanged — nothing to strip on a bare id",
+		);
+		assert.match(lmstudio.calls[0].headers.authorization, /^Bearer lmstudio$/);
+		assert.equal(
+			lmstudio.calls[0].headers["x-api-key"],
+			undefined,
+			"invariant 3 holds on the fallback path too",
+		);
+	});
+
+	it("streaming: the same fallback pipes SSE from LM Studio", async () => {
+		// Separate code from the buffered path, so the fallback is proven on both.
+		await wire(() => ({
+			status: 200,
+			headers: { "content-type": "text/event-stream" },
+			body: 'event: message_start\ndata: {"type":"message_start"}\n\nevent: message_stop\ndata: {"type":"message_stop"}\n\n',
+		}));
+		const res = await post(proxy.port, {
+			model: "another-local-model",
+			stream: true,
+			messages: [{ role: "user", content: "hi" }],
+		});
+		assert.equal(res.status, 200);
+		assert.match(res.body, /message_stop/);
+		assert.equal(lmstudio.calls.length, 1);
+		assert.equal(claude.calls.length, 0);
+	});
+
+	it("invariant 4 still outranks the fallback: haiku goes to Claude, not the local box", async () => {
+		// The consequential one. With lmstudio as DEFAULT_BACKEND, a haiku id that
+		// missed the pin would send Claude Code's internal ops to a local model —
+		// silently, since they never surface in the transcript.
+		await wire(() => ({
+			status: 200,
+			headers: { "content-type": "application/json" },
+			body: NORMAL_200,
+		}));
+		const res = await post(proxy.port, {
+			model: "claude-haiku-4-5-20251001",
+			messages: [{ role: "user", content: "hi" }],
+		});
+		assert.equal(res.status, 200);
+		assert.equal(lmstudio.calls.length, 0, "internal ops must never reach the default backend");
+		assert.equal(claude.calls.length, 1);
+		assert.equal(JSON.parse(claude.calls[0].body).model, "claude-haiku-4-5-20251001");
+	});
+});
+
 describe("request-id sanitization (log-forging defense)", () => {
 	it("drops an inbound id carrying log-shape payload and mints a clean one instead", async () => {
 		let lm;
