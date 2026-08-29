@@ -285,7 +285,7 @@ describe("cross-file couplings", () => {
 		// its line wrapping.
 		assert.match(
 			src,
-			/console\.log\(\s*`\[\$\{new Date\(\)\.toISOString\(\)\}\] \{\$\{reqId\}\} \$\{inboundModel\} -> \$\{provider\.id\}\$\{via\} \$\{req\.url\}`\s*,?\s*\)/,
+			/console\.log\(\s*`\[\$\{new Date\(\)\.toISOString\(\)\}\] \{\$\{reqId\}\} \$\{logSafe\(inboundModel\)\} -> \$\{provider\.id\}\$\{via\} \$\{logSafe\(req\.url\)\}`\s*,?\s*\)/,
 			"the routing log template in src/server.js changed — update scripts/status.js parseRoutingLines() and this test together",
 		);
 

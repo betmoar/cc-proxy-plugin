@@ -14,6 +14,7 @@ import {
 	onUpstreamError,
 	parseMaybeJson,
 	upstreamRequestOptions,
+	withoutRequestId,
 } from "./proxy.js";
 import { resolve, routingIdOf } from "./router.js";
 import { stripAssistantThinking } from "./sanitize.js";
@@ -36,7 +37,11 @@ function sendJson(res, status, payload) {
 }
 
 function writeBufferedResponse(clientRes, status, headers, bodyBuffer) {
-	clientRes.writeHead(status, headers);
+	// withoutRequestId: writeHead REPLACES the x-request-id setHeader() put on
+	// the response, so a backend emitting its own would silently take over the
+	// correlation id (see proxy.js). Applied at every site that forwards
+	// upstream headers, not just this one.
+	clientRes.writeHead(status, withoutRequestId(headers));
 	clientRes.end(bodyBuffer);
 }
 
@@ -190,7 +195,7 @@ function handleMediaGeneration(req, res, bodyBuffer, config, reqId) {
 	// twice). Only baseUrl differs: same host, same bearer auth, no
 	// `/apps/anthropic` — see the mediaBaseUrl comment in providers.js.
 	const tunnel = { ...qwen, baseUrl: qwen.mediaBaseUrl };
-	console.log(`[${new Date().toISOString()}] {${reqId}} media -> ${tunnel.id} ${req.url}`);
+	console.log(`[${new Date().toISOString()}] {${reqId}} media -> ${tunnel.id} ${logSafe(req.url)}`);
 	// DashScope streams this endpoint via a REQUEST header, not a body field, so
 	// the usual `body.stream === true` check would miss it and send an SSE
 	// response down the buffering path.
@@ -215,12 +220,16 @@ function forwardBuffered(clientReq, clientRes, provider, outboundBuffer, inbound
 	// JSON.parse the raw response bytes; a gzipped body would fail to parse and
 	// both the overflow→400 conversion and the 1302 Retry-After injection would
 	// silently stop working. Buffered path only — the streaming path stays a pipe.
-	const { proto, options } = upstreamRequestOptions(
-		clientReq,
-		provider,
-		outboundBuffer.length,
-		true,
-	);
+	// Same containment as forward(): a bad baseUrl becomes a 502 for this one
+	// request rather than a process-ending throw inside the dispatcher.
+	let proto;
+	let options;
+	try {
+		({ proto, options } = upstreamRequestOptions(clientReq, provider, outboundBuffer.length, true));
+	} catch (err) {
+		onUpstreamError(clientRes)(/** @type {Error} */ (err));
+		return;
+	}
 	const upstream = proto.request(options, (upstreamRes) => {
 		const status = upstreamRes.statusCode || 502;
 		const chunks = [];
@@ -235,7 +244,7 @@ function forwardBuffered(clientReq, clientRes, provider, outboundBuffer, inbound
 				// Too large to buffer/inspect — commit to passthrough: flush the
 				// buffered prefix, then pipe the remaining bytes through.
 				passthrough = true;
-				clientRes.writeHead(status, upstreamRes.headers);
+				clientRes.writeHead(status, withoutRequestId(upstreamRes.headers));
 				for (const ch of chunks) clientRes.write(ch);
 				upstreamRes.pipe(clientRes);
 			}
@@ -255,7 +264,7 @@ function forwardBuffered(clientReq, clientRes, provider, outboundBuffer, inbound
 			const vendorId = status >= 400 ? vendorRequestIdOf(parseMaybeJson(bodyBuf)) : undefined;
 			if (vendorId) console.log(`[vendor-request-id] {${reqId}} ${vendorId}`);
 			if (status === 200 && isContextLimitByStopReason(parseMaybeJson(bodyBuf))) {
-				console.log(`[ctx-overflow] ${inboundModel} 200 -> 400 (context window exceeded)`);
+				console.log(`[ctx-overflow] ${logSafe(inboundModel)} 200 -> 400 (context window exceeded)`);
 				sendJson(clientRes, 400, {
 					type: "error",
 					error: {
@@ -274,7 +283,9 @@ function forwardBuffered(clientReq, clientRes, provider, outboundBuffer, inbound
 				// than clobbering it with our fixed default. (Node lowercases keys.)
 				const retryAfter =
 					upstreamRes.headers["retry-after"] || String(RATE_LIMIT_RETRY_AFTER_SECONDS);
-				console.log(`[rate-limit] ${inboundModel} 429 1302 -> Retry-After: ${retryAfter}`);
+				console.log(
+					`[rate-limit] ${logSafe(inboundModel)} 429 1302 -> Retry-After: ${logSafe(retryAfter)}`,
+				);
 				const headers = { ...upstreamRes.headers, "retry-after": retryAfter };
 				writeBufferedResponse(clientRes, status, headers, bodyBuf);
 				return;
@@ -336,7 +347,7 @@ function handleProxy(req, res, body, bodyBuffer, config, reqId) {
 	const routedAs = routingIdOf(inboundModel);
 	const via = routedAs === inboundModel ? "" : ` (routed as ${routedAs})`;
 	console.log(
-		`[${new Date().toISOString()}] {${reqId}} ${inboundModel} -> ${provider.id}${via} ${req.url}`,
+		`[${new Date().toISOString()}] {${reqId}} ${logSafe(inboundModel)} -> ${provider.id}${via} ${logSafe(req.url)}`,
 	);
 	debug(
 		"  metadata:",
@@ -418,6 +429,40 @@ function requestIdOf(req) {
 	const inbound = req.headers["x-request-id"]?.toString().slice(0, 64);
 	if (inbound && /^[A-Za-z0-9._-]+$/.test(inbound)) return inbound;
 	return randomBytes(4).toString("hex");
+}
+
+/**
+ * A value safe to interpolate into a log line.
+ *
+ * THE MODEL ID IS ATTACKER-CONTROLLED JSON, and it reaches the routing-log line
+ * that scripts/status.js parseRoutingLines() filters on `starts with "[" and
+ * contains " -> "`. A `model` carrying a newline plus a fake
+ * `[<iso>] {id} X -> Y /path` therefore injects a second line that the status
+ * report keeps as genuine routing history — measured end-to-end, the forged
+ * entry came back from parseRoutingLines() indistinguishable from a real one.
+ *
+ * This is the SAME defect class the id sanitizers guard (requestIdOf,
+ * vendorRequestIdOf), and it predates them: `model` was already interpolated
+ * before the correlation id existed. Hardening two of the three interpolation
+ * sites is what left it reachable, which is the lesson worth keeping — fix a
+ * class, then sweep every site in it.
+ *
+ * Escaping rather than allowlisting, deliberately: a model id is a display
+ * value the operator needs to READ (`qwen:deepseek-v4-pro[1m]`, slashes, dots,
+ * brackets all meaningful), so replacing the id with a placeholder would cost
+ * the log its usefulness. Only the line-structural characters are neutralized.
+ *
+ * @doctest logSafe("glm-5.2") -> "glm-5.2"
+ * @doctest logSafe("qwen:deepseek-v4-pro[1m]") -> "qwen:deepseek-v4-pro[1m]"
+ * @doctest logSafe("a\nb") -> "a\\nb"
+ * @doctest logSafe("a\rb") -> "a\\rb"
+ *
+ * @param {unknown} value
+ * @param {number} [max]
+ * @returns {string}
+ */
+export function logSafe(value, max = 200) {
+	return String(value).replace(/\r/g, "\\r").replace(/\n/g, "\\n").slice(0, max);
 }
 
 /**

@@ -1,6 +1,7 @@
 import { strict as assert } from "node:assert";
 import http from "node:http";
 import { afterEach, describe, it } from "node:test";
+import { parseRoutingLines } from "../scripts/status.js";
 import { httpAgent } from "../src/agents.js";
 import { buildProviders } from "../src/providers.js";
 import { createServer } from "../src/server.js";
@@ -1378,4 +1379,124 @@ describe("request-id sanitization (log-forging defense)", () => {
 			await close(lm?.server, claude?.server, proxy?.server);
 		}
 	});
+});
+
+// PR #49 review findings. Three defects the review surfaced, each reproduced
+// against the real code before being fixed, each pinned here so the fix cannot
+// silently regress. All three are the same shape: a value from OUTSIDE (config,
+// request body, upstream response) reaching a place that assumed it was tame.
+describe("review findings: config, log-forging, header clobber", () => {
+	let backend;
+	let claude;
+	let proxy;
+
+	afterEach(async () => {
+		await close(backend?.server, claude?.server, proxy?.server);
+		backend = claude = proxy = undefined;
+	});
+
+	// FINDING 1. A scheme-less LMSTUDIO_BASE_URL is what LM Studio's own UI
+	// shows ("192.168.1.50:1234"), so it is the value a user pastes. Before the
+	// fix it reached `new URL(baseUrl + req.url)` inside the dispatcher and
+	// killed the process — measured: exit code 1, no response written, every
+	// concurrent session dropped. Two defences, both asserted: the provider is
+	// not registered at all, and the forwarding path would answer 502 rather
+	// than throw if one ever got through.
+	it("refuses to register lmstudio when LMSTUDIO_BASE_URL has no scheme", () => {
+		const ids = buildProviders({ LMSTUDIO_BASE_URL: "192.168.1.50:1234" }, "claude").map(
+			(p) => p.id,
+		);
+		assert.ok(!ids.includes("lmstudio"), "an unusable base URL must not register a backend");
+		assert.deepEqual(ids, ["claude"], "the rest of the registry is unaffected");
+	});
+
+	it("answers 502 instead of dying when a provider's base URL is unusable", async () => {
+		claude = await startBackend(() => ({
+			status: 200,
+			headers: { "content-type": "application/json" },
+			body: NORMAL_200,
+		}));
+		// Bypass the registration guard to reach the forwarding path's own
+		// defence — this is the case that matters for any FUTURE provider whose
+		// baseUrl comes from config.
+		const providers = buildProviders({}, "claude");
+		providers.find((p) => p.id === "claude").baseUrl = "not-a-url";
+		proxy = await startProxy({ port: 0, providers });
+		const res = await post(proxy.port, {
+			model: "claude-opus-5",
+			messages: [{ role: "user", content: "hi" }],
+		});
+		assert.equal(res.status, 502, "a config error is one bad request, not a dead proxy");
+		assert.match(res.body, /base URL/i);
+	});
+
+	// FINDING 2. `body.model` is attacker-controlled JSON and predates the id
+	// sanitizers — hardening requestIdOf and vendorRequestIdOf left this third
+	// interpolation site open. Measured before the fix: a newline plus a fake
+	// `[ts] {id} X -> Y /path` came back from parseRoutingLines() as genuine
+	// routing history.
+	it("a newline in body.model cannot forge a routing-history line", async () => {
+		claude = await startBackend(() => ({
+			status: 200,
+			headers: { "content-type": "application/json" },
+			body: NORMAL_200,
+		}));
+		const providers = buildProviders({}, "claude");
+		providers.find((p) => p.id === "claude").baseUrl = claude.baseUrl;
+		proxy = await startProxy({ port: 0, providers });
+
+		const logged = [];
+		const orig = console.log;
+		console.log = (...a) => logged.push(a.join(" "));
+		try {
+			await post(proxy.port, {
+				model: "claude-x\n[2026-01-01T00:00:00.000Z] {ffffffff} FORGED -> claude /v1/messages",
+				messages: [{ role: "user", content: "hi" }],
+			});
+		} finally {
+			console.log = orig;
+		}
+		const kept = parseRoutingLines(logged.join("\n"));
+		assert.equal(kept.length, 1, "exactly one routing line, not a forged second one");
+		assert.ok(
+			!kept.some((l) => l.startsWith("[2026-01-01")),
+			"the attacker's fabricated timestamp line must not survive as a report entry",
+		);
+		assert.match(kept[0], /\\n/, "the newline is escaped, and the id stays readable");
+	});
+
+	// FINDING 3. writeHead(status, headers) REPLACES what setHeader put on the
+	// response, so any backend emitting its own x-request-id silently took over
+	// the correlation id — the log said one thing, the client saw another.
+	// Measured on BOTH paths before the fix, so both are pinned.
+	for (const stream of [false, true]) {
+		it(`keeps the proxy's x-request-id when the upstream sets its own (${stream ? "streaming" : "buffered"})`, async () => {
+			backend = await startBackend(() =>
+				stream
+					? {
+							status: 200,
+							headers: { "content-type": "text/event-stream", "x-request-id": "VENDOR-OWN-ID" },
+							body: 'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+						}
+					: {
+							status: 200,
+							headers: { "content-type": "application/json", "x-request-id": "VENDOR-OWN-ID" },
+							body: NORMAL_200,
+						},
+			);
+			const providers = buildProviders({}, "claude");
+			providers.find((p) => p.id === "claude").baseUrl = backend.baseUrl;
+			proxy = await startProxy({ port: 0, providers });
+			const res = await post(
+				proxy.port,
+				{ model: "claude-opus-5", stream, messages: [{ role: "user", content: "hi" }] },
+				{ "x-request-id": "proxy-owned-id" },
+			);
+			assert.equal(
+				res.headers["x-request-id"],
+				"proxy-owned-id",
+				"the client must get the id that matches the proxy's log line",
+			);
+		});
+	}
 });

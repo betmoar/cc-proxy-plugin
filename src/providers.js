@@ -115,6 +115,33 @@ export const PROVIDER_IDS = new Set([
 ]);
 
 /**
+ * Is this string a base URL the forwarding path can actually build on?
+ *
+ * `upstreamRequestOptions()` does `new URL(provider.baseUrl + req.url)`, which
+ * throws on anything without a scheme — and it throws inside the request
+ * dispatcher, where a throw ends the process. Only http/https qualify: a
+ * `file:`/`data:` URL parses fine and then picks neither of the two agents.
+ *
+ * @doctest isValidHttpUrl("http://localhost:1234") -> true
+ * @doctest isValidHttpUrl("https://example.com/skin") -> true
+ * @doctest isValidHttpUrl("192.168.1.50:1234") -> false
+ * @doctest isValidHttpUrl("localhost:1234") -> false
+ * @doctest isValidHttpUrl("file:///etc/passwd") -> false
+ * @doctest isValidHttpUrl("") -> false
+ *
+ * @param {string} value
+ * @returns {boolean}
+ */
+export function isValidHttpUrl(value) {
+	try {
+		const { protocol } = new URL(value);
+		return protocol === "http:" || protocol === "https:";
+	} catch {
+		return false;
+	}
+}
+
+/**
  * Build the provider registry from the environment. Order matters: `resolve()`
  * picks the first non-default provider whose `match()` returns true, falling
  * back to the default provider. Adding a backend (e.g. OpenRouter) is one entry
@@ -305,14 +332,31 @@ export function buildProviders(env = process.env, defaultId = env.DEFAULT_BACKEN
 	// Consequence, deliberate: bare slash ids keep meaning OpenRouter, and the
 	// discovered local models never appear in GET /v1/models (a per-machine
 	// catalog has no place in the repo's curated publishing contract).
+	// VALIDATED AT REGISTRATION, not at request time, and that is the whole point.
+	// Every other baseUrl in this file is a hardcoded literal; this one is
+	// free-form user input, and LM Studio's own UI shows its address WITHOUT a
+	// scheme (`192.168.1.50:1234`), which is exactly what a user pastes. A
+	// scheme-less value reaches `new URL(baseUrl + req.url)` in
+	// upstreamRequestOptions() and throws INSIDE the request dispatcher — which
+	// has no try — so the first lmstudio request kills the shared proxy process
+	// and every concurrent session with it (measured: exit code 1, no response
+	// written). Refusing to register is the honest failure: the user sees the
+	// reason at startup, and their other backends keep working.
 	if (env.LMSTUDIO_BASE_URL) {
-		providers.push({
-			id: "lmstudio",
-			baseUrl: env.LMSTUDIO_BASE_URL,
-			apiKey: env.LMSTUDIO_API_KEY || "lmstudio",
-			auth: "bearer",
-			match: () => false,
-		});
+		if (isValidHttpUrl(env.LMSTUDIO_BASE_URL)) {
+			providers.push({
+				id: "lmstudio",
+				baseUrl: env.LMSTUDIO_BASE_URL.replace(/\/+$/, ""),
+				apiKey: env.LMSTUDIO_API_KEY || "lmstudio",
+				auth: "bearer",
+				match: () => false,
+			});
+		} else {
+			console.error(
+				`[lmstudio] LMSTUDIO_BASE_URL="${env.LMSTUDIO_BASE_URL}" is not a valid http(s) URL ` +
+					"(missing scheme? try http://host:1234) — the lmstudio backend is NOT registered",
+			);
+		}
 	}
 
 	providers.push({
