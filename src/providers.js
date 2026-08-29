@@ -353,8 +353,7 @@ export function buildProviders(env = process.env, defaultId = env.DEFAULT_BACKEN
 			});
 		} else {
 			console.error(
-				`[lmstudio] LMSTUDIO_BASE_URL="${env.LMSTUDIO_BASE_URL}" is not a valid http(s) URL ` +
-					"(missing scheme? try http://host:1234) — the lmstudio backend is NOT registered",
+				`[lmstudio] LMSTUDIO_BASE_URL="${env.LMSTUDIO_BASE_URL}" is not a valid http(s) URL (missing scheme? try http://host:1234) — the lmstudio backend is NOT registered`,
 			);
 		}
 	}
