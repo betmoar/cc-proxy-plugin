@@ -398,11 +398,16 @@ function parseJsonOrEmpty(buffer) {
  * so correlating a vendor-side rejection with our routing decision stops being
  * manual archaeology.
  *
- * NOT a tracing system: no spans, no persistence, no config. 8 hex chars —
- * uniqueness within a log-rotation window is all the contract needs, and
- * `Math.random` is sufficient for that (collision odds across a 5 MB window
- * of lines are negligible; the failure mode of a collision is two lines
- * sharing a tag, not a wrong route).
+ * NOT a tracing system: no spans, no persistence, no config. 8 hex chars (32
+ * bits) is a deliberate readability/uniqueness trade, and the honest number is
+ * NOT "negligible": a full 5 MB log window holds ~69k routing lines at ~76
+ * bytes each, which by the birthday bound is ~42% odds that SOME pair of lines
+ * in the window shares a tag. That is acceptable, but for a specific reason
+ * worth stating — a collision merges two log tags, it never misroutes a
+ * request — and because the id's job is to disambiguate the handful of
+ * interleaved lines a reader is looking at right now, not to be globally
+ * unique. Widen the id if that ever stops being true. (The earlier version of
+ * this comment asserted "negligible" without computing it.)
  *
  * INBOUND IDS ARE SANITIZED, not just length-capped, and that is log-forging
  * defense, not tidiness. The id is interpolated into a log line that
@@ -417,9 +422,9 @@ function parseJsonOrEmpty(buffer) {
  * MINTED IDS ARE ALWAYS EXACTLY 8 CHARS, via randomBytes rather than
  * `Math.random().toString(16)`: that older form returns fewer than 8
  * characters when the float's hex expansion is short — provably the empty
- * string when Math.random() lands exactly on 0 (a 2^-52 event per process;
- * also any value under 1/2^32 shortens the leading zeros away). A regex
- * `[0-9a-f]{8}` in tests plus the log contract should not rest on a
+ * string when Math.random() lands exactly on 0 (its output grid is multiples
+ * of 2^-53; also any value under 1/2^32 shortens the leading zeros away). A
+ * regex `[0-9a-f]{8}` in tests plus the log contract should not rest on a
  * probabilistic length.
  *
  * @param {http.IncomingMessage} req
@@ -466,9 +471,18 @@ export function logSafe(value, max = 200) {
 }
 
 /**
- * The vendor's own request id, when an error body carries one (OpenRouter:
- * `request_id` like `gen-…`; Anthropic: `request.id`). Unknown shapes yield
- * undefined and the log line simply omits the tag.
+ * The vendor's own request id, when an error body carries one. Two documented
+ * shapes are covered: OpenRouter nests it under `error.request_id` (`gen-…`),
+ * and Anthropic puts it TOP-LEVEL alongside `error` (`{"type":"error","error":
+ * {…},"request_id":"req_…"}`, per docs.anthropic.com/en/api/errors). Unknown
+ * shapes yield undefined and the log line simply omits the tag.
+ *
+ * An earlier version of this comment cited Anthropic as `request.id` — a
+ * nested shape their API does not produce — and the lookup carried a matching
+ * `b?.request?.id` fallback that no vendor was known to emit and no test
+ * exercised. Both are gone: a speculative branch guarding a shape nobody has
+ * seen is a claim, and this file's rule is that claims get evidence or get
+ * deleted.
  *
  * SAME CHARSET RULE AS requestIdOf, and for the same measured reason: this
  * string is interpolated into a log line that scripts/status.js filters on
@@ -483,7 +497,7 @@ export function logSafe(value, max = 200) {
  */
 export function vendorRequestIdOf(body) {
 	const b = /** @type {any} */ (body);
-	const v = b?.error?.request_id ?? b?.request_id ?? b?.error?.requestId ?? b?.request?.id;
+	const v = b?.error?.request_id ?? b?.request_id ?? b?.error?.requestId;
 	return typeof v === "string" && /^[A-Za-z0-9._-]{1,128}$/.test(v) ? v : undefined;
 }
 

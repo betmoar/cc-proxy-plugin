@@ -208,6 +208,7 @@ export const ROUTES = {
  * @doctest tierOf("deepseek") -> 3
  * @doctest tierOf("openrouter") -> 4
  * @doctest tierOf("nobody-knows") -> 3
+ * @doctest tierOf("lmstudio") -> 0
  *
  * And the order itself, which is the actual #19 rule: native first even though
  * the qwen plan is the cheaper tier, then cheapest, then declaration order.

@@ -174,10 +174,16 @@ const CASES = [
 		bodyMatch: /"stop_reason"/,
 	},
 	{
-		// The make-or-break claim: tool use over the SKIN, which LM Studio's docs
-		// do not state (tools are documented only under its OpenAI compat). Claude
-		// Code is useless without it. Measured working 2026-08-28; if LM Studio
-		// regresses, this fails and the provider needs a re-think.
+		// The make-or-break claim for a CC session: the skin must return a real
+		// `tool_use` block. LM Studio's Anthropic-compat page DOES document the
+		// request side (a `get_weather` cURL with `input_schema` and
+		// `tool_choice`), but shows no sample RESPONSE — it defers to Anthropic's
+		// docs for the shape — so what is unverified without this probe is
+		// whether the server actually emits `tool_use`, not whether tools are
+		// supported at all. Measured working 2026-08-28; if LM Studio regresses,
+		// this fails and the provider needs a re-think. (An earlier version of
+		// this comment claimed the docs were silent on tool use. They are not —
+		// that was asserted without reading them.)
 		name: "lmstudio serves tool_use over the Anthropic skin",
 		claim: "src/providers.js lmstudio entry — CC sessions need tool_use",
 		url: lmstudioMessagesUrl(),
@@ -192,7 +198,9 @@ const CASES = [
 			// 64 was measured too tight: the model sometimes spends the budget on
 			// reasoning and returns stop_reason:max_tokens with EMPTY content — a
 			// 200 that carries no tool_use, indistinguishable in the gate from a
-			// compat regression. 300/5/5 gave 5/5 tool_use.
+			// compat regression. 300 held across repeated manual runs; the
+			// re-runnable guarantee is this case itself (expect 200 + a
+			// `tool_use` bodyMatch), not that recollection.
 			max_tokens: 300,
 			messages: [{ role: "user", content: "Use the get_weather tool for Tokyo, then stop." }],
 			tools: [
