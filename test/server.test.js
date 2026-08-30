@@ -1506,25 +1506,45 @@ describe("review findings: config, log-forging, header clobber", () => {
 		assert.deepEqual(ids, ["claude"], "the rest of the registry is unaffected");
 	});
 
-	it("answers 502 instead of dying when a provider's base URL is unusable", async () => {
-		claude = await startBackend(() => ({
-			status: 200,
-			headers: { "content-type": "application/json" },
-			body: NORMAL_200,
-		}));
-		// Bypass the registration guard to reach the forwarding path's own
-		// defence — this is the case that matters for any FUTURE provider whose
-		// baseUrl comes from config.
-		const providers = buildProviders({}, "claude");
-		providers.find((p) => p.id === "claude").baseUrl = "not-a-url";
-		proxy = await startProxy({ port: 0, providers });
-		const res = await post(proxy.port, {
-			model: "claude-opus-5",
-			messages: [{ role: "user", content: "hi" }],
+	// Both paths build options through upstreamRequestOptions(), and each holds
+	// its OWN try around it (`forward()` in proxy.js, `forwardBuffered()` in
+	// server.js) — separate code, so separate assertions. Parametrized because
+	// pinning only the buffered half left the streaming guard deletable with the
+	// whole suite green (measured during the PR #49 review).
+	for (const stream of [false, true]) {
+		it(`answers 502 instead of dying when a provider's base URL is unusable (${stream ? "streaming" : "buffered"})`, async () => {
+			claude = await startBackend(() => ({
+				status: 200,
+				headers: { "content-type": "application/json" },
+				body: NORMAL_200,
+			}));
+			// Bypass the registration guard to reach the forwarding path's own
+			// defence — this is the case that matters for any FUTURE provider whose
+			// baseUrl comes from config.
+			const providers = buildProviders({ GLM_API_KEY: "glm-test" }, "claude");
+			providers.find((p) => p.id === "claude").baseUrl = "not-a-url";
+			providers.find((p) => p.id === "glm").baseUrl = claude.baseUrl;
+			proxy = await startProxy({ port: 0, providers });
+			const res = await post(proxy.port, {
+				model: "claude-opus-5",
+				stream,
+				messages: [{ role: "user", content: "hi" }],
+			});
+			assert.equal(res.status, 502, "a config error is one bad request, not a dead proxy");
+			assert.match(res.body, /base URL/i);
+
+			// The whole point of the typed error is that ONE misconfigured backend
+			// does not take the shared proxy down with it: a request routed
+			// elsewhere must still be served on the same listener afterwards.
+			const after = await post(proxy.port, {
+				model: "glm-5.2",
+				stream,
+				messages: [{ role: "user", content: "hi" }],
+			});
+			assert.equal(after.status, 200, "the proxy still serves other backends after the 502");
+			assert.match(after.body, /from-glm/);
 		});
-		assert.equal(res.status, 502, "a config error is one bad request, not a dead proxy");
-		assert.match(res.body, /base URL/i);
-	});
+	}
 
 	// FINDING 2. `body.model` is attacker-controlled JSON and predates the id
 	// sanitizers — hardening requestIdOf and vendorRequestIdOf left this third
@@ -1595,4 +1615,67 @@ describe("review findings: config, log-forging, header clobber", () => {
 			);
 		});
 	}
+
+	// FINDING 3, continued. Both forward paths have a SIZE-CAP ESCAPE HATCH that
+	// abandons inspection and pipes the rest through — and each writes its own
+	// writeHead, so each is a separate chance to leak the vendor's id. Pinning
+	// only the two normal-size 200 sites above left both of these revertible to
+	// a bare `upstreamRes.headers` with the full suite green (measured).
+	it("keeps the proxy's x-request-id on the oversized-429 passthrough (streaming)", async () => {
+		// >RATE_LIMIT_PEEK_LIMIT (64 KiB): too large to be a rate-limit body, so
+		// forward() gives up inspecting and commits to passthrough.
+		const huge = JSON.stringify({ error: { code: "1302", pad: "x".repeat(64 * 1024 + 4096) } });
+		backend = await startBackend(() => ({
+			status: 429,
+			headers: { "content-type": "application/json", "x-request-id": "VENDOR-OWN-ID" },
+			body: huge,
+		}));
+		const providers = buildProviders({}, "claude");
+		providers.find((p) => p.id === "claude").baseUrl = backend.baseUrl;
+		proxy = await startProxy({ port: 0, providers });
+		const res = await post(
+			proxy.port,
+			{ model: "claude-opus-5", stream: true, messages: [{ role: "user", content: "hi" }] },
+			{ "x-request-id": "proxy-owned-id" },
+		);
+		assert.equal(res.status, 429);
+		assert.ok(res.body.length > 64 * 1024, "the oversized body really did take the pipe branch");
+		assert.equal(
+			res.headers["x-request-id"],
+			"proxy-owned-id",
+			"the passthrough branch must strip the vendor id like every other writeHead",
+		);
+	});
+
+	it("keeps the proxy's x-request-id on the over-cap buffered passthrough", async () => {
+		// >NON_STREAM_BUFFER_LIMIT (1 MiB): forwardBuffered() flushes the prefix
+		// and pipes the remainder rather than holding it all in memory.
+		const bigBody = JSON.stringify({
+			id: "msg_big",
+			type: "message",
+			role: "assistant",
+			content: [{ type: "text", text: "x".repeat(1024 * 1024 + 50_000) }],
+			stop_reason: "end_turn",
+		});
+		backend = await startBackend(() => ({
+			status: 200,
+			headers: { "content-type": "application/json", "x-request-id": "VENDOR-OWN-ID" },
+			body: bigBody,
+		}));
+		const providers = buildProviders({}, "claude");
+		providers.find((p) => p.id === "claude").baseUrl = backend.baseUrl;
+		proxy = await startProxy({ port: 0, providers });
+		const res = await post(
+			proxy.port,
+			{ model: "claude-opus-5", stream: false, messages: [{ role: "user", content: "hi" }] },
+			{ "x-request-id": "proxy-owned-id" },
+		);
+		assert.equal(res.status, 200);
+		assert.ok(res.body.length > 1024 * 1024, "the over-cap body really did take the pipe branch");
+		assert.equal(
+			res.headers["x-request-id"],
+			"proxy-owned-id",
+			"the passthrough branch must strip the vendor id like every other writeHead",
+		);
+	});
 });

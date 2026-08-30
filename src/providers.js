@@ -119,8 +119,14 @@ export const PROVIDER_IDS = new Set([
  *
  * `upstreamRequestOptions()` does `new URL(provider.baseUrl + req.url)`, which
  * throws on anything without a scheme — and it throws inside the request
- * dispatcher, where a throw ends the process. Only http/https qualify: a
- * `file:`/`data:` URL parses fine and then picks neither of the two agents.
+ * dispatcher, where a throw ends the process. Only http/https qualify, and the
+ * scheme check earns its keep on the values that DON'T throw: a `file:`/`data:`
+ * URL parses fine, so it slips past the try and is only caught here. It then
+ * fails late and confusingly instead — `proto` is chosen by
+ * `url.protocol === "https:" ? https : http`, so anything non-https resolves to
+ * the plain `http` module (`pickAgent` is binary; there is no third outcome),
+ * and the request goes out with an empty `hostname` to fail asynchronously on
+ * the socket rather than at parse time.
  *
  * @doctest isValidHttpUrl("http://localhost:1234") -> true
  * @doctest isValidHttpUrl("https://example.com/skin") -> true
