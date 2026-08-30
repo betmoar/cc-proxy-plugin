@@ -30,7 +30,11 @@ const STATUS_TIMEOUT_MS = 2000;
 
 /**
  * Pull the most recent routing decisions out of the proxy log. The proxy logs
- * one line per request as `[<iso>] <model> -> <providerId> <path>`; we keep those.
+ * one line per request as `[<iso>] {<reqId>} <model> -> <providerId> <path>`;
+ * we keep those (the `{<reqId>}` segment is optional in the matcher — older log
+ * lines without it still parse — and is kept verbatim in the output so the
+ * correlation id reaches the report). Whole-line keep, deliberately: filtering
+ * out the id would defeat the only cross-session debug handle the log offers.
  * @param {string} logText
  * @param {number} [limit]
  * @returns {string[]} most-recent-last

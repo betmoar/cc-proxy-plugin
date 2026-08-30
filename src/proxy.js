@@ -10,6 +10,45 @@ import { buildUpstreamHeaders } from "./providers.js";
 const RATE_LIMIT_PEEK_LIMIT = 64 * 1024;
 
 /**
+ * A provider is configured in a way the forwarding path cannot use (today: a
+ * baseUrl that is not a parseable URL). Distinct from an upstream I/O failure
+ * because the fix is the user's config, not a retry — and because it must be
+ * caught before it escapes into the dispatcher, where a throw is fatal to the
+ * whole process rather than to one request.
+ */
+export class UpstreamConfigError extends Error {
+	/** @param {string} message */
+	constructor(message) {
+		super(message);
+		this.name = "UpstreamConfigError";
+	}
+}
+
+/**
+ * Upstream headers with `x-request-id` removed, so the proxy's own correlation
+ * id survives to the client.
+ *
+ * `writeHead(status, headers)` REPLACES anything a prior `setHeader()` put on
+ * the response, so a backend that emits its own `x-request-id` (OpenAI-shaped
+ * servers commonly do) silently overwrites ours — measured on both the buffered
+ * and streaming paths: the log line said `{proxy-client-id}` while the client
+ * received `VENDOR-OWN-ID`, which is precisely the correlation the id exists to
+ * provide, broken with no error anywhere.
+ *
+ * The vendor's id is not lost information: `forwardBuffered()` already harvests
+ * a vendor `request_id` from error bodies onto its own log line. What must not
+ * happen is the two silently swapping places on the wire.
+ *
+ * @param {Record<string, any>} headers
+ * @returns {Record<string, any>}
+ */
+export function withoutRequestId(headers) {
+	if (!headers || !("x-request-id" in headers)) return headers;
+	const { "x-request-id": _vendorId, ...rest } = headers;
+	return rest;
+}
+
+/**
  * Shared by both forward paths (streaming here, buffered in server.js) so body
  * inspection cannot drift between them.
  * @param {Buffer} buffer @returns {unknown}
@@ -64,7 +103,23 @@ export function onUpstreamError(clientRes) {
  * @returns {{ proto: typeof http | typeof https, options: http.RequestOptions }}
  */
 export function upstreamRequestOptions(clientReq, provider, bodyLength, forceIdentityEncoding) {
-	const url = new URL(provider.baseUrl + clientReq.url);
+	// A THROW HERE ENDS THE PROCESS, so it is converted into a typed error the
+	// forward paths already know how to answer with a 502. `new URL()` throws on
+	// any baseUrl without a scheme, and since 0.8.0 one baseUrl is free-form user
+	// input (LMSTUDIO_BASE_URL) rather than a hardcoded literal. buildProviders()
+	// refuses to register an invalid one, so this is the second line of defence —
+	// but it is the load-bearing one for any future provider whose baseUrl comes
+	// from config, because this function runs inside the request dispatcher and
+	// that dispatcher has no try (measured: exit 1, no response, every concurrent
+	// session dropped).
+	let url;
+	try {
+		url = new URL(provider.baseUrl + clientReq.url);
+	} catch {
+		throw new UpstreamConfigError(
+			`provider "${provider.id}" has an unusable base URL — check its *_BASE_URL setting`,
+		);
+	}
 	const proto = url.protocol === "https:" ? https : http;
 	return {
 		proto,
@@ -114,7 +169,17 @@ export function abortUpstreamOnClientClose(clientRes, upstream) {
  * @param {Buffer} bodyBuffer
  */
 export function forward(clientReq, clientRes, provider, bodyBuffer) {
-	const { proto, options } = upstreamRequestOptions(clientReq, provider, bodyBuffer.length);
+	// An UpstreamConfigError here is a misconfigured baseUrl, not an I/O failure:
+	// answer it like one bad request instead of letting the throw escape into the
+	// dispatcher, which would end the process for every session.
+	let proto;
+	let options;
+	try {
+		({ proto, options } = upstreamRequestOptions(clientReq, provider, bodyBuffer.length));
+	} catch (err) {
+		onUpstreamError(clientRes)(/** @type {Error} */ (err));
+		return;
+	}
 
 	const upstream = proto.request(options, (upstreamRes) => {
 		const status = upstreamRes.statusCode || 502;
@@ -134,7 +199,7 @@ export function forward(clientReq, clientRes, provider, bodyBuffer) {
 				if (total > RATE_LIMIT_PEEK_LIMIT) {
 					// Too large to be the rate-limit body — give up inspecting, pipe through.
 					piping = true;
-					clientRes.writeHead(status, upstreamRes.headers);
+					clientRes.writeHead(status, withoutRequestId(upstreamRes.headers));
 					for (const ch of chunks) clientRes.write(ch);
 					upstreamRes.pipe(clientRes);
 				}
@@ -150,13 +215,13 @@ export function forward(clientReq, clientRes, provider, bodyBuffer) {
 				if (isRateLimitError(parseMaybeJson(bodyBuf)) && !headers["retry-after"]) {
 					headers = { ...headers, "retry-after": String(RATE_LIMIT_RETRY_AFTER_SECONDS) };
 				}
-				clientRes.writeHead(status, headers);
+				clientRes.writeHead(status, withoutRequestId(headers));
 				clientRes.end(bodyBuf);
 			});
 			return;
 		}
 
-		clientRes.writeHead(status, upstreamRes.headers);
+		clientRes.writeHead(status, withoutRequestId(upstreamRes.headers));
 		upstreamRes.on("error", () => clientRes.destroy());
 		upstreamRes.pipe(clientRes);
 	});

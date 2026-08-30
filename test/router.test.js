@@ -681,6 +681,95 @@ describe("router", () => {
 		});
 	});
 
+	describe("LM Studio (selector-only)", () => {
+		const withLm = {
+			port: 4000,
+			providers: buildProviders({ LMSTUDIO_BASE_URL: "http://localhost:1234" }, "claude"),
+		};
+		const crowded = {
+			port: 4000,
+			providers: buildProviders(
+				{
+					GLM_API_KEY: "g",
+					OPENROUTER_API_KEY: "o",
+					DEEPSEEK_API_KEY: "d",
+					DASHSCOPE_API_KEY: "q",
+					LMSTUDIO_BASE_URL: "http://localhost:1234",
+				},
+				"claude",
+			),
+		};
+
+		it("routes lmstudio:<id> to lmstudio and strips the lens", () => {
+			const r = resolve2("lmstudio:openai/gpt-oss-20b", withLm);
+			assert.equal(r.provider.id, "lmstudio");
+			assert.equal(r.upstreamModel, "openai/gpt-oss-20b", "the tail keeps its slashes");
+		});
+
+		// The id that motivated the provider: a TWO-slash GGUF path with a bare
+		// sibling (`qwen3.6-27b-…`) loaded on the same server. The lens strip
+		// splits on the FIRST colon only, so the tail survives whole; step 2 then
+		// routes by the selector's provider id alone — it never looks at the id's
+		// shape, so nothing in the id can defeat it.
+		it("routes a two-slash GGUF id whose bare siblings collide with every predicate", () => {
+			const id =
+				"lmstudio:hauhaucs/qwen3.8-27b-uncensored-hauhaucs-aggressive-mtp-gguf/qwen3.8-27b-uncensored-hauhaucs-aggressive-q4_k_p.gguf";
+			const r = resolve2(id, crowded);
+			assert.equal(r.provider.id, "lmstudio");
+			assert.equal(
+				r.upstreamModel,
+				"hauhaucs/qwen3.8-27b-uncensored-hauhaucs-aggressive-mtp-gguf/qwen3.8-27b-uncensored-hauhaucs-aggressive-q4_k_p.gguf",
+			);
+		});
+
+		it("the lens is stripped even when no LM Studio host is configured (issue #20 rule)", () => {
+			const noLm = { port: 4000, providers: buildProviders({ GLM_API_KEY: "g" }, "claude") };
+			const r = resolve2("lmstudio:openai/gpt-oss-20b", noLm);
+			assert.equal(r.provider.id, "claude", "no host → no leg → default backend");
+			assert.equal(r.upstreamModel, "openai/gpt-oss-20b", "the lens must never reach an upstream");
+		});
+
+		it("bare ids NEVER route to lmstudio — the competing predicates keep their ids", () => {
+			// The ids a live server actually held (measured 2026-08-28). Without the
+			// selector they must land exactly where they did before lmstudio existed.
+			assert.equal(resolve("glm-4.7-flash-uncensored-hauhaucs-aggressive", crowded).id, "glm");
+			assert.equal(
+				resolve("qwen3.6-27b-fable-fusion-711-uncensored-heretic-nm-dau-neo-max-mtp", crowded).id,
+				"qwen",
+			);
+			assert.equal(resolve("openai/gpt-oss-20b", crowded).id, "openrouter");
+			assert.equal(
+				resolve("qwen3vl-8b-uncensored-hauhaucs-aggressive", withLm).id,
+				"claude",
+				"qwen key absent → falls past the qwen predicate",
+			);
+		});
+
+		it("the selector outranks ROUTES and the predicates, like every lens", () => {
+			// `lmstudio:deepseek-v4-pro` goes to LM Studio even though the bare id has
+			// three ranked routes and a key registered — a selector names its backend,
+			// it does not re-ask the routers.
+			const r = resolve2("lmstudio:deepseek-v4-pro", crowded);
+			assert.equal(r.provider.id, "lmstudio");
+			assert.equal(r.upstreamModel, "deepseek-v4-pro");
+		});
+
+		it("invariant 4 outranks the lmstudio lens (haiku tail pinned to Claude)", () => {
+			const r = resolve2("lmstudio:claude-haiku-4-5-20251001", withLm);
+			assert.equal(r.provider.id, "claude");
+			assert.equal(r.upstreamModel, "claude-haiku-4-5-20251001");
+		});
+
+		it("a suffixed selector strips BOTH spellings", () => {
+			const r = resolve2(
+				"lmstudio:gemma-4-12b-agentic-fable5-composer2.5-v2-3.5x-tau2[1m]",
+				withLm,
+			);
+			assert.equal(r.provider.id, "lmstudio");
+			assert.equal(r.upstreamModel, "gemma-4-12b-agentic-fable5-composer2.5-v2-3.5x-tau2");
+		});
+	});
+
 	describe("default backend = glm", () => {
 		const glmDefault = { port: 4000, providers: buildProviders({ GLM_API_KEY: "x" }, "glm") };
 
@@ -691,5 +780,29 @@ describe("router", () => {
 		it("unknown model falls to glm when glm is the default", () => {
 			assert.equal(resolve("weird-model", glmDefault).id, "glm");
 		});
+	});
+});
+
+describe("LM Studio as DEFAULT_BACKEND (the documented explicit exception)", () => {
+	// The selector-only claim is about SHAPE routing: no predicate claims a bare
+	// id for lmstudio. DEFAULT_BACKEND is a different mechanism — the user
+	// explicitly pointing the fallback at their local box — and it must WORK,
+	// not be refused. This pins both halves so the docs and the code stay in
+	// step: bare ids DO fall through to lmstudio when it is the default, and
+	// the haiku pin still outranks even that.
+	const lmDefault = {
+		port: 4000,
+		providers: buildProviders({ LMSTUDIO_BASE_URL: "http://localhost:1234" }, "lmstudio"),
+	};
+
+	it("unmatched ids fall through to lmstudio when it is the explicit default", () => {
+		assert.equal(resolve("totally-unknown-model", lmDefault).id, "lmstudio");
+		assert.equal(resolve2("lmstudio:openai/gpt-oss-20b", lmDefault).provider.id, "lmstudio");
+	});
+
+	it("invariant 4 outranks even the lmstudio default (haiku stays on Claude)", () => {
+		const r = resolve2("claude-haiku-4-5-20251001", lmDefault);
+		assert.equal(r.provider.id, "claude");
+		assert.equal(r.upstreamModel, "claude-haiku-4-5-20251001");
 	});
 });

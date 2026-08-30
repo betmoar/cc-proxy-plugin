@@ -105,7 +105,47 @@ const QWEN_PLAN_RESELLS = new Set(["deepseek-v4-pro"]);
  *
  * @type {ReadonlySet<string>}
  */
-export const PROVIDER_IDS = new Set(["glm", "openrouter", "deepseek", "qwen", "claude"]);
+export const PROVIDER_IDS = new Set([
+	"glm",
+	"openrouter",
+	"deepseek",
+	"qwen",
+	"lmstudio",
+	"claude",
+]);
+
+/**
+ * Is this string a base URL the forwarding path can actually build on?
+ *
+ * `upstreamRequestOptions()` does `new URL(provider.baseUrl + req.url)`, which
+ * throws on anything without a scheme — and it throws inside the request
+ * dispatcher, where a throw ends the process. Only http/https qualify, and the
+ * scheme check earns its keep on the values that DON'T throw: a `file:`/`data:`
+ * URL parses fine, so it slips past the try and is only caught here. It then
+ * fails late and confusingly instead — `proto` is chosen by
+ * `url.protocol === "https:" ? https : http`, so anything non-https resolves to
+ * the plain `http` module (`pickAgent` is binary; there is no third outcome),
+ * and the request goes out with an empty `hostname` to fail asynchronously on
+ * the socket rather than at parse time.
+ *
+ * @doctest isValidHttpUrl("http://localhost:1234") -> true
+ * @doctest isValidHttpUrl("https://example.com/skin") -> true
+ * @doctest isValidHttpUrl("192.168.1.50:1234") -> false
+ * @doctest isValidHttpUrl("localhost:1234") -> false
+ * @doctest isValidHttpUrl("file:///etc/passwd") -> false
+ * @doctest isValidHttpUrl("") -> false
+ *
+ * @param {string} value
+ * @returns {boolean}
+ */
+export function isValidHttpUrl(value) {
+	try {
+		const { protocol } = new URL(value);
+		return protocol === "http:" || protocol === "https:";
+	} catch {
+		return false;
+	}
+}
 
 /**
  * Build the provider registry from the environment. Order matters: `resolve()`
@@ -270,6 +310,58 @@ export function buildProviders(env = process.env, defaultId = env.DEFAULT_BACKEN
 				!m.includes("/") &&
 				(m.startsWith("qwen") || DATED_ID.test(m) || QWEN_PLAN_RESELLS.has(m)),
 		});
+	}
+
+	// LM Studio (self-hosted local inference server) speaks an Anthropic-compatible
+	// skin at `/v1/messages` (lmstudio.ai/docs/developer/anthropic-compat — its
+	// only documented Anthropic endpoint, and baseUrl passthrough lands on it
+	// exactly). Opt-in gated on LMSTUDIO_BASE_URL, NOT on a key — the host is
+	// per-user infrastructure (e.g. `http://192.168.1.50:1234`, another machine on the
+	// LAN), and the server often runs with authentication OFF, in which case there
+	// is no key at all: gating on LMSTUDIO_API_KEY would make an auth-off server
+	// unregistrable. LMSTUDIO_API_KEY stays optional; with auth enabled the server
+	// accepts BOTH x-api-key and Authorization: Bearer (its docs' own Claude Code
+	// example uses the dummy token `lmstudio`), so the bearer strategy covers both.
+	//
+	// EXPLICIT-SELECTOR-ONLY, and match() is deliberately `false` for every id.
+	// LM Studio serves whatever models the user has loaded, under LM Studio's own
+	// ids — which are arbitrary and churn with every load/unload (measured on a
+	// live server 2026-08-28: bare ids like `qwen3.6-27b-…` and `glm-4.7-flash-…`
+	// sit beside slash ids like `openai/gpt-oss-20b`). A prefix predicate would
+	// collide with glm-/qwen- routing, a slash predicate with OpenRouter, and any
+	// allowlist would rot the moment a GGUF is swapped. So no bare id ever routes
+	// here BY SHAPE; `lmstudio:<id>` is the only way in (resolve() step 2, which
+	// needs no match() and no ROUTES entry — the selector is the disambiguation).
+	// One deliberate exception outside shape-routing: DEFAULT_BACKEND=lmstudio
+	// makes it the fallback for unmatched ids too — that is the user explicitly
+	// pointing the default at their local box, same contract as =openrouter.
+	// Consequence, deliberate: bare slash ids keep meaning OpenRouter, and the
+	// discovered local models never appear in GET /v1/models (a per-machine
+	// catalog has no place in the repo's curated publishing contract).
+	// VALIDATED AT REGISTRATION, not at request time, and that is the whole point.
+	// Every other baseUrl in this file is a hardcoded literal; this one is
+	// free-form user input, and LM Studio's own UI shows its address WITHOUT a
+	// scheme (`192.168.1.50:1234`), which is exactly what a user pastes. A
+	// scheme-less value reaches `new URL(baseUrl + req.url)` in
+	// upstreamRequestOptions() and throws INSIDE the request dispatcher — which
+	// has no try — so the first lmstudio request kills the shared proxy process
+	// and every concurrent session with it (measured: exit code 1, no response
+	// written). Refusing to register is the honest failure: the user sees the
+	// reason at startup, and their other backends keep working.
+	if (env.LMSTUDIO_BASE_URL) {
+		if (isValidHttpUrl(env.LMSTUDIO_BASE_URL)) {
+			providers.push({
+				id: "lmstudio",
+				baseUrl: env.LMSTUDIO_BASE_URL.replace(/\/+$/, ""),
+				apiKey: env.LMSTUDIO_API_KEY || "lmstudio",
+				auth: "bearer",
+				match: () => false,
+			});
+		} else {
+			console.error(
+				`[lmstudio] LMSTUDIO_BASE_URL="${env.LMSTUDIO_BASE_URL}" is not a valid http(s) URL (missing scheme? try http://host:1234) — the lmstudio backend is NOT registered`,
+			);
+		}
 	}
 
 	providers.push({

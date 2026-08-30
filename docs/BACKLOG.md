@@ -498,6 +498,65 @@ notes referencing "backlog item N" still resolve.
     copy fails 2 tests). Exporting `handleProxy` for a direct test is the real
     fix; weigh that against widening the module's surface.
 
+16. ~~**Gateway model discovery**
+    (`CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY`)** — DONE as a measured
+    opt-in (0.7.x). Measured against CC 2.1.250 (2026-08-28): CC's gate is
+    flag + firstParty base URL + a credential (`ANTHROPIC_AUTH_TOKEN`), and
+    the fetch is `GET /v1/models?limit=1000` whose result is filtered to
+    ids matching `/claude|anthropic/i` — zero matches aborts discovery. So
+    the picker gains only the `claude-*`/`~anthropic/*` ids it mostly
+    already has, the third-party one-slot constraint stands, and enabling
+    costs OAuth precedence (connectors disabled). The original premise
+    ("every curated id becomes pickable") was wrong; the measurement is the
+    deliverable, cc-proxy needed zero code changes. Documented in README +
+    OPERATIONS. Full evidence: issue #44.
+
+17. **Optional proxy auth for the off-loopback escape hatch.** `PROXY_HOST`
+    is the documented opt-out of the loopback bind (invariant 7), and that
+    opt-out currently exposes the credential-injecting proxy to the LAN with
+    zero auth. Proposal: `PROXY_AUTH_TOKEN`, unset = unchanged behavior;
+    set = Bearer/`x-api-key` required on `/v1/*` (401 before body parse),
+    required on `/_shutdown`, still open on `/_ping`+`/_status` (liveness,
+    no secrets). Stateless per-request check, so invariants 2 and 3 are
+    untouched. Found by recon of free-claude-code, which requires a
+    constant-time bearer check for exactly this reason. → issue #45.
+
+18. **Request-ID correlation.** The routing log answers "where did this go"
+    but not "which line was my request" — and with one shared proxy process
+    across sessions, it usually is being asked by someone whose line is
+    interleaved with four others. One short opaque id per request, echoed as
+    `x-request-id` and stamped on the routing line (plus the vendor's own
+    `request_id` when an error body carries one). Deliberately a two-file
+    change: the log template is LOCKED by `test/couplings.test.js`
+    ("stays parseable by scripts/status.js"), so `parseRoutingLines()` moves
+    in the same commit or the lock fails — that is the lock working.
+    → issue #46.
+
+19. **Kimi/Moonshot as a next provider.** FCC's 50-provider table lists two
+    Moonshot legs — `kimi/` (metered API) and `kimi_code/` (subscription,
+    terms scoped to personal interactive coding agents) — and Moonshot
+    advertises an Anthropic-compatible endpoint. If it speaks real Messages
+    (probe, never read the page), it slots in like DeepSeek did: one gated
+    entry, `PROVIDER_IDS`, three test suites, no router/server changes.
+    Expect the Qwen trap: plan keys bound to plan-specific hosts, and the
+    two plans likely resell overlapping ids at different tiers — the
+    `QWEN_PLAN_RESELLS` / "plan before credits" question applies.
+    → issue #47.
+
+20. **FCC features reviewed and declined** — the recon that produced #44–#47
+    also surveyed free-claude-code's feature set: auto-fallback mid-turn
+    (invariant 2 + silent second-provider billing), local short-circuit
+    "optimizations" (invariant 1; the haiku pin already covers the value),
+    OpenAI Responses/Codex/Cline surfaces (invariant 5 — ~40% of FCC's
+    codebase), `web_search`/`web_fetch` emulation (fails 1's letter, 5's
+    spirit), preserving thinking blocks across backends (blocked by
+    statelessness, same wall as item 1), Admin UI / messaging bridges /
+    voice (different product). Each declined on a named invariant; the full
+    table with reasons lives in issue #48 so nobody re-litigates them.
+    Meta-lesson worth keeping: FCC is high-quality engineering with the
+    opposite product thesis — "resist making it more than that" is this
+    repo's first sentence for a reason.
+
 ## Reversed decisions
 
 - **`context_window` is now published on `GET /v1/models` (0.5.1), reversing

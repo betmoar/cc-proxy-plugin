@@ -228,6 +228,84 @@ describe("buildProviders", () => {
 		assert.equal(claude.match("claude-haiku-4-6"), true);
 		assert.equal(claude.match("glm-5.2"), false);
 	});
+
+	it("omits LM Studio unless LMSTUDIO_BASE_URL is set (a key alone is NOT enough)", () => {
+		assert.equal(
+			buildProviders({}).some((p) => p.id === "lmstudio"),
+			false,
+		);
+		// The host is the opt-in, deliberately: the key is often nonexistent
+		// (server auth off), so gating on LMSTUDIO_API_KEY would make an auth-off
+		// server unregistrable. A key with no host is nothing to point at.
+		assert.equal(
+			buildProviders({ LMSTUDIO_API_KEY: "k" }).some((p) => p.id === "lmstudio"),
+			false,
+			"the base URL is the gate, not the key",
+		);
+	});
+
+	it("registers LM Studio (bearer, selector-only) when its base URL is set", () => {
+		const providers = buildProviders({ LMSTUDIO_BASE_URL: "http://localhost:1234" });
+		const lm = providers.find((p) => p.id === "lmstudio");
+		assert.ok(lm, "lmstudio provider present");
+		assert.equal(lm.auth, "bearer");
+		assert.equal(lm.baseUrl, "http://localhost:1234");
+		// Auth-off server: the dummy token LM Studio's own docs use for Claude
+		// Code. Harmless when auth is off (ignored), valid when auth is on.
+		assert.equal(lm.apiKey, "lmstudio");
+		// claude stays last / default.
+		assert.equal(providers[providers.length - 1].id, "claude");
+	});
+
+	it("LM Studio uses the provided key when one is set", () => {
+		const lm = buildProviders({
+			LMSTUDIO_BASE_URL: "http://localhost:1234",
+			LMSTUDIO_API_KEY: "real-secret",
+		}).find((p) => p.id === "lmstudio");
+		assert.equal(lm.apiKey, "real-secret");
+	});
+
+	// COLLISION-LOCK, the mirror image of the others: lmstudio matches NOTHING.
+	// Its served ids are arbitrary local GGUF/MLX names that churn with every
+	// load/unload, and live servers carry ids that collide with every existing
+	// predicate (measured 2026-08-28: bare `glm-4.7-flash-…`, bare `qwen3.5-9b-…`,
+	// slash `openai/gpt-oss-20b`). A prefix or slash predicate would steal routes
+	// from glm/qwen/openrouter; an allowlist would rot on the next model swap.
+	// The `lmstudio:` selector is the only way in (resolve() step 2 needs no
+	// match), so the predicate must refuse everything.
+	it("LM Studio matches nothing — the selector is the only way in", () => {
+		const lm = buildProviders({ LMSTUDIO_BASE_URL: "http://x:1234" }).find(
+			(p) => p.id === "lmstudio",
+		);
+		// Every collision shape observed on a live server:
+		assert.equal(
+			lm.match("glm-4.7-flash-uncensored-hauhaucs-aggressive"),
+			false,
+			"would steal glm-*",
+		);
+		assert.equal(lm.match("qwen3.5-9b-uncensored-hauhaucs-aggressive"), false, "would steal qwen*");
+		assert.equal(lm.match("openai/gpt-oss-20b"), false, "would steal OpenRouter's slash space");
+		assert.equal(
+			lm.match(
+				"hauhaucs/qwen3.8-27b-uncensored-hauhaucs-aggressive-mtp-gguf/qwen3.8-27b-uncensored-hauhaucs-aggressive-q4_k_p.gguf",
+			),
+			false,
+			"a real two-slash GGUF id",
+		);
+		assert.equal(lm.match("claude-opus-4-6"), false);
+		assert.equal(lm.match(undefined), false);
+	});
+
+	it("LM Studio sits before claude and after qwen in registry order", () => {
+		const ids = buildProviders({
+			GLM_API_KEY: "g",
+			OPENROUTER_API_KEY: "or",
+			DEEPSEEK_API_KEY: "ds",
+			DASHSCOPE_API_KEY: "q",
+			LMSTUDIO_BASE_URL: "http://x:1234",
+		}).map((p) => p.id);
+		assert.deepEqual(ids, ["glm", "openrouter", "deepseek", "qwen", "lmstudio", "claude"]);
+	});
 });
 
 describe("applyAuth", () => {

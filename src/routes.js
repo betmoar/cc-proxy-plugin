@@ -44,6 +44,11 @@ export const PROVIDER_BILLING = {
 	qwen: "plan",
 	deepseek: "credits",
 	openrouter: "reseller",
+	// Local hardware, no marginal spend — cheaper than any remote route. It can
+	// never appear in ROUTES (no probed ids; the lmstudio: selector bypasses the
+	// table), so this entry exists for the "every provider has a billing mode"
+	// coherence lock and for tier display if a discovery leg is ever added.
+	lmstudio: "local",
 };
 
 /**
@@ -55,6 +60,7 @@ const BILLING_TIER = {
 	plan: 2,
 	credits: 3,
 	reseller: 4,
+	local: 0,
 };
 
 const DEFAULT_TIER = 3;
@@ -66,7 +72,8 @@ const DEFAULT_TIER = 3;
  *
  * @param {string} providerId
  * @param {Route} [route]
- * @returns {number} 1..4
+ * @returns {number} 0..4 (`local` is 0; it reaches ROUTES' callers only via a
+ *   hand-written entry, and no such entry exists — lmstudio routes by selector)
  */
 export function tierOf(providerId, route) {
 	// `Object.hasOwn` on BOTH lookups, for the same reason rankRoutes uses it
@@ -201,6 +208,7 @@ export const ROUTES = {
  * @doctest tierOf("deepseek") -> 3
  * @doctest tierOf("openrouter") -> 4
  * @doctest tierOf("nobody-knows") -> 3
+ * @doctest tierOf("lmstudio") -> 0
  *
  * And the order itself, which is the actual #19 rule: native first even though
  * the qwen plan is the cheaper tier, then cheapest, then declaration order.

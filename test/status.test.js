@@ -38,6 +38,26 @@ describe("status.js parseRoutingLines", () => {
 		assert.match(lines[0], /glm-5\.2 -> glm \/v1\/messages$/);
 		assert.match(lines[1], /unknown -> claude \/v1\/messages\/count_tokens$/);
 	});
+
+	it("keeps the {request-id} segment verbatim (current format) and still parses lines without one", () => {
+		// The reqId stamp (backlog item 18) sits between the timestamp and the
+		// model. parseRoutingLines keeps WHOLE lines, so the id survives into the
+		// report — filtering it out would delete the only cross-session debug
+		// handle. Pre-reqId log tails (a log spanning a proxy upgrade) must not
+		// go dark: the matcher never required the segment.
+		const mixed = [
+			"[2026-08-28T09:00:00.000Z] {a1b2c3d4} glm-5.2 -> glm /v1/messages",
+			"[2026-08-28T08:59:00.000Z] glm-5.2 -> glm /v1/messages",
+		].join("\n");
+		const lines = parseRoutingLines(mixed);
+		assert.equal(lines.length, 2);
+		assert.match(lines[0], /\{a1b2c3d4\} glm-5\.2 -> glm/);
+		assert.match(
+			lines[1],
+			/^\[[^\]]+\] glm-5\.2 -> glm/,
+			"the id-less legacy line still parses and carries no fabricated id",
+		);
+	});
 });
 
 describe("status.js formatStatusReport", () => {

@@ -25,6 +25,7 @@ Runtime facts, known traps, and debugging. For design rationale, see [`ARCHITECT
 - **`ANTHROPIC_CUSTOM_MODEL_OPTION`** — exactly one slot; the id passes verbatim into `model` with validation skipped.
 - **`"model": "glm-..."` default without `ANTHROPIC_BASE_URL`** makes CC hit `api.anthropic.com` directly; its retry path then corrupts the model string to >256 chars (`400 String should have at most 256 characters`). Pick the model with `/model`, or keep the proxy running.
 - **`ANTHROPIC_DEFAULT_HAIKU_MODEL`** sets the id for internal ops (titles/summaries); leaving it on Claude keeps that traffic off paid quotas.
+- **Gateway model discovery (`CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY`)** — measured against CC 2.1.250 (2026-08-28, full gate logic decoded from the CC bundle; see issue #44 for the raw evidence). With the flag set, CC fetches `GET {base}/v1/models?limit=1000` at startup and feeds the `/model` picker from it — **but only ids matching `/claude|anthropic/i`**: GLM/Qwen/DeepSeek/LM Studio ids are filtered out, and zero matches aborts discovery entirely. Enabling it also **requires `ANTHROPIC_AUTH_TOKEN`** (discovery skips with "no credential" otherwise), and that token demotes the claude.ai OAuth login (connectors disabled). Net: the picker gains at most the OpenRouter `~anthropic/*` and curated `claude-*` ids it mostly already has, at the cost of OAuth precedence. cc-proxy's side needs zero changes — the publishing contract already satisfies CC's `{data:[{id, display_name?}]}` validation. Documented opt-in, not a setup default.
 
 ## Model assignment
 
@@ -42,7 +43,8 @@ The proxy is spawned **detached** (`spawn + unref`), so it survives the hook exi
 
 ## Proxy infrastructure
 
-- **Auth:** Claude route preserves `Authorization` (OAuth); GLM + DeepSeek set `x-api-key`; OpenRouter + Qwen set `Authorization: Bearer`.
+- **Auth:** Claude route preserves `Authorization` (OAuth); GLM + DeepSeek set `x-api-key`; OpenRouter + Qwen + LM Studio set `Authorization: Bearer`.
+- **LM Studio** (`LMSTUDIO_BASE_URL`, e.g. `http://192.168.1.50:1234` — the scheme is REQUIRED; a scheme-less value like `192.168.1.50:1234`, which is how LM Studio's own UI displays the address, is refused at startup with a `[lmstudio]` error on stderr and the backend simply is not registered, rather than failing at request time) speaks an Anthropic-compatible skin at `/v1/messages` — its only documented Anthropic endpoint, so baseUrl passthrough needs no rewriting. **Selector-only**: served ids are the user's own loaded models, whose names are arbitrary and churn with every load/unload (a live server held bare `glm-4.7-flash-…`, bare `qwen3.5-9b-…` and slash `openai/gpt-oss-20b` ids side by side, 2026-08-28), so `match()` refuses everything and `lmstudio:<id>` is the only way in. Gated on the base URL rather than a key because server auth is often off; `LMSTUDIO_API_KEY` is optional and sent as a Bearer token (LM Studio accepts `x-api-key` too; its docs' own example uses the dummy token `lmstudio`). Probed live 2026-08-28: Messages 200, `tools` → `tool_use` blocks (undocumented but working — this is the make-or-break fact for CC sessions), SSE framing standard, inbound assistant `thinking` blocks tolerated. Re-measurable via `pnpm probe:vendors` when `LMSTUDIO_BASE_URL` is set. LM Studio publishes no discovery leg in `/v1/models` — a per-machine catalog has no place in the repo's curated publishing contract.
 - **SSE streaming** is straight `pipe()` passthrough with back-pressure (no parsing).
 - **`/_ping`** (GET) returns a bare `200` with an empty body — the fastest possible up/down check (no config read, no serialization). Answer before any request body is buffered; query-string tolerant like `/_status`. No `content-type` (empty body).
 - **`/_status`** (GET) returns `{ port, version, defaultBackend, providers }`. `version` is what the stale-proxy handshake compares against the plugin tree.
@@ -68,6 +70,31 @@ the live endpoint; treat the docs as context, not as the catalog.
 - **`/v1/models?dedup=identity`** returns one entry per MODEL rather than per id, keeping the lowest `tier` (a `usable` entry always beats an unusable one, whatever its tier). The identity is the id after its FIRST separator — `qwen:deepseek-v4-pro` → `deepseek-v4-pro`, `z-ai/glm-5.3` → `glm-5.3` — and an OpenRouter variant suffix stays attached, so `google/gemini-3.7-flash:batch` is its own identity. **Splitting on the LAST separator is the trap** and it is not hypothetical: over a live 415-id catalogue, 66 ids carry both separators and last-separator splitting merges 50 of them into one identity called `batch` spanning seven vendors. `dedup` is the only query parameter this endpoint reads; it is opt-in (no parameter → the response is unchanged) and an unrecognized value is a `400`, never a quietly un-deduped list. Motivation: the natural "one model per `provider`" panel picks the same model twice, silently (issue #39).
 - **`POST /api/v1/services/aigc/multimodal-generation/generation`** is a passthrough tunnel to the Qwen plan host for its image models (`wan2.7-image`, `wan2.7-image-pro`) — the only path-routed request in the proxy, because every other route reads `body.model` and these ids match no provider predicate (issue #40). Byte-for-byte body, vendor's own response, no schema knowledge in the proxy; all it adds is the credential. Requires `DASHSCOPE_API_KEY` — with none it answers `503` rather than falling through to the default backend on the user's OAuth credentials. `GET` is `405`. `x-dashscope-sse: enable` selects the streaming path (DashScope streams via a request header, not a body field). The response carries a **signed OSS URL with an `Expires`**, not inline base64. It reaches the plan host at its ROOT — `mediaBaseUrl` in `providers.js` exists because `upstreamRequestOptions()` concatenates `baseUrl + req.url` with no rewriting, so the skin's `/apps/anthropic` baseUrl would produce `/apps/anthropic/api/v1/…` and 404. The plan's audio ids have **no working route**: measured 2026-08-25, every HTTP path 400s (`url error`) and the WebSocket task reaches `task-failed` with `[cosyvoice:]Engine error [411]` for every voice, format and language tried. Both facts are re-measurable via `pnpm probe:vendors`.
 - **Orphan log inode trap:** `rm -f $PROXY_LOG && touch $PROXY_LOG` while the proxy runs leaves it writing to the deleted inode — output "disappears". Truncate in place (`truncate -s 0`) or restart the proxy; never `rm && touch` a file a live process holds open.
+
+## Prompt caching
+
+**Caching survives the proxy, and that is a measurement, not a hope.** Measured 2026-08-29 through the running proxy against Z.ai: a cold turn billed `input_tokens=2816, cache_read=0`; the identical prefix billed `input_tokens=64` with **2752 read from cache**. The worst case was measured too — a `thinking` block sitting *deep inside* the cacheable prefix, where the strip mutates bytes before the breakpoint: cold `4426/read=0`, repeat `10/read=4416`.
+
+**Why the thinking-strip does not break caching.** `stripAssistantThinking()` is *deterministic*: the same inbound history always produces the same stripped bytes, so the cache key is stable across turns even though it differs from what the client sent. Caching keys on the prefix the BACKEND receives, and the proxy sends that backend a byte-identical prefix every time. This is the property the "transparent pipe … prompt-cache works unchanged" claim actually rests on — if anyone ever makes the strip depend on request-varying state (a timestamp, a counter, anything from invariant 2's forbidden list), caching breaks silently and the bill roughly quadruples with no error anywhere. Locked by `test/sanitize.test.js` "the strip is deterministic — identical input yields byte-identical output".
+
+`cache_control` markers pass through untouched (verified: `system[].cache_control` and per-block breakpoints both survive the strip), because the strip filters whole blocks and never rewrites the ones it keeps.
+
+**What each backend does** — from [OpenRouter's prompt-caching guide](https://openrouter.ai/docs/guides/best-practices/prompt-caching), which documents the vendor behaviour behind the ids this proxy routes to. Multipliers are relative to that model's base input price:
+
+| Backend | Activation | Write cost | Read cost | TTL |
+|---|---|---|---|---|
+| Claude (Anthropic) | `cache_control` breakpoint, or top-level | 1.25× (5 min) / 2× (1 h) | **0.1×** | 5 min default, `"ttl":"1h"` opt-in |
+| GLM (Z.ai) | automatic | free (vendor calls it limited-time) | ~0.2× | vendor-defined |
+| DeepSeek | automatic | full input price | **0.1×** | vendor-defined |
+| Qwen (Alibaba) | **explicit `cache_control` required** | 1.25× | **0.1×** | 5 min |
+| OpenRouter (`vendor/model`) | depends on the upstream vendor | varies | varies | varies |
+| LM Studio | n/a — local inference, no billing | — | — | — |
+
+Three consequences worth knowing:
+
+- **Anthropic's minimum cacheable prefix is model-dependent**: 1,024 tokens for Sonnet 4/4.5/4.6 and Opus 4/4.1, but **4,096** for Opus 4.5–4.8 and Haiku 4.5. A prefix under the threshold is silently not cached — no error, just full price.
+- **Anthropic allows at most four `cache_control` breakpoints.** Claude Code manages its own; the proxy neither adds nor removes any.
+- **Switching backends mid-session throws away the cache.** Each backend caches independently, so a `/model` hop from GLM to Claude re-pays the full prefix at the new backend's write price. That is the single biggest avoidable token cost in normal use — pick a primary per session and switch deliberately, not reflexively. (This is also why the model-router skill's triage runs *before* work starts rather than per-turn.)
 
 ## State on disk (`~/.claude/cc-proxy/`)
 
@@ -126,7 +153,7 @@ backends; when GLM is the only one missing it says so, because an unset
 1. **Which version is active?** `cat ~/.claude/plugins/installed_plugins.json` — confirm `installPath` and `version`.
 2. **Is the proxy up?** `lsof -ti:4000` and `curl -s http://localhost:4000/_status`.
 3. **Orphan log inode?** `stat $PROXY_LOG` vs `lsof -p <pid>` — compare inodes.
-4. **What did the router decide?** `<model> -> <provider> <path>` lines in `~/.claude/cc-proxy/cc-proxy.log`.
+4. **What did the router decide?** `[<iso>] {<reqId>} <model> -> <provider> <path>` lines (the `{<reqId>}` is the correlation id echoed to the client as `x-request-id`) in `~/.claude/cc-proxy/cc-proxy.log`.
    The trailing path disambiguates `unknown -> …` entries (a request that arrived
    with no `model` field — usually a non-Messages call like `/v1/messages/count_tokens`).
 

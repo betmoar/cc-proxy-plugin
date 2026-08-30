@@ -1,7 +1,8 @@
 # cc-proxy — maintainer handoff
 
 A local HTTP proxy that lets Claude Code use GLM (Z.ai), OpenRouter, DeepSeek,
-Qwen, and Claude in one session. Claude Code points `ANTHROPIC_BASE_URL` at it;
+Qwen, LM Studio (self-hosted, `lmstudio:`-selector-only), and Claude in one
+session. Claude Code points `ANTHROPIC_BASE_URL` at it;
 the proxy routes each request **by model name** and forwards. That's the whole
 product. Resist making it more than that.
 
@@ -29,14 +30,19 @@ Each is locked by tests; the test names tell you what you broke.
 1. **Transparent pipe.** Auth/headers only. Full inbound path *including the
    query string* reaches upstream; bodies forwarded byte-for-byte. THREE body
    exceptions (thinking-strip, `<provider>:` selector-strip, `[1m]` variant-
-   suffix strip) and one header exception (hop-by-hop dropped — CL+TE together
-   trips smuggling rejection). The third was added in 0.6.3 on a measurement,
+   suffix strip) and TWO header exceptions (hop-by-hop dropped — CL+TE together
+   trips smuggling rejection; and the upstream's own `x-request-id` dropped from
+   every forwarded response, 0.8.0 — `writeHead` REPLACES what `setHeader` put
+   there, so a vendor that emits one took over the proxy's correlation id).
+   The third body strip was added in 0.6.3 on a measurement,
    not a preference: both Z.ai and the Qwen plan 400 on a suffixed id, so
    forwarding CC's display spelling means routing correctly and then failing at
    the vendor. All three strips share one shape — a spelling the CLIENT uses
    that no BACKEND knows.
    → `server.test.js` "query string is preserved…", "provider selector strip…",
-   "routing log annotates the normalized id…"
+   "routing log annotates the normalized id…", "keeps the proxy's x-request-id
+   when the upstream sets its own…" (and its two size-cap passthrough siblings —
+   each `writeHead` is a separate chance to leak the vendor's id)
 2. **Stateless.** No breakers, no on-disk state, no in-proxy waiting. Rate
    limits inject `Retry-After` and let the client back off. → "…1302 … gets a
    Retry-After", "1313 … no Retry-After"
@@ -253,7 +259,10 @@ apply *if* it fires); **8** the `<provider>:` selector, the cross-host probe
 matrix, and the measured +79-token plan preamble; **9** grades — the
 `Specialist` default and `Economy` are gone as of 0.6.1 (an unassessed id now
 omits `grade`); what remains open is where assessments come from at all;
-**12** `ROUTES` is hand-probed and rots silently, and no test can catch it.
+**12** `ROUTES` is hand-probed and rots silently, and no test can catch it;
+**16–20** the free-claude-code recon (2026-08-28): gateway model discovery,
+optional proxy auth, request-id correlation, the Kimi provider candidate, and
+the declined-features register with per-feature invariant reasons (#44–#48).
 
 ## Operator
 

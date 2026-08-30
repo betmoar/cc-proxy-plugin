@@ -1,7 +1,7 @@
 {
   "name": "cc-proxy",
-  "version": "0.7.0",
-  "description": "GLM, DeepSeek, OpenRouter, and Qwen proxy for Claude Code — stateless local router with manual /model switching and per-provider auth.",
+  "version": "0.8.0",
+  "description": "GLM, DeepSeek, OpenRouter, Qwen, and LM Studio proxy for Claude Code — stateless local router with manual /model switching and per-provider auth.",
   "author": {
     "name": "betmoar"
   },

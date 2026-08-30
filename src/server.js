@@ -1,4 +1,5 @@
 // @ts-check
+import { randomBytes } from "node:crypto";
 import http from "node:http";
 import {
 	RATE_LIMIT_RETRY_AFTER_SECONDS,
@@ -13,6 +14,7 @@ import {
 	onUpstreamError,
 	parseMaybeJson,
 	upstreamRequestOptions,
+	withoutRequestId,
 } from "./proxy.js";
 import { resolve, routingIdOf } from "./router.js";
 import { stripAssistantThinking } from "./sanitize.js";
@@ -35,7 +37,11 @@ function sendJson(res, status, payload) {
 }
 
 function writeBufferedResponse(clientRes, status, headers, bodyBuffer) {
-	clientRes.writeHead(status, headers);
+	// withoutRequestId: writeHead REPLACES the x-request-id setHeader() put on
+	// the response, so a backend emitting its own would silently take over the
+	// correlation id (see proxy.js). Applied at every site that forwards
+	// upstream headers, not just this one.
+	clientRes.writeHead(status, withoutRequestId(headers));
 	clientRes.end(bodyBuffer);
 }
 
@@ -173,7 +179,7 @@ async function handleModels(res, config, dedup) {
  */
 const MEDIA_GENERATION_PATH = "/api/v1/services/aigc/multimodal-generation/generation";
 
-function handleMediaGeneration(req, res, bodyBuffer, config) {
+function handleMediaGeneration(req, res, bodyBuffer, config, reqId) {
 	const qwen = providerById(config, "qwen");
 	// No key, no tunnel — and say so. Falling through to handleProxy here would
 	// route a plan-only path at the default backend on the user's OAuth
@@ -189,7 +195,7 @@ function handleMediaGeneration(req, res, bodyBuffer, config) {
 	// twice). Only baseUrl differs: same host, same bearer auth, no
 	// `/apps/anthropic` — see the mediaBaseUrl comment in providers.js.
 	const tunnel = { ...qwen, baseUrl: qwen.mediaBaseUrl };
-	console.log(`[${new Date().toISOString()}] media -> ${tunnel.id} ${req.url}`);
+	console.log(`[${new Date().toISOString()}] {${reqId}} media -> ${tunnel.id} ${logSafe(req.url)}`);
 	// DashScope streams this endpoint via a REQUEST header, not a body field, so
 	// the usual `body.stream === true` check would miss it and send an SSE
 	// response down the buffering path.
@@ -197,7 +203,7 @@ function handleMediaGeneration(req, res, bodyBuffer, config) {
 		forward(req, res, tunnel, bodyBuffer);
 		return;
 	}
-	forwardBuffered(req, res, tunnel, bodyBuffer, "media");
+	forwardBuffered(req, res, tunnel, bodyBuffer, "media", reqId);
 }
 
 // Cap on buffering a non-streaming response. The overflow signal is tiny (an
@@ -209,17 +215,21 @@ const NON_STREAM_BUFFER_LIMIT = 1024 * 1024;
 // Non-streaming path. Buffer the response so a GLM context-overflow (200 +
 // empty content + stop_reason) can be converted into a real error instead of a
 // silent empty turn. Larger-than-cap and everything else pass through unchanged.
-function forwardBuffered(clientReq, clientRes, provider, outboundBuffer, inboundModel) {
+function forwardBuffered(clientReq, clientRes, provider, outboundBuffer, inboundModel, reqId) {
 	// `true` = force accept-encoding: identity upstream. The inspections below
 	// JSON.parse the raw response bytes; a gzipped body would fail to parse and
 	// both the overflow→400 conversion and the 1302 Retry-After injection would
 	// silently stop working. Buffered path only — the streaming path stays a pipe.
-	const { proto, options } = upstreamRequestOptions(
-		clientReq,
-		provider,
-		outboundBuffer.length,
-		true,
-	);
+	// Same containment as forward(): a bad baseUrl becomes a 502 for this one
+	// request rather than a process-ending throw inside the dispatcher.
+	let proto;
+	let options;
+	try {
+		({ proto, options } = upstreamRequestOptions(clientReq, provider, outboundBuffer.length, true));
+	} catch (err) {
+		onUpstreamError(clientRes)(/** @type {Error} */ (err));
+		return;
+	}
 	const upstream = proto.request(options, (upstreamRes) => {
 		const status = upstreamRes.statusCode || 502;
 		const chunks = [];
@@ -234,7 +244,7 @@ function forwardBuffered(clientReq, clientRes, provider, outboundBuffer, inbound
 				// Too large to buffer/inspect — commit to passthrough: flush the
 				// buffered prefix, then pipe the remaining bytes through.
 				passthrough = true;
-				clientRes.writeHead(status, upstreamRes.headers);
+				clientRes.writeHead(status, withoutRequestId(upstreamRes.headers));
 				for (const ch of chunks) clientRes.write(ch);
 				upstreamRes.pipe(clientRes);
 			}
@@ -246,8 +256,15 @@ function forwardBuffered(clientReq, clientRes, provider, outboundBuffer, inbound
 		upstreamRes.on("end", () => {
 			if (passthrough) return;
 			const bodyBuf = Buffer.concat(chunks);
+			// A vendor-side rejection carries the vendor's own request id (OpenRouter
+			// `gen-…`, Anthropic `req_…`). Landing it on a log line the user can find
+			// — same line as the routing decision — is what makes a vendor error
+			// traceable without reading raw bodies. Buffered path only: the streaming
+			// path is a pipe by invariant 1 and never inspects bytes.
+			const vendorId = status >= 400 ? vendorRequestIdOf(parseMaybeJson(bodyBuf)) : undefined;
+			if (vendorId) console.log(`[vendor-request-id] {${reqId}} ${vendorId}`);
 			if (status === 200 && isContextLimitByStopReason(parseMaybeJson(bodyBuf))) {
-				console.log(`[ctx-overflow] ${inboundModel} 200 -> 400 (context window exceeded)`);
+				console.log(`[ctx-overflow] ${logSafe(inboundModel)} 200 -> 400 (context window exceeded)`);
 				sendJson(clientRes, 400, {
 					type: "error",
 					error: {
@@ -266,7 +283,9 @@ function forwardBuffered(clientReq, clientRes, provider, outboundBuffer, inbound
 				// than clobbering it with our fixed default. (Node lowercases keys.)
 				const retryAfter =
 					upstreamRes.headers["retry-after"] || String(RATE_LIMIT_RETRY_AFTER_SECONDS);
-				console.log(`[rate-limit] ${inboundModel} 429 1302 -> Retry-After: ${retryAfter}`);
+				console.log(
+					`[rate-limit] ${logSafe(inboundModel)} 429 1302 -> Retry-After: ${logSafe(retryAfter)}`,
+				);
 				const headers = { ...upstreamRes.headers, "retry-after": retryAfter };
 				writeBufferedResponse(clientRes, status, headers, bodyBuf);
 				return;
@@ -281,7 +300,7 @@ function forwardBuffered(clientReq, clientRes, provider, outboundBuffer, inbound
 	upstream.end();
 }
 
-function handleProxy(req, res, body, bodyBuffer, config) {
+function handleProxy(req, res, body, bodyBuffer, config, reqId) {
 	const { provider, upstreamModel } = resolve(body.model, config);
 	const inboundModel = body.model || "unknown";
 
@@ -327,7 +346,9 @@ function handleProxy(req, res, body, bodyBuffer, config) {
 	// " -> " and start with "[", so a trailing annotation is safe there.
 	const routedAs = routingIdOf(inboundModel);
 	const via = routedAs === inboundModel ? "" : ` (routed as ${routedAs})`;
-	console.log(`[${new Date().toISOString()}] ${inboundModel} -> ${provider.id}${via} ${req.url}`);
+	console.log(
+		`[${new Date().toISOString()}] {${reqId}} ${logSafe(inboundModel)} -> ${provider.id}${via} ${logSafe(req.url)}`,
+	);
 	debug(
 		"  metadata:",
 		JSON.stringify(body.metadata),
@@ -340,7 +361,7 @@ function handleProxy(req, res, body, bodyBuffer, config) {
 		forward(req, res, provider, outboundBuffer);
 		return;
 	}
-	forwardBuffered(req, res, provider, outboundBuffer, inboundModel);
+	forwardBuffered(req, res, provider, outboundBuffer, inboundModel, reqId);
 }
 
 /**
@@ -367,8 +388,126 @@ function parseJsonOrEmpty(buffer) {
 	}
 }
 
+/**
+ * One short opaque correlation id per request, stamped on the routing-log line
+ * and echoed to the client as `x-request-id`. The routing log answers "where
+ * did this model go" but not "which of these interleaved lines was MY request"
+ * — and the proxy is normally shared across several live sessions, so the
+ * question comes up constantly. Also harvested from error responses: when an
+ * upstream body carries a vendor `request_id`, it lands on the same log line,
+ * so correlating a vendor-side rejection with our routing decision stops being
+ * manual archaeology.
+ *
+ * NOT a tracing system: no spans, no persistence, no config. 8 hex chars (32
+ * bits) is a deliberate readability/uniqueness trade, and the honest number is
+ * NOT "negligible": a full 5 MB log window holds ~69k routing lines at ~76
+ * bytes each, which by the birthday bound is ~42% odds that SOME pair of lines
+ * in the window shares a tag. That is acceptable, but for a specific reason
+ * worth stating — a collision merges two log tags, it never misroutes a
+ * request — and because the id's job is to disambiguate the handful of
+ * interleaved lines a reader is looking at right now, not to be globally
+ * unique. Widen the id if that ever stops being true. (The earlier version of
+ * this comment asserted "negligible" without computing it.)
+ *
+ * INBOUND IDS ARE SANITIZED, not just length-capped, and that is log-forging
+ * defense, not tidiness. The id is interpolated into a log line that
+ * scripts/status.js parseRoutingLines() filters on `starts with "[" and
+ * contains " -> "`; an id carrying `] ` + a fake `[ts] x -> y` shape would
+ * otherwise let any client able to set one header invent routing history in
+ * /cc-proxy:status output (measured: `} fake-line [2026-01-01T00:00:00Z] evil
+ * -> pwned` landed as a plausible extra route). Only `[A-Za-z0-9._-]` survive
+ * — anything else (and the whole header, if a newline somehow made it past
+ * Node's header parser) falls back to a minted id. Still truncated to 64.
+ *
+ * MINTED IDS ARE ALWAYS EXACTLY 8 CHARS, via randomBytes rather than
+ * `Math.random().toString(16)`: that older form returns fewer than 8
+ * characters when the float's hex expansion is short — provably the empty
+ * string when Math.random() lands exactly on 0 (its output grid is multiples
+ * of 2^-53; also any value under 1/2^32 shortens the leading zeros away). A
+ * regex `[0-9a-f]{8}` in tests plus the log contract should not rest on a
+ * probabilistic length.
+ *
+ * @param {http.IncomingMessage} req
+ * @returns {string}
+ */
+function requestIdOf(req) {
+	const inbound = req.headers["x-request-id"]?.toString().slice(0, 64);
+	if (inbound && /^[A-Za-z0-9._-]+$/.test(inbound)) return inbound;
+	return randomBytes(4).toString("hex");
+}
+
+/**
+ * A value safe to interpolate into a log line.
+ *
+ * THE MODEL ID IS ATTACKER-CONTROLLED JSON, and it reaches the routing-log line
+ * that scripts/status.js parseRoutingLines() filters on `starts with "[" and
+ * contains " -> "`. A `model` carrying a newline plus a fake
+ * `[<iso>] {id} X -> Y /path` therefore injects a second line that the status
+ * report keeps as genuine routing history — measured end-to-end, the forged
+ * entry came back from parseRoutingLines() indistinguishable from a real one.
+ *
+ * This is the SAME defect class the id sanitizers guard (requestIdOf,
+ * vendorRequestIdOf), and it predates them: `model` was already interpolated
+ * before the correlation id existed. Hardening two of the three interpolation
+ * sites is what left it reachable, which is the lesson worth keeping — fix a
+ * class, then sweep every site in it.
+ *
+ * Escaping rather than allowlisting, deliberately: a model id is a display
+ * value the operator needs to READ (`qwen:deepseek-v4-pro[1m]`, slashes, dots,
+ * brackets all meaningful), so replacing the id with a placeholder would cost
+ * the log its usefulness. Only the line-structural characters are neutralized.
+ *
+ * @doctest logSafe("glm-5.2") -> "glm-5.2"
+ * @doctest logSafe("qwen:deepseek-v4-pro[1m]") -> "qwen:deepseek-v4-pro[1m]"
+ * @doctest logSafe("a\nb") -> "a\\nb"
+ * @doctest logSafe("a\rb") -> "a\\rb"
+ *
+ * @param {unknown} value
+ * @param {number} [max]
+ * @returns {string}
+ */
+export function logSafe(value, max = 200) {
+	return String(value).replace(/\r/g, "\\r").replace(/\n/g, "\\n").slice(0, max);
+}
+
+/**
+ * The vendor's own request id, when an error body carries one. Two documented
+ * shapes are covered: OpenRouter nests it under `error.request_id` (`gen-…`),
+ * and Anthropic puts it TOP-LEVEL alongside `error` (`{"type":"error","error":
+ * {…},"request_id":"req_…"}`, per docs.anthropic.com/en/api/errors). Unknown
+ * shapes yield undefined and the log line simply omits the tag.
+ *
+ * An earlier version of this comment cited Anthropic as `request.id` — a
+ * nested shape their API does not produce — and the lookup carried a matching
+ * `b?.request?.id` fallback that no vendor was known to emit and no test
+ * exercised. Both are gone: a speculative branch guarding a shape nobody has
+ * seen is a claim, and this file's rule is that claims get evidence or get
+ * deleted.
+ *
+ * SAME CHARSET RULE AS requestIdOf, and for the same measured reason: this
+ * string is interpolated into a log line that scripts/status.js filters on
+ * `starts with "[" and contains " -> "`, so a vendor-controlled value with
+ * `" -> "` or an embedded newline (a compromised vendor, a MITM, or any host
+ * LMSTUDIO_BASE_URL points at) would forge routing history in
+ * /cc-proxy:status output. `gen-…`/`req_…` shapes are all `[A-Za-z0-9._-]`;
+ * anything outside that is not worth logging.
+ *
+ * @param {unknown} body
+ * @returns {string | undefined}
+ */
+export function vendorRequestIdOf(body) {
+	const b = /** @type {any} */ (body);
+	const v = b?.error?.request_id ?? b?.request_id ?? b?.error?.requestId;
+	return typeof v === "string" && /^[A-Za-z0-9._-]{1,128}$/.test(v) ? v : undefined;
+}
+
 export function createServer(config) {
 	const server = http.createServer((req, res) => {
+		const reqId = requestIdOf(req);
+		// Echo before any branch: every response the proxy emits — routed,
+		// intercepted, or error — is correlatable to its log line. setHeader
+		// (not writeHead-merge) so each handler keeps owning its own head.
+		res.setHeader("x-request-id", reqId);
 		const chunks = [];
 		// A client that resets the connection mid-upload emits 'error' on the
 		// request stream; without a listener that is an uncaught exception that
@@ -416,11 +555,11 @@ export function createServer(config) {
 			// handleProxy because routing is body-driven everywhere else and this
 			// path's ids match no predicate; see handleMediaGeneration.
 			if (pathname === MEDIA_GENERATION_PATH) {
-				if (req.method === "POST") handleMediaGeneration(req, res, bodyBuffer, config);
+				if (req.method === "POST") handleMediaGeneration(req, res, bodyBuffer, config, reqId);
 				else sendJson(res, 405, { error: { message: "POST required" } });
 				return;
 			}
-			handleProxy(req, res, parseJsonOrEmpty(bodyBuffer), bodyBuffer, config);
+			handleProxy(req, res, parseJsonOrEmpty(bodyBuffer), bodyBuffer, config, reqId);
 		});
 	});
 	return server;

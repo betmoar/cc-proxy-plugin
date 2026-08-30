@@ -1,6 +1,7 @@
 import { strict as assert } from "node:assert";
 import http from "node:http";
 import { afterEach, describe, it } from "node:test";
+import { parseRoutingLines } from "../scripts/status.js";
 import { httpAgent } from "../src/agents.js";
 import { buildProviders } from "../src/providers.js";
 import { createServer } from "../src/server.js";
@@ -788,7 +789,7 @@ describe("server end-to-end routing", () => {
 		}
 		const route = logged.find((l) => / -> /.test(l));
 		assert.ok(route, "a routing line was logged");
-		assert.match(route, /] glm-5\.2 -> glm \/v1\/messages\?beta=true$/);
+		assert.match(route, /\] \{[0-9a-f]+\} glm-5\.2 -> glm \/v1\/messages\?beta=true$/);
 	});
 
 	// Issue #34 follow-up. The routing DECISION is made on a normalized id, but
@@ -821,7 +822,7 @@ describe("server end-to-end routing", () => {
 		assert.ok(route, "a routing line was logged");
 		assert.match(
 			route,
-			/] glm-5\.2\[1m\] -> glm \(routed as glm-5\.2\) \/v1\/messages$/,
+			/\] \{[0-9a-f]+\} glm-5\.2\[1m\] -> glm \(routed as glm-5\.2\) \/v1\/messages$/,
 			"the raw id is reported, the normalized id explains the decision",
 		);
 
@@ -948,7 +949,7 @@ describe("server end-to-end routing", () => {
 		}
 		const route = logged.find((l) => / -> /.test(l));
 		assert.ok(route, "a routing line was logged");
-		assert.match(route, /] unknown -> claude \/v1\/messages\/count_tokens$/);
+		assert.match(route, /\] \{[0-9a-f]+\} unknown -> claude \/v1\/messages\/count_tokens$/);
 	});
 });
 
@@ -1111,5 +1112,570 @@ describe("provider selector strip (the local lens must never leak upstream)", ()
 		assert.equal(qwen.calls.length, 0, "haiku must not reach a third-party backend");
 		assert.equal(claude.calls.length, 1);
 		assert.equal(JSON.parse(claude.calls[0].body).model, "claude-haiku-4-5-20251001");
+	});
+});
+
+describe("LM Studio provider (selector-only, base-URL gated)", () => {
+	let lmstudio;
+	let claude;
+	let proxy;
+
+	afterEach(async () => {
+		await close(lmstudio?.server, claude?.server, proxy?.server);
+		lmstudio = claude = proxy = undefined;
+	});
+
+	async function wire(lmHandler) {
+		lmstudio = await startBackend(lmHandler);
+		claude = await startBackend(() => ({
+			status: 200,
+			headers: { "content-type": "application/json" },
+			body: NORMAL_200,
+		}));
+		const providers = buildProviders({ LMSTUDIO_BASE_URL: lmstudio.baseUrl }, "claude");
+		providers.find((p) => p.id === "lmstudio").baseUrl = lmstudio.baseUrl;
+		providers.find((p) => p.id === "claude").baseUrl = claude.baseUrl;
+		proxy = await startProxy({ port: 0, providers });
+	}
+
+	it("buffered: lmstudio:<id> reaches the LM Studio stub with the bare id and bearer auth", async () => {
+		await wire(() => ({
+			status: 200,
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				id: "msg_lm",
+				type: "message",
+				role: "assistant",
+				content: [{ type: "text", text: "from-lmstudio" }],
+				stop_reason: "end_turn",
+			}),
+		}));
+		const res = await post(proxy.port, {
+			model: "lmstudio:openai/gpt-oss-20b",
+			messages: [{ role: "user", content: "hi" }],
+		});
+		assert.equal(res.status, 200);
+		assert.match(res.body, /from-lmstudio/);
+		assert.equal(lmstudio.calls.length, 1);
+		assert.equal(
+			JSON.parse(lmstudio.calls[0].body).model,
+			"openai/gpt-oss-20b",
+			"the vendor receives its own id, not the lens",
+		);
+		assert.match(
+			lmstudio.calls[0].headers.authorization,
+			/^Bearer lmstudio$/,
+			"the dummy token from LM Studio's own docs",
+		);
+		assert.equal(
+			lmstudio.calls[0].headers["x-api-key"],
+			undefined,
+			"inbound x-api-key dropped — credential isolation",
+		);
+		assert.equal(claude.calls.length, 0);
+	});
+
+	it("streaming: SSE passes through untouched", async () => {
+		// Separate code from the buffered path. LM Studio's Anthropic skin emits
+		// standard message_start/content_block_delta/message_stop framing
+		// (probed live 2026-08-28), so the pipe must not disturb it.
+		await wire(() => ({
+			status: 200,
+			headers: { "content-type": "text/event-stream" },
+			body: 'event: message_start\ndata: {"type":"message_start"}\n\nevent: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"1"}}\n\nevent: message_stop\ndata: {"type":"message_stop"}\n\n',
+		}));
+		const res = await post(proxy.port, {
+			model: "lmstudio:openai/gpt-oss-20b",
+			stream: true,
+			messages: [{ role: "user", content: "count to five" }],
+		});
+		assert.equal(res.status, 200);
+		assert.match(res.body, /content_block_delta/);
+		assert.match(res.body, /message_stop/);
+		assert.equal(lmstudio.calls.length, 1);
+		assert.equal(JSON.parse(lmstudio.calls[0].body).model, "openai/gpt-oss-20b");
+	});
+});
+
+describe("request-id correlation (x-request-id + log stamp)", () => {
+	let qwen;
+	let claude;
+	let proxy;
+
+	afterEach(async () => {
+		await close(qwen?.server, claude?.server, proxy?.server);
+		qwen = claude = proxy = undefined;
+	});
+
+	async function wire(qwenHandler) {
+		qwen = await startBackend(qwenHandler);
+		claude = await startBackend(() => ({
+			status: 200,
+			headers: { "content-type": "application/json" },
+			body: NORMAL_200,
+		}));
+		const providers = buildProviders({ GLM_API_KEY: "g", DASHSCOPE_API_KEY: "q" }, "claude");
+		providers.find((p) => p.id === "qwen").baseUrl = qwen.baseUrl;
+		providers.find((p) => p.id === "claude").baseUrl = claude.baseUrl;
+		// GLM registers here but has NO stub — same trap the selector-strip suite
+		// documents: a glm- id would leave for the REAL api.z.ai with a fake key
+		// (observed as a 401 "token expired or incorrect", which reads like a
+		// proxy bug). Point it at a closed port so the failure is instant.
+		providers.find((p) => p.id === "glm").baseUrl = "http://127.0.0.1:1";
+		proxy = await startProxy({ port: 0, providers });
+	}
+
+	it("echoes x-request-id and stamps the SAME id on the routing line", async () => {
+		await wire(() => ({
+			status: 200,
+			headers: { "content-type": "application/json" },
+			body: NORMAL_200,
+		}));
+		const logged = [];
+		const orig = console.log;
+		console.log = (...a) => logged.push(a.join(" "));
+		let res;
+		try {
+			res = await post(proxy.port, {
+				model: "qwen:deepseek-v4-pro",
+				messages: [{ role: "user", content: "hi" }],
+			});
+		} finally {
+			console.log = orig;
+		}
+		const echoed = res.headers["x-request-id"];
+		assert.ok(echoed, "every response carries x-request-id");
+		assert.match(echoed, /^[0-9a-f]{8}$/);
+		const route = logged.find((l) => / -> /.test(l));
+		assert.ok(route.includes(`{${echoed}}`), `the routing line must carry the echoed id: ${route}`);
+	});
+
+	it("honors an inbound x-request-id instead of minting one (correlation survives a chain)", async () => {
+		// A client (or an outer gateway) that already assigns an id gets it back —
+		// that is the whole point of correlation. Truncated at 64 chars so a
+		// hostile inbound header cannot bloat the log line.
+		await wire(() => ({
+			status: 200,
+			headers: { "content-type": "application/json" },
+			body: NORMAL_200,
+		}));
+		const res = await post(
+			proxy.port,
+			{ model: "qwen:deepseek-v4-pro", messages: [{ role: "user", content: "hi" }] },
+			{ "x-request-id": "my-correlation-id-42" },
+		);
+		assert.equal(res.headers["x-request-id"], "my-correlation-id-42");
+	});
+
+	it("harvests the vendor request_id from a buffered error onto the log", async () => {
+		await wire(() => ({
+			status: 429,
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				error: { code: 1313, message: "FUP", request_id: "gen-abc123" },
+			}),
+		}));
+		const logged = [];
+		const orig = console.log;
+		console.log = (...a) => logged.push(a.join(" "));
+		try {
+			await post(proxy.port, {
+				model: "qwen:deepseek-v4-pro",
+				messages: [{ role: "user", content: "hi" }],
+			});
+		} finally {
+			console.log = orig;
+		}
+		const harvest = logged.find((l) => l.includes("[vendor-request-id]"));
+		assert.ok(harvest, "the vendor id was not harvested");
+		assert.match(harvest, /gen-abc123/);
+	});
+
+	it("drops a HOSTILE vendor request_id carrying log-forging shape (same class as a51a661)", async () => {
+		// The vendor body is attacker-controllable in exactly the ways that
+		// matter: a compromised vendor, a MITM, or any host LMSTUDIO_BASE_URL
+		// points at. `" -> "` alone is enough to make parseRoutingLines keep a
+		// forged line; an embedded newline manufactures a full fake
+		// [timestamp] {id} model -> provider line. Same charset allowlist as
+		// the inbound-header path — a hostile value must be DROPPED, not logged.
+		await wire(() => ({
+			status: 429,
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				error: {
+					code: 1313,
+					request_id:
+						"z\n[2026-01-01T00:00:00.000Z] {ffffffff} claude-opus-4-6 -> claude /v1/messages",
+				},
+			}),
+		}));
+		const logged = [];
+		const orig = console.log;
+		console.log = (...a) => logged.push(a.join(" "));
+		try {
+			await post(proxy.port, {
+				model: "qwen:deepseek-v4-pro",
+				messages: [{ role: "user", content: "hi" }],
+			});
+		} finally {
+			console.log = orig;
+		}
+		assert.ok(
+			!logged.some((l) => l.includes("evil") || l.includes("{ffffffff}")),
+			"no forged content may reach the log",
+		);
+		assert.ok(
+			!logged.some((l) => l.includes("[vendor-request-id]")),
+			"a hostile id is dropped entirely, not sanitized-partially",
+		);
+	});
+});
+
+// GAP CLOSED (PR #49 review). `DEFAULT_BACKEND=lmstudio` was pinned at the
+// resolve() level only — the routing DECISION was locked, the forward itself
+// never exercised. That is the half CLAUDE.md's "if you change forwarding and
+// no test fails, you haven't tested it" is aimed at: the fallback is what makes
+// a selector-only provider reachable by a bare id at all, so bytes actually
+// arriving (with the right credential, on both paths) is the claim that matters.
+describe("DEFAULT_BACKEND=lmstudio forwards end-to-end", () => {
+	let lmstudio;
+	let claude;
+	let proxy;
+
+	afterEach(async () => {
+		await close(lmstudio?.server, claude?.server, proxy?.server);
+		lmstudio = claude = proxy = undefined;
+	});
+
+	async function wire(lmHandler) {
+		lmstudio = await startBackend(lmHandler);
+		// Present so a fallthrough to the OLD default is a visible failure (a
+		// call count) rather than a silent pass.
+		claude = await startBackend(() => ({
+			status: 200,
+			headers: { "content-type": "application/json" },
+			body: NORMAL_200,
+		}));
+		const providers = buildProviders({ LMSTUDIO_BASE_URL: lmstudio.baseUrl }, "lmstudio");
+		providers.find((p) => p.id === "lmstudio").baseUrl = lmstudio.baseUrl;
+		providers.find((p) => p.id === "claude").baseUrl = claude.baseUrl;
+		proxy = await startProxy({ port: 0, providers });
+	}
+
+	it("buffered: an unmatched bare id reaches the LM Studio stub with bearer auth", async () => {
+		await wire(() => ({
+			status: 200,
+			headers: { "content-type": "application/json" },
+			body: NORMAL_200,
+		}));
+		// A local GGUF name no predicate claims — the exact shape the fallback exists for.
+		const res = await post(proxy.port, {
+			model: "some-locally-loaded-gguf-name",
+			messages: [{ role: "user", content: "hi" }],
+		});
+		assert.equal(res.status, 200);
+		assert.equal(lmstudio.calls.length, 1, "bytes must actually arrive at the default backend");
+		assert.equal(claude.calls.length, 0, "and must not fall through to claude");
+		assert.equal(
+			JSON.parse(lmstudio.calls[0].body).model,
+			"some-locally-loaded-gguf-name",
+			"the id is forwarded unchanged — nothing to strip on a bare id",
+		);
+		assert.match(lmstudio.calls[0].headers.authorization, /^Bearer lmstudio$/);
+		assert.equal(
+			lmstudio.calls[0].headers["x-api-key"],
+			undefined,
+			"invariant 3 holds on the fallback path too",
+		);
+	});
+
+	it("streaming: the same fallback pipes SSE from LM Studio", async () => {
+		// Separate code from the buffered path, so the fallback is proven on both.
+		await wire(() => ({
+			status: 200,
+			headers: { "content-type": "text/event-stream" },
+			body: 'event: message_start\ndata: {"type":"message_start"}\n\nevent: message_stop\ndata: {"type":"message_stop"}\n\n',
+		}));
+		const res = await post(proxy.port, {
+			model: "another-local-model",
+			stream: true,
+			messages: [{ role: "user", content: "hi" }],
+		});
+		assert.equal(res.status, 200);
+		assert.match(res.body, /message_stop/);
+		assert.equal(lmstudio.calls.length, 1);
+		assert.equal(claude.calls.length, 0);
+	});
+
+	it("invariant 4 still outranks the fallback: haiku goes to Claude, not the local box", async () => {
+		// The consequential one. With lmstudio as DEFAULT_BACKEND, a haiku id that
+		// missed the pin would send Claude Code's internal ops to a local model —
+		// silently, since they never surface in the transcript.
+		await wire(() => ({
+			status: 200,
+			headers: { "content-type": "application/json" },
+			body: NORMAL_200,
+		}));
+		const res = await post(proxy.port, {
+			model: "claude-haiku-4-5-20251001",
+			messages: [{ role: "user", content: "hi" }],
+		});
+		assert.equal(res.status, 200);
+		assert.equal(lmstudio.calls.length, 0, "internal ops must never reach the default backend");
+		assert.equal(claude.calls.length, 1);
+		assert.equal(JSON.parse(claude.calls[0].body).model, "claude-haiku-4-5-20251001");
+	});
+});
+
+describe("request-id sanitization (log-forging defense)", () => {
+	it("drops an inbound id carrying log-shape payload and mints a clean one instead", async () => {
+		let lm;
+		let claude;
+		let proxy;
+		try {
+			lm = await startBackend(() => ({
+				status: 200,
+				headers: { "content-type": "application/json" },
+				body: NORMAL_200,
+			}));
+			claude = await startBackend(() => ({
+				status: 200,
+				headers: { "content-type": "application/json" },
+				body: NORMAL_200,
+			}));
+			const providers = buildProviders({ LMSTUDIO_BASE_URL: lm.baseUrl }, "claude");
+			providers.find((p) => p.id === "lmstudio").baseUrl = lm.baseUrl;
+			providers.find((p) => p.id === "claude").baseUrl = claude.baseUrl;
+			proxy = await startProxy({ port: 0, providers });
+
+			const logged = [];
+			const orig = console.log;
+			console.log = (...a) => logged.push(a.join(" "));
+			let res;
+			try {
+				res = await post(
+					proxy.port,
+					{ model: "lmstudio:openai/gpt-oss-20b", messages: [{ role: "user", content: "hi" }] },
+					// Measured attack: the `] ` closes the log timestamp, the rest
+					// parses as a plausible extra routing line in /cc-proxy:status.
+					{
+						"x-request-id": "} fake-line [2026-01-01T00:00:00Z] evil -> pwned",
+					},
+				);
+			} finally {
+				console.log = orig;
+			}
+			assert.equal(res.status, 200);
+			const echoed = res.headers["x-request-id"];
+			assert.match(echoed, /^[0-9a-f]{8}$/, "hostile id must be replaced by a minted one");
+			const route = logged.find((l) => / -> /.test(l));
+			assert.ok(!route.includes("evil"), "no attacker-controlled text may reach the log");
+			assert.match(route, /^\[[^\]]+\] \{[0-9a-f]{8}\} lmstudio:/u);
+		} finally {
+			await close(lm?.server, claude?.server, proxy?.server);
+		}
+	});
+});
+
+// PR #49 review findings. Three defects the review surfaced, each reproduced
+// against the real code before being fixed, each pinned here so the fix cannot
+// silently regress. All three are the same shape: a value from OUTSIDE (config,
+// request body, upstream response) reaching a place that assumed it was tame.
+describe("review findings: config, log-forging, header clobber", () => {
+	let backend;
+	let claude;
+	let proxy;
+
+	afterEach(async () => {
+		await close(backend?.server, claude?.server, proxy?.server);
+		backend = claude = proxy = undefined;
+	});
+
+	// FINDING 1. A scheme-less LMSTUDIO_BASE_URL is what LM Studio's own UI
+	// shows ("192.168.1.50:1234"), so it is the value a user pastes. Before the
+	// fix it reached `new URL(baseUrl + req.url)` inside the dispatcher and
+	// killed the process — measured: exit code 1, no response written, every
+	// concurrent session dropped. Two defences, both asserted: the provider is
+	// not registered at all, and the forwarding path would answer 502 rather
+	// than throw if one ever got through.
+	it("refuses to register lmstudio when LMSTUDIO_BASE_URL has no scheme", () => {
+		const ids = buildProviders({ LMSTUDIO_BASE_URL: "192.168.1.50:1234" }, "claude").map(
+			(p) => p.id,
+		);
+		assert.ok(!ids.includes("lmstudio"), "an unusable base URL must not register a backend");
+		assert.deepEqual(ids, ["claude"], "the rest of the registry is unaffected");
+	});
+
+	// Both paths build options through upstreamRequestOptions(), and each holds
+	// its OWN try around it (`forward()` in proxy.js, `forwardBuffered()` in
+	// server.js) — separate code, so separate assertions. Parametrized because
+	// pinning only the buffered half left the streaming guard deletable with the
+	// whole suite green (measured during the PR #49 review).
+	for (const stream of [false, true]) {
+		it(`answers 502 instead of dying when a provider's base URL is unusable (${stream ? "streaming" : "buffered"})`, async () => {
+			claude = await startBackend(() => ({
+				status: 200,
+				headers: { "content-type": "application/json" },
+				body: NORMAL_200,
+			}));
+			// Bypass the registration guard to reach the forwarding path's own
+			// defence — this is the case that matters for any FUTURE provider whose
+			// baseUrl comes from config.
+			const providers = buildProviders({ GLM_API_KEY: "glm-test" }, "claude");
+			providers.find((p) => p.id === "claude").baseUrl = "not-a-url";
+			providers.find((p) => p.id === "glm").baseUrl = claude.baseUrl;
+			proxy = await startProxy({ port: 0, providers });
+			const res = await post(proxy.port, {
+				model: "claude-opus-5",
+				stream,
+				messages: [{ role: "user", content: "hi" }],
+			});
+			assert.equal(res.status, 502, "a config error is one bad request, not a dead proxy");
+			assert.match(res.body, /base URL/i);
+
+			// The whole point of the typed error is that ONE misconfigured backend
+			// does not take the shared proxy down with it: a request routed
+			// elsewhere must still be served on the same listener afterwards.
+			const after = await post(proxy.port, {
+				model: "glm-5.2",
+				stream,
+				messages: [{ role: "user", content: "hi" }],
+			});
+			assert.equal(after.status, 200, "the proxy still serves other backends after the 502");
+			assert.match(after.body, /from-glm/);
+		});
+	}
+
+	// FINDING 2. `body.model` is attacker-controlled JSON and predates the id
+	// sanitizers — hardening requestIdOf and vendorRequestIdOf left this third
+	// interpolation site open. Measured before the fix: a newline plus a fake
+	// `[ts] {id} X -> Y /path` came back from parseRoutingLines() as genuine
+	// routing history.
+	it("a newline in body.model cannot forge a routing-history line", async () => {
+		claude = await startBackend(() => ({
+			status: 200,
+			headers: { "content-type": "application/json" },
+			body: NORMAL_200,
+		}));
+		const providers = buildProviders({}, "claude");
+		providers.find((p) => p.id === "claude").baseUrl = claude.baseUrl;
+		proxy = await startProxy({ port: 0, providers });
+
+		const logged = [];
+		const orig = console.log;
+		console.log = (...a) => logged.push(a.join(" "));
+		try {
+			await post(proxy.port, {
+				model: "claude-x\n[2026-01-01T00:00:00.000Z] {ffffffff} FORGED -> claude /v1/messages",
+				messages: [{ role: "user", content: "hi" }],
+			});
+		} finally {
+			console.log = orig;
+		}
+		const kept = parseRoutingLines(logged.join("\n"));
+		assert.equal(kept.length, 1, "exactly one routing line, not a forged second one");
+		assert.ok(
+			!kept.some((l) => l.startsWith("[2026-01-01")),
+			"the attacker's fabricated timestamp line must not survive as a report entry",
+		);
+		assert.match(kept[0], /\\n/, "the newline is escaped, and the id stays readable");
+	});
+
+	// FINDING 3. writeHead(status, headers) REPLACES what setHeader put on the
+	// response, so any backend emitting its own x-request-id silently took over
+	// the correlation id — the log said one thing, the client saw another.
+	// Measured on BOTH paths before the fix, so both are pinned.
+	for (const stream of [false, true]) {
+		it(`keeps the proxy's x-request-id when the upstream sets its own (${stream ? "streaming" : "buffered"})`, async () => {
+			backend = await startBackend(() =>
+				stream
+					? {
+							status: 200,
+							headers: { "content-type": "text/event-stream", "x-request-id": "VENDOR-OWN-ID" },
+							body: 'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+						}
+					: {
+							status: 200,
+							headers: { "content-type": "application/json", "x-request-id": "VENDOR-OWN-ID" },
+							body: NORMAL_200,
+						},
+			);
+			const providers = buildProviders({}, "claude");
+			providers.find((p) => p.id === "claude").baseUrl = backend.baseUrl;
+			proxy = await startProxy({ port: 0, providers });
+			const res = await post(
+				proxy.port,
+				{ model: "claude-opus-5", stream, messages: [{ role: "user", content: "hi" }] },
+				{ "x-request-id": "proxy-owned-id" },
+			);
+			assert.equal(
+				res.headers["x-request-id"],
+				"proxy-owned-id",
+				"the client must get the id that matches the proxy's log line",
+			);
+		});
+	}
+
+	// FINDING 3, continued. Both forward paths have a SIZE-CAP ESCAPE HATCH that
+	// abandons inspection and pipes the rest through — and each writes its own
+	// writeHead, so each is a separate chance to leak the vendor's id. Pinning
+	// only the two normal-size 200 sites above left both of these revertible to
+	// a bare `upstreamRes.headers` with the full suite green (measured).
+	it("keeps the proxy's x-request-id on the oversized-429 passthrough (streaming)", async () => {
+		// >RATE_LIMIT_PEEK_LIMIT (64 KiB): too large to be a rate-limit body, so
+		// forward() gives up inspecting and commits to passthrough.
+		const huge = JSON.stringify({ error: { code: "1302", pad: "x".repeat(64 * 1024 + 4096) } });
+		backend = await startBackend(() => ({
+			status: 429,
+			headers: { "content-type": "application/json", "x-request-id": "VENDOR-OWN-ID" },
+			body: huge,
+		}));
+		const providers = buildProviders({}, "claude");
+		providers.find((p) => p.id === "claude").baseUrl = backend.baseUrl;
+		proxy = await startProxy({ port: 0, providers });
+		const res = await post(
+			proxy.port,
+			{ model: "claude-opus-5", stream: true, messages: [{ role: "user", content: "hi" }] },
+			{ "x-request-id": "proxy-owned-id" },
+		);
+		assert.equal(res.status, 429);
+		assert.ok(res.body.length > 64 * 1024, "the oversized body really did take the pipe branch");
+		assert.equal(
+			res.headers["x-request-id"],
+			"proxy-owned-id",
+			"the passthrough branch must strip the vendor id like every other writeHead",
+		);
+	});
+
+	it("keeps the proxy's x-request-id on the over-cap buffered passthrough", async () => {
+		// >NON_STREAM_BUFFER_LIMIT (1 MiB): forwardBuffered() flushes the prefix
+		// and pipes the remainder rather than holding it all in memory.
+		const bigBody = JSON.stringify({
+			id: "msg_big",
+			type: "message",
+			role: "assistant",
+			content: [{ type: "text", text: "x".repeat(1024 * 1024 + 50_000) }],
+			stop_reason: "end_turn",
+		});
+		backend = await startBackend(() => ({
+			status: 200,
+			headers: { "content-type": "application/json", "x-request-id": "VENDOR-OWN-ID" },
+			body: bigBody,
+		}));
+		const providers = buildProviders({}, "claude");
+		providers.find((p) => p.id === "claude").baseUrl = backend.baseUrl;
+		proxy = await startProxy({ port: 0, providers });
+		const res = await post(
+			proxy.port,
+			{ model: "claude-opus-5", stream: false, messages: [{ role: "user", content: "hi" }] },
+			{ "x-request-id": "proxy-owned-id" },
+		);
+		assert.equal(res.status, 200);
+		assert.ok(res.body.length > 1024 * 1024, "the over-cap body really did take the pipe branch");
+		assert.equal(
+			res.headers["x-request-id"],
+			"proxy-owned-id",
+			"the passthrough branch must strip the vendor id like every other writeHead",
+		);
 	});
 });

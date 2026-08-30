@@ -1243,6 +1243,82 @@ describe("media generation tunnel (issue #40)", () => {
 		assert.equal(qwen.calls[0].url, `${PATH}?foo=bar`);
 	});
 
+	// GAP CLOSED (PR #49 review). The 0.8.0 correlation work threaded `reqId`
+	// into handleMediaGeneration — the log line and the vendor-id harvest both
+	// use it — but no test touched this endpoint's id behaviour. Mutation-
+	// verified at the time: deleting the reqId plumbing from the media path left
+	// the entire suite green, which is exactly the "changed forwarding-adjacent
+	// behaviour with nothing that would fail" case CLAUDE.md rules out.
+	it("echoes x-request-id on the tunnel, honouring an inbound id", async () => {
+		await up();
+		const res = await postReq(proxy.port, PATH, IMAGE_BODY, {
+			"x-request-id": "media-corr-1",
+		});
+		assert.equal(res.status, 200);
+		assert.equal(
+			res.headers["x-request-id"],
+			"media-corr-1",
+			"the tunnel is a proxy response like any other — it must be correlatable",
+		);
+	});
+
+	it("stamps the SAME id on the tunnel's routing-log line", async () => {
+		await up();
+		const logged = [];
+		const orig = console.log;
+		console.log = (...a) => logged.push(a.join(" "));
+		let res;
+		try {
+			res = await postReq(proxy.port, PATH, IMAGE_BODY);
+		} finally {
+			console.log = orig;
+		}
+		const echoed = res.headers["x-request-id"];
+		assert.match(echoed, /^[0-9a-f]{8}$/, "an absent inbound id is minted, 8 hex chars");
+		const line = logged.find((l) => l.includes("media -> "));
+		assert.ok(line, "the tunnel logs a routing line");
+		assert.ok(
+			line.includes(`{${echoed}}`),
+			`the log tag must match the header the client got: ${line}`,
+		);
+	});
+
+	// The harvest half: a vendor error on the tunnel goes through the same
+	// forwardBuffered path as a Messages call, so the vendor's own request_id
+	// must land on a log line tagged with our correlation id.
+	it("harvests the vendor request_id from a tunnel error onto the log", async () => {
+		qwen = await startBackend(() => ({
+			status: 400,
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ code: "InvalidParameter", request_id: "ds-req-9f2c" }),
+		}));
+		claude = await startBackend(() => ({ status: 200, headers: {}, body: "{}" }));
+		proxy = await startProxy(
+			wireConfig("http://127.0.0.1:1", {
+				qwenKey: "qw-test",
+				qwenBaseUrl: qwen.baseUrl,
+				claudeBaseUrl: claude.baseUrl,
+			}),
+		);
+		const logged = [];
+		const orig = console.log;
+		console.log = (...a) => logged.push(a.join(" "));
+		let res;
+		try {
+			res = await postReq(proxy.port, PATH, IMAGE_BODY);
+		} finally {
+			console.log = orig;
+		}
+		assert.equal(res.status, 400, "the vendor's status passes through untouched");
+		const harvest = logged.find((l) => l.includes("[vendor-request-id]"));
+		assert.ok(harvest, "a vendor request_id on the tunnel must be harvested");
+		assert.match(harvest, /ds-req-9f2c/);
+		assert.ok(
+			harvest.includes(`{${res.headers["x-request-id"]}}`),
+			"harvested under the same correlation id the client received",
+		);
+	});
+
 	it("without DASHSCOPE_API_KEY it is 503, never a silent default-backend route", async () => {
 		await up({ noKey: true });
 		const res = await postReq(proxy.port, PATH, IMAGE_BODY);
