@@ -39,13 +39,25 @@ const JSON_OUT = process.argv.includes("--json");
 
 // LM Studio's server is per-user infrastructure, so its URL comes from the same
 // env var the provider gates on — a literal here would probe a machine the
-// operator does not have. Read inside the function, not at module top: an
-// import hoisted above a caller's loadEnv() would capture the pre-~/.env
-// environment (the scripts/quota.js coupling).
+// operator does not have.
+//
+// A case stores this as the FUNCTION, never its result: `CASES` is built at
+// module-evaluation time, which is now BEFORE loadEnv() (it moved to the CLI
+// guard at the bottom so an importing test spends no quota). Calling it in the
+// literal captured the pre-~/.env environment and baked `url: ""` into both LM
+// Studio cases — fetch then failed with "Failed to parse URL from", which reads
+// like a URL bug and is really an ordering bug. Wrapping the read in a function
+// is only half the fix; the CALL has to move too. Resolved in probe(), which
+// runs from main(), after loadEnv().
 function lmstudioMessagesUrl() {
 	const base = process.env.LMSTUDIO_BASE_URL;
 	if (!base) return "";
 	return `${base.replace(/\/+$/, "")}/v1/messages`;
+}
+
+// A case's `url` is either a literal or a thunk deferring an env read.
+function caseUrl(c) {
+	return typeof c.url === "function" ? c.url() : c.url;
 }
 
 /**
@@ -160,7 +172,7 @@ const CASES = [
 		// probes a machine the operator does not have.
 		name: "lmstudio answers the Anthropic Messages skin",
 		claim: "src/providers.js lmstudio entry — /v1/messages is the one documented endpoint",
-		url: lmstudioMessagesUrl(),
+		url: lmstudioMessagesUrl,
 		// The TOKEN must mirror the provider's own choice (LMSTUDIO_API_KEY, or
 		// the docs' dummy) — NOT the base URL. `key` here is the GATE (the env
 		// var whose absence skips the case), and LMSTUDIO_BASE_URL being a URL
@@ -190,7 +202,7 @@ const CASES = [
 		// that was asserted without reading them.)
 		name: "lmstudio serves tool_use over the Anthropic skin",
 		claim: "src/providers.js lmstudio entry — CC sessions need tool_use",
-		url: lmstudioMessagesUrl(),
+		url: lmstudioMessagesUrl,
 		// Same token rule as the case above: provider's choice, not the URL.
 		auth: () => ({
 			authorization: `Bearer ${process.env.LMSTUDIO_API_KEY || "lmstudio"}`,
@@ -319,7 +331,7 @@ function probeWebSocketTask(c, key) {
 	return new Promise((done) => {
 		let ws;
 		try {
-			ws = new WebSocket(c.url, { headers: c.auth(key) });
+			ws = new WebSocket(caseUrl(c), { headers: c.auth(key) });
 		} catch (err) {
 			done({ error: err instanceof Error ? err.message : String(err), reason: "network" });
 			return;
@@ -403,6 +415,24 @@ function probeWebSocketTask(c, key) {
  * @param {{status?: number, body?: string, expect: number|string, bodyMatch?: RegExp}} r
  * @returns {boolean}
  */
+/**
+ * What the printer shows for a result's body — capped for DISPLAY only; the
+ * verdict already ran on the full text in `judge()`.
+ *
+ * Defensive on purpose: a result built by spreading `...c` can carry the case's
+ * `body` TEMPLATE FUNCTION instead of a response string (two cases define one),
+ * and calling `.replace` on it crashed the whole run with a TypeError that
+ * exits 1 — indistinguishable from "a vendor disagrees", the one signal this
+ * script exists to send. The catch blocks now clear `body`; this is the second
+ * seatbelt, because the next case to define a `body` template will not
+ * remember the first.
+ * @param {{body?: unknown}} r
+ * @returns {string}
+ */
+export function renderBody(r) {
+	return typeof r.body === "string" ? r.body.replace(/\s+/g, " ").slice(0, 160) : "";
+}
+
 export function judge(r) {
 	if (r.status !== r.expect) return false;
 	if (!r.bodyMatch) return true;
@@ -416,16 +446,33 @@ async function probe(c) {
 	// fine: auth is `() => ({})` there.
 	const key = c.key ? process.env[c.key] : "keyless-by-design";
 	if (c.key && !key) return { ...c, skipped: `${c.key} not set` };
+	// Resolved HERE, not in the CASES literal: this runs after loadEnv().
+	const url = caseUrl(c);
 	if (c.transport === "ws") {
 		const r = await probeWebSocketTask(c, key);
-		if (r.reason === "network") return { ...c, ...r, ok: false };
-		const ok = judge({ ...r, expect: c.expect, bodyMatch: c.bodyMatch });
-		return { ...c, ...r, ok, reason: ok ? "match" : "mismatch" };
+		if (r.reason === "network") return { ...c, ...r, body: undefined, ok: false };
+		// judge() can throw on a malformed case (a bodyMatch that is not a RegExp),
+		// and this branch sits OUTSIDE the try below — an unguarded throw here kills
+		// the whole run mid-list, exactly what probeWebSocketTask's JSON.parse guard
+		// exists to prevent. A bad case must fail itself, not the other thirteen.
+		try {
+			const ok = judge({ ...r, expect: c.expect, bodyMatch: c.bodyMatch });
+			return { ...c, ...r, ok, reason: ok ? "match" : "mismatch" };
+		} catch (err) {
+			return {
+				...c,
+				...r,
+				body: undefined,
+				ok: false,
+				reason: "network",
+				error: `case is malformed: ${err instanceof Error ? err.message : String(err)}`,
+			};
+		}
 	}
 	const ctl = new AbortController();
 	const timer = setTimeout(() => ctl.abort(), 30_000);
 	try {
-		const res = await fetch(c.url, {
+		const res = await fetch(url, {
 			method: "POST",
 			signal: ctl.signal,
 			headers: {
@@ -455,9 +502,21 @@ async function probe(c) {
 		// NOT the same fact as a mismatch: the vendor said nothing, so the claim
 		// is unverified rather than refuted. Callers separate these on `reason`;
 		// the exit code separates them too (2 vs 1).
-		const message = err instanceof Error ? err.message : String(err);
+		//
+		// `fetch` reports every transport failure as the bare string "fetch
+		// failed" and puts the actual cause (ECONNREFUSED, ENOTFOUND, a TLS
+		// complaint) in `err.cause` — dropping it leaves the operator of a MANUAL
+		// diagnostic with nothing to act on.
+		const detail = err instanceof Error ? (err.cause?.code ?? err.cause?.message) : null;
+		const base = err instanceof Error ? err.message : String(err);
+		const message = detail ? `${base}: ${detail}` : base;
 		return {
 			...c,
+			// `...c` would otherwise leak a case's `body` TEMPLATE FUNCTION into the
+			// result, and the printer calls `.replace` on a truthy body — a crash
+			// that reads as exit 1, indistinguishable from a real vendor
+			// disagreement. Two cases carry a body function.
+			body: undefined,
 			error: ctl.signal.aborted ? `timed out after 30s (${message})` : message,
 			reason: "network",
 			ok: false,
@@ -486,7 +545,8 @@ async function main() {
 			console.log(`      claim: ${r.claim}`);
 			// A network failure has no body, and the old guard meant it printed LESS
 			// detail than a mismatch — backwards, since it is the harder one to read.
-			if (!r.ok && r.body) console.log(`      body: ${r.body.replace(/\s+/g, " ").slice(0, 160)}`);
+			const shown = renderBody(r);
+			if (!r.ok && shown) console.log(`      body: ${shown}`);
 			if (!r.ok && r.error) console.log(`      unreachable: ${r.error}`);
 			console.log();
 		}
@@ -496,6 +556,14 @@ async function main() {
 	const disagreed = ran.filter((r) => !r.ok && r.reason === "mismatch");
 	const unreachable = ran.filter((r) => r.reason === "network");
 	const skipped = results.length - ran.length;
+	// Exit 3 means "no claim was checked", and it used to be `!ran.length`. The
+	// keyless Google control (issue #42) runs on every machine BY DESIGN, so
+	// ran.length is now permanently >= 1 and that test could never fire again: a
+	// machine with zero keys scored exit 0, the silent green this file's header
+	// says it exists to prevent. What actually distinguishes the two is whether
+	// any KEYED case ran — the control proves the network works, not that a
+	// vendor claim was measured.
+	const ranKeyed = ran.filter((r) => r.key);
 
 	if (!JSON_OUT) {
 		const matched = ran.length - disagreed.length - unreachable.length;
@@ -511,8 +579,8 @@ async function main() {
 			console.log("\nNothing was refuted — some cases could not be reached at all.");
 			console.log("Treat this as UNVERIFIED, not as confirmation.");
 		}
-		if (!ran.length) {
-			console.log("\nNo keys, so no claim was checked. This is not a pass.");
+		if (!ranKeyed.length) {
+			console.log("\nNo keys, so no vendor claim was checked. This is not a pass.");
 		}
 	}
 
@@ -520,7 +588,7 @@ async function main() {
 	// having run nothing — the most actionable fact wins the exit code.
 	if (disagreed.length) return 1;
 	if (unreachable.length) return 2;
-	if (!ran.length) return 3;
+	if (!ranKeyed.length) return 3;
 	return 0;
 }
 

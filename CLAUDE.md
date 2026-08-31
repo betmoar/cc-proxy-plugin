@@ -89,7 +89,7 @@ there if you forget. The ones marked ⚠ have no test and drift silently.
 |---|---|
 | routing log format (`server.js`) | `status.js` `parseRoutingLines()` — it parses the line. Locked by `couplings.test.js` as of 0.6.3; was ⚠ prose-only before |
 | `stripVariantSuffix` / `routingIdOf` (`router.js`) | `routes.test.js` imports the first to lock strip∘rank composition; `server.js` calls the second for the log's `(routed as …)` annotation |
-| a version | `pnpm version` (or `npm version`) only; `plugin.json` is the plugin cache key. On a feature branch pnpm needs `--no-git-tag-version` — `scripts/version-guard.js` refuses otherwise, and the repo `.npmrc` blocks npm's tag. Tag on main AFTER the squash |
+| a version | `pnpm version` (or `npm version`) only; `plugin.json` is the plugin cache key. Off `main` pass `--no-git-tag-version` — `scripts/version-guard.js` refuses any invocation that would tag there (#41), for npm too: `.npmrc` is overridden by a `--git-tag-version` flag and ignored outright by pnpm. Tag on main AFTER the squash |
 | a `v<x.y.z>` tag | its CHANGELOG section, non-empty, BEFORE tagging |
 | `PROXY_PORT` default | `config.js`, `proxy-lifecycle.js`, `statusline.js`, `status.js` |
 | `PROXY_READY_TIMEOUT_MS` | `hooks/hooks.json` `timeout: 10` — ≥10000 ms never completes |
