@@ -219,7 +219,7 @@ const CASES = [
 				},
 			],
 		}),
-	expect: 200,
+		expect: 200,
 		bodyMatch: /"type"\s*:\s*"tool_use"/,
 	},
 	{

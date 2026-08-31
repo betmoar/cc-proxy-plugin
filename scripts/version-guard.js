@@ -68,13 +68,14 @@ export function guard({ branch, client, command }) {
 
 	return {
 		ok: false,
-		reason:
-			`refusing to version on branch "${branch}" — this invocation would create\n` +
-			`  the v<x.y.z> tag HERE, on a commit the squash-merge to main discards\n` +
-			`  (issue #41). Run instead:\n` +
-			`    npm version patch|minor   (the repo .npmrc already blocks its tag)\n` +
-			`    pnpm version patch|minor --no-git-tag-version\n` +
-			`  then create the tag on main AFTER the squash.`,
+		reason: [
+			`refusing to version on branch "${branch}" — this invocation would create`,
+			"  the v<x.y.z> tag HERE, on a commit the squash-merge to main discards",
+			"  (issue #41). Run instead:",
+			"    npm version patch|minor   (the repo .npmrc already blocks its tag)",
+			"    pnpm version patch|minor --no-git-tag-version",
+			"  then create the tag on main AFTER the squash.",
+		].join("\n"),
 	};
 }
 
