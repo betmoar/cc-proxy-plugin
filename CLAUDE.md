@@ -106,8 +106,8 @@ there if you forget. The ones marked ⚠ have no test and drift silently.
 | a statusline gauge | the `GAUGES` table in `statusline.js` — the render path and the background refresher both read it; adding to one only means the gauge shows but never refreshes (or refreshes but never shows) |
 | ⚠ `MODEL_GRADES` | nothing — it is the only copy IN THE REPO, but `gradeOf()` overlays `~/.claude/cc-proxy/grades.json` on top of it, so a reader is not reading this table alone. `render-models.js` re-exports it for coverage assertions only — rendering goes through `gradeOf()` |
 | `identityOf` (`models.js`) | its `@doctest` lines — and keep an example carrying TWO slashes, or `indexOf`→`lastIndexOf` passes the whole suite (measured) |
-| ⚠ a static catalog | confirm the id has a `ROUTES` entry |
-| ⚠ the `/v1/models` wire shape | README + OPERATIONS + ARCHITECTURE, by hand — including `?dedup=identity` |
+| a static catalog | confirm the id has a `ROUTES` entry. Locked by `couplings.test.js` ("every bare static-catalog id…") as of 0.8.1; was ⚠ before |
+| the `/v1/models` wire shape | README + OPERATIONS + ARCHITECTURE, by hand — including `?dedup=identity`. Field NAMES are locked by `couplings.test.js` (read from the ModelEntry typedef) as of 0.8.1; the prose describing their semantics still drifts silently |
 | a handler dispatched without `await`/`.catch` (`server.js`) | wrap its whole body in a `try` — an unhandled rejection TERMINATES the shared process, and no `uncaughtException` handler exists. `handleModels` is the worked example |
 | ⚠ `mediaBaseUrl` (`providers.js`) | the media branch in `server.js` is its only reader; changing one alone silently routes at the skin, which 404s |
 
@@ -132,7 +132,9 @@ shipped `Specialist`, which read as a verdict where it was an absence — 299 of
 the capability axis.) Never read a consumer's file back to decide
 anything here: that inverts the arrow and makes neither plugin installable
 alone. Adding a field means updating the three docs that describe the shape —
-no test enforces that.
+`couplings.test.js` enforces the field NAMES appearing in all three (read from
+the ModelEntry typedef, so a new field joins the lock when it is typed); the
+prose explaining what a field means is still yours to keep true.
 
 ## Traps for the unwary
 
@@ -197,6 +199,22 @@ no test enforces that.
   with it (probe: cache written YES detached / NO non-detached). The
   single-flight `refresh.lock` is the other half: without it every render in the
   ~2s window spawns its own refresher (measured 5 fetch rounds per expiry, vs 1).
+- **A lock's stale reclaim is check-then-act, and `rename()` does not fix that.**
+  `rename` is atomic about the PATH, not the FILE, so a racer that arrives after
+  the winner relocked renames the winner's FRESH lock away and takes over —
+  measured at 5 double-grants in 60 rounds × 12 processes. Verifying the moved
+  file's **inode** looked like the fix and is the same trap one platform over:
+  ext4/overlayfs RECYCLE a freed inode for the next create (measured on CI's
+  image), so the check must be inode **and mtime** — rename preserves mtime and
+  a relock is stamped now. And an UNSERIALIZED reclaim still double-grants with
+  three contenders (the loser holds the winner's renamed-away lock while the
+  path sits empty for a fast-path `wx`), so reclaimers serialize on a claim
+  file and restore via `link()`, which refuses to overwrite
+  (`scripts/refresh-lock.js` — its header carries the full defect ladder).
+  The second trap is the test: the broken variants are green in ~92% of racing
+  runs, so a statistical race test proves nothing and any CI sample passes it.
+  The lock lives in its own module purely to give the tests seams that force
+  each interleaving deterministically.
 - **A test that kills a subprocess must kill it UNCONDITIONALLY.** A watchdog
   cancelled after `wait` returns never fires once the thing under test gets
   fast, so the test passes for the wrong reason — `detached:false` survived the

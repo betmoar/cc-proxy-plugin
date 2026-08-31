@@ -450,7 +450,10 @@ const HOP_BY_HOP_HEADERS = [
  * @param {Provider} provider
  * @param {Record<string, any>} sourceHeaders
  * @param {number} bodyLength
- * @param {string} hostname
+ * @param {string} host - the URL's `host`: host:port for a non-default port,
+ *   bare hostname otherwise. That spelling is the whole contract, and the
+ *   reason it must be `url.host` and never `url.hostname` is in
+ *   upstreamRequestOptions() at the call site — the single copy.
  * @param {boolean} [forceIdentityEncoding]
  * @returns {Record<string, any>}
  */
@@ -458,12 +461,12 @@ export function buildUpstreamHeaders(
 	provider,
 	sourceHeaders,
 	bodyLength,
-	hostname,
+	host,
 	forceIdentityEncoding = false,
 ) {
 	const headers = applyAuth(sourceHeaders, provider);
 	for (const h of HOP_BY_HOP_HEADERS) delete headers[h];
-	headers.host = hostname;
+	headers.host = host;
 	// Overwrite rather than delete: an absent accept-encoding lets some servers
 	// compress by default, and Node's http client would not add one either.
 	if (forceIdentityEncoding) headers["accept-encoding"] = "identity";

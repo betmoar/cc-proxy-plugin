@@ -180,9 +180,14 @@ export const LOG_MAX_BYTES =
 export function rotateLogIfLarge(logPath, maxBytes = LOG_MAX_BYTES) {
 	try {
 		if (fs.statSync(logPath).size <= maxBytes) return;
-		// rename onto an existing destination throws EEXIST on Windows (POSIX
-		// overwrites), which would swallow here and leave the log unrotated
-		// forever. Remove the prior backup first so rename always succeeds.
+		// Remove the prior backup first. Not for EEXIST — modern libuv renames
+		// through MoveFileEx(MOVEFILE_REPLACE_EXISTING) and overwrites an
+		// existing FILE on Windows just as POSIX does (the EEXIST divergence was
+		// `_wrename`, fixed in libuv over a decade ago). The real Windows hazard
+		// is a sharing violation: an open handle on the destination — an editor,
+		// a tail, an antivirus scan — surfaces as EPERM/EBUSY, and rename cannot
+		// retry past it while unlink-then-rename usually can. This catch swallows,
+		// so a failure here leaves the log unrotated forever and silently.
 		fs.rmSync(`${logPath}.1`, { force: true });
 		fs.renameSync(logPath, `${logPath}.1`);
 	} catch {

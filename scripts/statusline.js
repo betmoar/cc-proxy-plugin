@@ -13,6 +13,7 @@ import {
 	fetchOpenRouterCredits,
 	formatDuration,
 } from "./quota.js";
+import { refreshLockPath, takeRefreshLock } from "./refresh-lock.js";
 
 // Load API keys + config from ~/.env (+ repo .env in dev) so the GLM/OpenRouter
 // quota fetches below work. The statusline is spawned by Claude Code with only
@@ -52,17 +53,8 @@ const PROXY_PROBE_TIMEOUT_MS = 300;
 //     while a promise is pending, so an in-process refresh re-creates exactly
 //     the slow render this replaces.
 //
-// REFRESH_LOCK_STALE_MS bounds the single-flight lock. Without the lock, all
-// renders during the ~2s refresh window see the same expired cache and each
-// spawns its own refresher — the stampede this fixes, moved one level down.
-// Measured before the lock: six renders 300ms apart across ONE expiry all
-// fetched (2241/1599/1584/1146/721/600ms) = ~6 rounds of API calls where 1 was
-// intended. The lock is a file whose mtime is checked, never a pid: a refresher
-// killed between spawn and completion leaves the file behind, and an mtime
-// older than this window is treated as abandoned rather than wedging the gauge
-// forever. It is deliberately longer than a healthy refresh (~2s) and far
-// shorter than the 60s TTL.
-const REFRESH_LOCK_STALE_MS = 10_000;
+// The single-flight lock (and why it exists) lives in ./refresh-lock.js — its
+// own module so a test can drive one exact interleaving in-process.
 
 // Set on the detached child. It makes the child do the fetches and exit without
 // rendering anything — same file, no second script to keep in sync.
@@ -251,35 +243,6 @@ function needsRefresh(cacheDir) {
 }
 
 /**
- * Single-flight guard. Takes the lock by creating the file exclusively (`wx`),
- * which is atomic — two renders racing here cannot both win. Returns false when
- * someone else holds it.
- *
- * A lock left behind by a killed refresher is reclaimed once its mtime is older
- * than REFRESH_LOCK_STALE_MS. That check is on the FILE's mtime, not a pid: the
- * composer kills the process group, so a pid recorded here would be a pid that
- * no longer exists and checking liveness would be a second race.
- */
-function takeRefreshLock(cacheDir) {
-	const lockPath = path.join(cacheDir, "refresh.lock");
-	try {
-		fs.mkdirSync(cacheDir, { recursive: true });
-		fs.writeFileSync(lockPath, String(process.pid), { flag: "wx" });
-		return true;
-	} catch {
-		// Exists (or unwritable). Reclaim only if abandoned.
-		try {
-			const age = Date.now() - fs.statSync(lockPath).mtimeMs;
-			if (age < REFRESH_LOCK_STALE_MS) return false;
-			fs.writeFileSync(lockPath, String(process.pid));
-			return true;
-		} catch {
-			return false;
-		}
-	}
-}
-
-/**
  * Spawn the detached refresher. Fire-and-forget by construction: `detached`
  * gives it its own process group so the composer's group-kill misses it,
  * `unref()` lets this process exit without waiting, and stdio is discarded so
@@ -322,7 +285,7 @@ if (process.env[REFRESH_ENV]) {
 			);
 		} finally {
 			try {
-				fs.unlinkSync(path.join(cacheDir, "refresh.lock"));
+				fs.unlinkSync(refreshLockPath(cacheDir));
 			} catch {
 				// Already gone (reclaimed as stale by another render) — fine.
 			}
