@@ -57,11 +57,24 @@ export function takeRefreshLock(cacheDir, hooks = {}) {
 		// winner's FRESH lock away and takes over. Measured (60 rounds x 12 racing
 		// processes, macOS APFS): rename-without-verification produced 65 winners
 		// over 60 rounds, 5 rounds with more than one — the same defect the plain
-		// overwrite had, at a lower rate. The inode check is what actually closes
-		// it: rename to a PRIVATE destination, then confirm the file that landed
-		// there is the one statSync saw. A racer that relocked in between has a
-		// different inode, so the loser puts it back untouched and cedes. Same
-		// measurement, verified variant: exactly 60 winners over 60 rounds.
+		// overwrite had, at a lower rate. So: rename to a PRIVATE destination,
+		// then confirm the file that landed there is the one statSync saw; a racer
+		// that relocked in between fails the match, and the loser puts the file
+		// back untouched and cedes. (APFS measurement, verified variant: exactly
+		// 60 winners over 60 rounds.)
+		//
+		// The identity check is inode AND mtime, not inode alone — inode alone is
+		// the same trap one layer down. ext4/overlayfs RECYCLE a freed inode for
+		// the next file created in the directory (measured on this repo's CI
+		// image: rm then wx-create came back with the identical ino), so a
+		// winner's rm+recreate hands its fresh lock the judged-stale file's inode
+		// number and the loser's inode comparison false-matches — double-grant
+		// again, deterministically, on exactly the platform CI runs. APFS never
+		// reuses inode numbers, which is how the inode-only variant measured
+		// clean. mtime closes it: rename PRESERVES mtime, so the judged-stale
+		// file carries `seen.mtimeMs` exactly, while any relock is a fresh write
+		// stamped now — and the reclaim only runs when `seen` is ≥10s old, so the
+		// two can never coincide.
 		try {
 			const seen = fs.statSync(lockPath);
 			if (Date.now() - seen.mtimeMs < REFRESH_LOCK_STALE_MS) return false;
@@ -73,7 +86,8 @@ export function takeRefreshLock(cacheDir, hooks = {}) {
 			const claimed = `${lockPath}.${process.pid}.stale`;
 			fs.rmSync(claimed, { force: true });
 			fs.renameSync(lockPath, claimed);
-			if (fs.statSync(claimed).ino !== seen.ino) {
+			const moved = fs.statSync(claimed);
+			if (moved.ino !== seen.ino || moved.mtimeMs !== seen.mtimeMs) {
 				// Someone relocked between our stat and our rename: we just moved
 				// THEIR live lock. Put it back and lose gracefully.
 				fs.renameSync(claimed, lockPath);

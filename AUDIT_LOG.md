@@ -62,3 +62,16 @@
 - **Evidence:** probe output above; CI job 99362121103 log: "not ok 3 … Expected started, got: ''", duration_ms 3082.
 - **Fix:** stand-in retries listen on EADDRINUSE (bounded, 50×100ms — the thief is an ephemeral test socket); per-run PROXY_READY_TIMEOUT_MS=8000 in the test harness env for headroom. Shipped defaults untouched.
 - **Guardrail:** the retry IS the guardrail (a wrong-bin regression still never writes the right flag, so test semantics are preserved); validated 5 consecutive green runs + full suite green.
+- 2026-08-31 CI: author pushed 9cc09d5 (release 0.8.1 prep, green) then 6698dc7 — a rework of the F02 fix into scripts/refresh-lock.js with an afterStat test seam + 3 deterministic tests, verifying the moved file by INODE. Its own race test failed on CI (ubuntu) and locally while passing the author's APFS measurement.
+
+### [F05] refresh-lock inode verification false-matches on inode-recycling filesystems — double-grant returns on Linux
+- **Location:** scripts/refresh-lock.js:76 (`statSync(claimed).ino !== seen.ino` as the sole identity check)
+- **Severity:** P2
+- **Confidence:** high
+- **Claim tag:** CONFIRMED — probe on this machine (same image class as CI): rm then wx-create returned the IDENTICAL ino (1884209 → 1884209, "REUSED"); the author's own test "hands an abandoned lock to exactly ONE of two racing reclaimers" was red here and on CI (first=true) and is green on APFS where inode numbers are never reused.
+- **Failure trigger:** loser judged the lock stale; winner relocks (rm frees inode, wx-create gets the SAME inode back on ext4/overlayfs); loser renames the fresh lock away, its ino comparison matches, loser also wins.
+- **Blast radius:** the exact double-grant the rework set out to close, deterministic on Linux (the platform CI and most users run); silent duplicate refresher + quota fetches.
+- **Evidence:** ino-reuse probe output; local test run red pre-fix (`not ok 1 … true !== false`), green post-fix; CI job 99377745487.
+- **Fix:** identity = ino AND mtimeMs. rename preserves mtime; a takeover lock is a fresh write stamped now, while a judged-stale file's mtime is ≥10s old, so the pair can never coincide. CHANGELOG + code + test comments corrected (they asserted the inode-only contract).
+- **Guardrail:** the author's deterministic seam test IS the guardrail — it fails the inode-only variant on any inode-recycling filesystem; comments now state the platform dependence so the APFS-only measurement cannot re-justify the weaker check.
+- 2026-08-31 CI: VERIFY — lock suite 3/3 green; full `pnpm check` GREEN: 476 tests / 474 pass / 0 fail / 2 skipped, lint clean.

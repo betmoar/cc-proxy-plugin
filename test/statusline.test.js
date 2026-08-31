@@ -626,8 +626,14 @@ describe("takeRefreshLock (scripts/refresh-lock.js)", () => {
 		// before either acts — the check-then-act window — and then act in turn.
 		// A plain overwrite gave the lock to both. So did a bare rename(): rename
 		// is atomic about the PATH, not the FILE, so the second racer simply
-		// renamed the first one's FRESH lock away. Only verifying the moved file
-		// is the one we judged stale (inode) makes the loser cede.
+		// renamed the first one's FRESH lock away. And so did rename plus an
+		// inode-only verification, on exactly this platform: ext4/overlayfs
+		// recycle a freed inode for the next create, so the winner's fresh lock
+		// inherits the judged-stale file's inode number and the loser's check
+		// false-matches (this test failed that way on CI while passing on APFS,
+		// which never reuses inode numbers). Only verifying the moved file is the
+		// one we judged stale — inode AND mtime, which rename preserves and a
+		// fresh write cannot reproduce — makes the loser cede everywhere.
 		//
 		// Deterministic on purpose: a real racing test does NOT separate the two
 		// implementations. Measured, 60 rounds x 12 processes: the broken variant
