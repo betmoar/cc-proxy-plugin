@@ -1,0 +1,96 @@
+name: gate
+
+# The Forgejo half of `pnpm check`, run TWICE — once native, once emulated —
+# because this proxy's tests spin real local HTTP backends and bind ephemeral
+# ports, and that is exactly the class of thing an architecture can change
+# underneath. The GitHub workflow (.github/workflows/ci.yml) runs arm64 only.
+#
+# Three things here are forced by this forge, not by taste:
+#
+# 1. `uses:` MUST carry the host. Without it Forgejo resolves to
+#    data.forgejo.org and pulls DIFFERENT code than GitHub. The cost is that
+#    `act` cannot parse this form, so this file is proven by pushing to
+#    `lokaal`, never by a dry run.
+#
+# 2. There is ONE runner, a Mac mini on arm64, offering five labels. The
+#    `-amd64` pair pins `platform=linux/amd64` on the same daemon, so x86 here
+#    is Rosetta userspace emulation, not a second machine:
+#      docker · ubuntu-latest · ubuntu-22.04   → aarch64 (native)
+#      ubuntu-22.04-amd64 · ubuntu-latest-amd64 → x86_64 (emulated)
+#    The emulator is ROSETTA, not qemu (`/sys/module/rosetta` exists in the
+#    container), and it is USERSPACE: the kernel stays arm64 — `uname -m` says
+#    x86_64 while `uname -r` reports linuxkit on arm64 — so there is no AVX-512
+#    and anything reading the kernel arch still sees the Mac. One measured
+#    CPU-bound python loop ran ~1.6x slower; that is one narrow benchmark, not
+#    a promise about this suite.
+#
+#    Two jobs against a `capacity: 2` runner fills it exactly, so this workflow
+#    occupies the whole forge for its duration. Per-job kill line is 1h; the
+#    gate runs in minutes, so the matrix is sized well under it.
+#
+# 3. Never `docker pull --platform` by hand against that daemon. One tag holds
+#    ONE arch in the dind store, so pulling the amd64 variant of the job image
+#    EVICTS the arm64 one and every ordinary job then fails with "does not
+#    provide the specified platform (linux/arm64)". `force_pull: false` never
+#    heals it. Let the label's own platform hint do the pulling.
+#
+# The job image is node:22-bookworm for BOTH labels (not a local base image),
+# so node is present and only pnpm has to be brought in — via corepack, which
+# ships with node 22 and honours package.json's `packageManager` pin.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  gate:
+    strategy:
+      # Both arches always report. Without this the emulated job is cancelled
+      # the moment the native one fails, and an arch-specific failure is
+      # precisely what this workflow exists to surface.
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: ubuntu-22.04
+            expect: aarch64
+          - arch: x86_64
+            runner: ubuntu-22.04-amd64
+            expect: x86_64
+    runs-on: ${{ matrix.runner }}
+    name: gate (${{ matrix.arch }})
+    steps:
+      - uses: https://github.com/actions/checkout@v4
+
+      # Assert the label actually delivered the arch it promises. A silent
+      # fallback to the native runner would make this whole matrix a lie that
+      # reports two green jobs measuring one thing.
+      - name: Confirm the executor
+        run: |
+          set -e
+          echo "uname -m  $(uname -m)"
+          echo "uname -r  $(uname -r)"
+          echo "node      $(node --version)  ($(node -p process.arch))"
+          test "$(uname -m)" = "${{ matrix.expect }}" || {
+            echo "expected ${{ matrix.expect }}, got $(uname -m) — the label did not pin the platform"
+            exit 1
+          }
+
+      # corepack ships with node 22 and reads `packageManager` from
+      # package.json, so the pnpm version is the repo's pin, not the image's.
+      - name: Enable pnpm
+        run: |
+          set -e
+          corepack enable
+          corepack prepare --activate
+          pnpm --version
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm lint
+
+      # The suite binds real local HTTP servers on ephemeral ports. Counts are
+      # compared against the PREVIOUS run of this workflow on the SAME arch,
+      # never against a laptop: a case that self-skips on a condition the
+      # container does not meet lowers the count without failing anything.
+      - run: pnpm test
