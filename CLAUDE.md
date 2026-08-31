@@ -89,7 +89,7 @@ there if you forget. The ones marked ⚠ have no test and drift silently.
 |---|---|
 | routing log format (`server.js`) | `status.js` `parseRoutingLines()` — it parses the line. Locked by `couplings.test.js` as of 0.6.3; was ⚠ prose-only before |
 | `stripVariantSuffix` / `routingIdOf` (`router.js`) | `routes.test.js` imports the first to lock strip∘rank composition; `server.js` calls the second for the log's `(routed as …)` annotation |
-| a version | `pnpm version` only; `plugin.json` is the plugin cache key |
+| a version | `pnpm version` (or `npm version`) only; `plugin.json` is the plugin cache key. Off `main` pass `--no-git-tag-version` — `scripts/version-guard.js` refuses any invocation that would tag there (#41), for npm too: `.npmrc` is overridden by a `--git-tag-version` flag and ignored outright by pnpm. Tag on main AFTER the squash |
 | a `v<x.y.z>` tag | its CHANGELOG section, non-empty, BEFORE tagging |
 | `PROXY_PORT` default | `config.js`, `proxy-lifecycle.js`, `statusline.js`, `status.js` |
 | `PROXY_READY_TIMEOUT_MS` | `hooks/hooks.json` `timeout: 10` — ≥10000 ms never completes |
@@ -254,7 +254,9 @@ once content is confirmed landed), and simultaneous squashes always conflict in
 `CHANGELOG.md` — fold into ONE version section, Added → Changed → Fixed.
 
 **Releasing** → CHANGELOG entry (before tagging — the gate reads it) →
-`pnpm version patch|minor` → `pnpm check`, push, tag. If routing, the catalog,
+`pnpm version patch|minor --no-git-tag-version` on the branch (the guard in
+`scripts/version-guard.js` refuses the tag-form there; #41) → `pnpm check`,
+push, squash-merge, THEN create `v<x.y.z>` on `main`. If routing, the catalog,
 or the renderer changed, also regenerate `docs/models.html`: confirm the port
 owner by PID (`lsof -nP -iTCP:4000 -sTCP:LISTEN -t` — `/_status` says what
 ANSWERED, not what is bound), restart the proxy to match the merged tree, then

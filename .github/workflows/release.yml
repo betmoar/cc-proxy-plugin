@@ -1,9 +1,11 @@
 name: release
 
 # Cutting a release (see CLAUDE.md): merge to main with package.json bumped via
-# `pnpm version <patch|minor>` (which runs sync-version.mjs so plugin.json moves
-# in step) and the matching `## [x.y.z]` entry newest in CHANGELOG.md, then push
-# a tag `v<x.y.z>`. This workflow fails the tag build on any mismatch, re-runs
+# `pnpm version <patch|minor> --no-git-tag-version` (which runs sync-version.mjs
+# so plugin.json moves in step; the flag is required off main — scripts/version-
+# guard.js refuses a tagging invocation there, issue #41) and the matching
+# `## [x.y.z]` entry newest in CHANGELOG.md, then push a tag `v<x.y.z>` CREATED
+# ON MAIN after the squash. This workflow fails the tag build on any mismatch, re-runs
 # the full gate (lint + tests), and publishes a GitHub release whose body is
 # that version's CHANGELOG section.
 

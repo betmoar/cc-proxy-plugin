@@ -44,6 +44,11 @@ const CALLABLE = {};
 	CALLABLE.parseModelSelector = router.parseModelSelector;
 	CALLABLE.rankRoutes = routes.rankRoutes;
 	CALLABLE.tierOf = routes.tierOf;
+	// Not from src/: the release-tag guard is a script, and its flag-parsing rule
+	// is exactly the kind of claim that must execute — `--no-git-tag-version=false`
+	// RE-ENABLES tagging, so a bare substring test allows the one spelling that tags.
+	const versionGuard = await import("../scripts/version-guard.js");
+	CALLABLE.disablesTagging = versionGuard.disablesTagging;
 	// rankRoutes returns route OBJECTS carrying provider/status/billing. The
 	// documented claim is about ORDER of backends, so this view compares what the
 	// prose actually asserts instead of forcing every example to restate the full
@@ -184,8 +189,8 @@ describe("documented examples actually hold", () => {
 	it("executes exactly the examples the source carries", () => {
 		assert.equal(
 			doctests.length,
-			41,
-			`expected 41 @doctest examples, found ${doctests.length}. Adding some? Bump this number in the same commit. Removing some? Say why in the commit message — dropping an example is dropping a guarantee.`,
+			47,
+			`expected 47 @doctest examples, found ${doctests.length}. Adding some? Bump this number in the same commit. Removing some? Say why in the commit message — dropping an example is dropping a guarantee.`,
 		);
 	});
 

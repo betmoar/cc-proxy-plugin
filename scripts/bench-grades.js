@@ -285,7 +285,7 @@ export function buildGrades(benchlm, openrouter, ids, now = new Date().toISOStri
 		});
 	}
 
-	/** @type {Map<string, {input: number|null, output: number|null, context: number|null}>} */
+	/** @type {Map<string, {input: number|null, output: number|null}>} */
 	const priced = new Map();
 	for (const m of openrouter.data ?? []) {
 		if (!m?.id) continue;
@@ -297,10 +297,13 @@ export function buildGrades(benchlm, openrouter, ids, now = new Date().toISOStri
 			const n = Number(v);
 			return Number.isFinite(n) ? Math.round(n * 1e6 * 1e4) / 1e4 : null;
 		};
+		// OpenRouter's `context_length` is deliberately NOT carried: it would be
+		// dead weight here — gradeOf()/loadRefreshedGrades() never read it, and
+		// the /v1/models `context_window` field is curated in src/models.js, not
+		// sourced from this fetch (audit note, issue #52).
 		priced.set(normalizeName(m.id), {
 			input: perM(p.prompt),
 			output: perM(p.completion),
-			context: Number.isFinite(Number(m.context_length)) ? Number(m.context_length) : null,
 		});
 	}
 

@@ -231,6 +231,14 @@ against real keys. It re-issues the requests behind claims like "this vendor
 rejects a `[1m]`-suffixed model id" and exits non-zero if a vendor no longer
 answers the way a comment says it does.
 
+`preversion`/`version` are npm lifecycle plumbing: `version-guard.js` refuses any
+`version` invocation that would CREATE the tag while off `main` (it would land on
+a commit the squash-merge discards — issue #41). The repo `.npmrc`
+(`git-tag-version=false`) only removes npm's default-path foot-gun; a
+`--git-tag-version` flag overrides the file, and pnpm ignores it entirely, so the
+guard is the actual seatbelt. Bump with `pnpm version patch|minor
+--no-git-tag-version` on the branch; create the tag on `main` after the squash.
+
 `bin/cc-proxy.js` loads API keys from `~/.env` (canonical for installs) and, if present, the repo-root `.env` (dev/inline). Vars already in the environment (e.g. settings.json `env`) always win. For the installed plugin, just the two keys go in `~/.env`; `/cc-proxy:setup` writes them there. Both files are gitignored.
 
 To load this checkout as a plugin without going through the marketplace, launch Claude Code with the repo as a plugin dir:
