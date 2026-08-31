@@ -12,14 +12,14 @@
 ## Baseline → delta
 
 - Baseline (before any change): `pnpm check` GREEN — lint clean; 469 tests / 467 pass / **0 fail** / 2 skipped (env-gated live-key tests).
-- After remediation + new guardrails: `pnpm check` GREEN — 473 tests / 471 pass / **0 fail** / 2 skipped. Delta: +4 tests (2 fix locks in server.test.js, 2 coupling locks in couplings.test.js), 0 regressions.
+- Final (after remediation, guardrails, the CI-flake fix, and the lock-ceremony rounds — see AUDIT_LOG.md F04/F05 and the review round): `pnpm check` GREEN — **479 tests / 477 pass / 0 fail / 2 skipped**. Delta: +10 tests (2 fix locks in server.test.js, 2 coupling locks in couplings.test.js, 6 deterministic lock-seam tests in statusline.test.js — 3 from the author's rework, 3 from the review round), 0 regressions.
 
 ## What this audit changed (all verified green; see AUDIT_LOG.md for evidence)
 
 | Finding | Fix | Lock |
 |---|---|---|
 | F01 (P2) Host header dropped non-default port | `src/proxy.js` passes `url.host`; `providers.js` param renamed/doc'd | `server.test.js` "the Host header sent upstream carries a non-default port" (red before fix) |
-| F02 (P3) statusline lock stale-reclaim raced (check-then-act overwrite) | `scripts/statusline.js` reclaim via atomic `rename()` + exclusive `wx` re-entry | existing reclaim/hold tests pin behavior; atomicity is structural (see DECISION below) |
+| F02 (P3) statusline lock stale-reclaim raced (check-then-act overwrite) | evolved across three rounds into `scripts/refresh-lock.js`: identity check by inode AND mtime (F05 — inode alone recycles on ext4/overlayfs), reclaimers serialized on a claim file, restore via `link()` so a contender on the emptied path is never clobbered | six deterministic seam tests in `statusline.test.js` (mutation-verified against the overwrite, the bare rename, the inode-only check, and the rename-back restore) |
 | F03 (P3) streaming 429-peek answered upstream death with a reset, not 502 | `src/proxy.js` 429 branch routes through `onUpstreamError()` | `server.test.js` "streaming 429 whose upstream dies mid-body yields a 502…" (red before fix) |
 | ⚠ coupling: static catalog ↔ ROUTES | — | `couplings.test.js` "every bare static-catalog id has a usable ROUTES entry" |
 | ⚠ coupling: /v1/models wire shape ↔ 3 docs | — | `couplings.test.js` "every published /v1/models field is named in…" (fields read from the ModelEntry typedef) |
@@ -37,7 +37,7 @@ Unchanged from recon — CLAUDE.md's own ranked table was verified accurate agai
 
 ## Open decisions
 
-- `// DECISION:` F02 ships without a dedicated race test because any feasible timing-based test passes against the defect (the false-assurance class CLAUDE.md's watchdog trap documents); the reclaim's atomicity rests on rename() semantics, stated in the comment, with the existing reclaim/hold tests pinning observable behavior.
+- `// DECISION:` (SUPERSEDED) F02 initially shipped without a dedicated race test on the reasoning that any timing-based test passes against the defect. The author's rework superseded this the right way: `scripts/refresh-lock.js` gives the lock an in-process seam (`afterStat`/`afterRestat`/`afterRename` hooks) so each interleaving is forced DETERMINISTICALLY — six seam tests now pin the race, the inode-recycling fix (F05), and the three-contender ceremony, several of them mutation-verified. The original reasoning stands only for its narrow claim (statistical race tests prove nothing); the seam is what made a real race test possible.
 - `// DECISION:` docs/BACKLOG.md left untouched — its item numbering and evidence style are maintainer-curated; residual risks live here and in the PR body instead.
 - `// DECISION:` `pnpm probe:vendors` not run — real keys/quota (manual gate by design); routing/forwarding changes here touch neither vendor claims nor routing decisions (Host header + error shape only).
 

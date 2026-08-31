@@ -679,6 +679,100 @@ describe("takeRefreshLock (scripts/refresh-lock.js)", () => {
 		}
 	});
 
+	it("a fast-path contender that takes the emptied path wins; the reclaimer fails closed", () => {
+		// The three-contender hole found in review: while a reclaimer holds the
+		// renamed-away file, the lock path sits empty and a plain fast-path `wx`
+		// can take it. The reclaimer must then LOSE — its final exclusive create
+		// fails — and must never overwrite the new owner's lock. Before the claim
+		// ceremony, the loser's restore branch renamed straight back onto the
+		// path, clobbering exactly that contender.
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "refresh-lock-third-"));
+		try {
+			stale(dir);
+			let third = null;
+			const first = takeRefreshLock(dir, {
+				afterRename: () => {
+					if (third === null) third = takeRefreshLock(dir);
+				},
+			});
+			assert.equal(third, true, "the contender that finds the path empty must win");
+			assert.equal(first, false, "the reclaimer must fail closed, not overwrite the winner");
+			assert.ok(fs.existsSync(refreshLockPath(dir)), "the winner's lock must survive");
+			const debris = fs.readdirSync(dir).filter((f) => f !== "refresh.lock");
+			assert.deepEqual(debris, [], `no ceremony debris, got ${debris.join(", ")}`);
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("a live lock moved by mistake is restored, not lost", () => {
+		// The refresher's release-unlink is outside the protocol, so between the
+		// re-validation and the rename the lock can be unlinked and re-taken by a
+		// fast-path contender. The reclaimer then moves a LIVE lock; the identity
+		// check (inode AND mtime) must catch it and the restore must put the
+		// owner's lock back — a lock lost here freezes nothing today, but the
+		// gauge's single-flight would silently widen.
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "refresh-lock-restore-"));
+		try {
+			stale(dir);
+			let owner = null;
+			const first = takeRefreshLock(dir, {
+				afterRestat: () => {
+					// A hung refresher releases, and a fresh render immediately
+					// relocks — the one sequence that changes the file under a
+					// reclaimer that has already judged it stale.
+					fs.rmSync(refreshLockPath(dir), { force: true });
+					owner = takeRefreshLock(dir);
+				},
+			});
+			assert.equal(owner, true, "the relocking render must win");
+			assert.equal(first, false, "the reclaimer moved a live lock and must cede");
+			assert.ok(fs.existsSync(refreshLockPath(dir)), "the owner's lock must be restored");
+			const debris = fs.readdirSync(dir).filter((f) => f !== "refresh.lock");
+			assert.deepEqual(debris, [], `no ceremony debris, got ${debris.join(", ")}`);
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("the restore never overwrites a contender that took the emptied path", () => {
+		// The full three-contender clobber from review, both windows at once: the
+		// lock changes under the reclaimer (unlink + relock, so the identity
+		// check will mismatch) AND a second contender takes the path while it
+		// sits empty after the rename. The loser's restore must leave that
+		// second contender's lock byte-for-byte in place — a rename-back here
+		// silently replaces it (mutation-verified: swapping the link() restore
+		// for renameSync turns exactly this test red and no other).
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "refresh-lock-clobber-"));
+		try {
+			stale(dir);
+			let owner1 = null;
+			let owner2 = null;
+			let owner2Stat = null;
+			const first = takeRefreshLock(dir, {
+				afterRestat: () => {
+					fs.rmSync(refreshLockPath(dir), { force: true });
+					owner1 = takeRefreshLock(dir);
+				},
+				afterRename: () => {
+					owner2 = takeRefreshLock(dir);
+					owner2Stat = fs.statSync(refreshLockPath(dir));
+				},
+			});
+			assert.equal(first, false, "the reclaimer must cede on both counts");
+			assert.equal(owner1, true, "the relocking render won the path first");
+			assert.equal(owner2, true, "the contender on the emptied path holds the lock now");
+			const after = fs.statSync(refreshLockPath(dir));
+			assert.equal(
+				`${after.ino}:${after.mtimeMs}`,
+				`${owner2Stat.ino}:${owner2Stat.mtimeMs}`,
+				"the standing lock must be the contender's own file, not a restored older one",
+			);
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	it("takes a free lock and refuses a fresh one", () => {
 		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "refresh-lock-basic-"));
 		try {

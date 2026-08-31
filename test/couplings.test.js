@@ -433,6 +433,15 @@ describe("cross-file couplings", () => {
 	// added to the wire joins this assertion the moment it is typed — the test
 	// cannot go stale against the shape it locks. `dedup` is pinned separately:
 	// it is the endpoint's one query parameter, not an entry field.
+	//
+	// OPTIONAL fields only, deliberately. The required four (`type`, `id`,
+	// `display_name`, `created_at`) are Anthropic's own model-list base shape —
+	// documented by Anthropic, not by this repo, and the three docs here
+	// describe what cc-proxy ADDS to that shape. Every addition is optional by
+	// construction (the omit-don't-invent rule: an unknown value omits its key),
+	// so a new published field is an optional property and joins the lock; a
+	// REQUIRED new field would be a change to the Anthropic wire contract
+	// itself, which invariant 5 rules out of this proxy's hands.
 	it("every published /v1/models field is named in README, OPERATIONS, and ARCHITECTURE", () => {
 		const typedef = /@typedef \{\{([^}]*)\}\} ModelEntry/.exec(read("src/models.js"));
 		assert.ok(

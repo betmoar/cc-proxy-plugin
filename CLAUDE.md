@@ -202,12 +202,19 @@ prose explaining what a field means is still yours to keep true.
 - **A lock's stale reclaim is check-then-act, and `rename()` does not fix that.**
   `rename` is atomic about the PATH, not the FILE, so a racer that arrives after
   the winner relocked renames the winner's FRESH lock away and takes over —
-  measured at 5 double-grants in 60 rounds × 12 processes, versus 0 once the
-  reclaim verifies the moved file's **inode** is the one it judged stale
-  (`scripts/refresh-lock.js`). The second trap is the test: the broken variant is
-  green in ~92% of racing runs, so a statistical race test proves nothing and any
-  CI sample passes it. The lock lives in its own module purely to give the test
-  an `afterStat` seam that forces the one interleaving deterministically.
+  measured at 5 double-grants in 60 rounds × 12 processes. Verifying the moved
+  file's **inode** looked like the fix and is the same trap one platform over:
+  ext4/overlayfs RECYCLE a freed inode for the next create (measured on CI's
+  image), so the check must be inode **and mtime** — rename preserves mtime and
+  a relock is stamped now. And an UNSERIALIZED reclaim still double-grants with
+  three contenders (the loser holds the winner's renamed-away lock while the
+  path sits empty for a fast-path `wx`), so reclaimers serialize on a claim
+  file and restore via `link()`, which refuses to overwrite
+  (`scripts/refresh-lock.js` — its header carries the full defect ladder).
+  The second trap is the test: the broken variants are green in ~92% of racing
+  runs, so a statistical race test proves nothing and any CI sample passes it.
+  The lock lives in its own module purely to give the tests seams that force
+  each interleaving deterministically.
 - **A test that kills a subprocess must kill it UNCONDITIONALLY.** A watchdog
   cancelled after `wait` returns never fires once the thing under test gets
   fast, so the test passes for the wrong reason — `detached:false` survived the
