@@ -7,25 +7,31 @@
 //
 // Wired BOTH as the `preversion` lifecycle script and as the first step of
 // the `version` script: pnpm ≥10 does not run pre/post lifecycle scripts by
-// default (enable-pre-post-scripts defaults false — measured 11.3.0: only the
-// `version` script ran), so the guard inside `version` is the one that
-// actually catches pnpm; preversion covers npm for free. The bump itself is
-// legal anywhere — the flow bumps on the branch and tags on main after the
-// squash — so the refusal fires only when the invocation would TAG while off
-// main. That differs per client, measured 2026-08-31:
+// default (enable-pre-post-scripts defaults false — measured 11.3.0: only
+// the `version` script ran), so the copy inside `version` is the one that
+// actually catches pnpm; preversion covers npm for free.
 //
-//   npm  honors the repo `.npmrc` (`git-tag-version=false`, shipped here), so
-//        an npm invocation never tags, flag or no flag. Its argv cannot be
-//        inspected for the flag anyway — npm strips it from the parent's
-//        command line ("npm version patch"), and it exports
-//        npm_config_git_tag_version as "" in BOTH modes, so env is no signal.
-//   pnpm IGNORES `.npmrc` for `version` (measured: tagged anyway) but leaves
-//        the flag visible in its parent argv ("node …/pnpm version patch
-//        --no-git-tag-version").
+// The bump itself is legal anywhere — the flow bumps on the branch and tags
+// on main after the squash — so the refusal fires only when the invocation
+// would TAG while off main. Which clients can tag is measured 2026-08-31:
 //
-// So: main always passes; npm always passes (the .npmrc disarms it); anything
-// else must carry --no-git-tag-version in the invoking command line. Fail-safe
-// for unknown clients — they need the flag.
+//   npm  honors the repo `.npmrc` (`git-tag-version=false`), so npm NEVER
+//        tags here, flag or no flag. But its argv cannot prove it is npm:
+//        inside the `version` script the parent is a bare `sh -c …`.
+//   pnpm IGNORES `.npmrc` for `version` (measured: tagged anyway) and its
+//        `--no-git-tag-version` flag is likewise invisible in argv from the
+//        script's seat.
+//
+// The one signal both managers export in every lifecycle script is
+// `npm_config_user_agent` ("npm/10.9.3 …" vs "pnpm/11.3.0 …"). Decision:
+//
+//   on main                      → allow (tagging on main is the point)
+//   client is npm                → allow (the repo .npmrc disarms its tag)
+//   user agent carries a flag or
+//   the invoking argv does       → allow (an explicit no-tag request)
+//   otherwise                    → REFUSE
+//
+// Fail-safe: an unknown client needs --no-git-tag-version.
 
 import { execSync } from "node:child_process";
 import { resolve } from "node:path";
@@ -35,24 +41,29 @@ function sh(cmd) {
 	return execSync(cmd, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
 }
 
-// The preversion script's direct parent is the package manager itself; npm
-// prunes its own flags there, pnpm does not.
+// pnpm hides its own argv from the script's parent chain, so the flag must be
+// readable from the INVOKING command line: walk up past sh wrappers to the
+// first ancestor that mentions a package manager.
 function invokingCommandLine() {
 	try {
-		return sh(`ps -p ${process.ppid} -o command=`);
-	} catch {
-		return "";
-	}
+		let ppid = process.ppid;
+		for (let i = 0; i < 4 && ppid; i++) {
+			const cmd = sh(`ps -p ${ppid} -o command=`);
+			if (/npm|pnpm|yarn|bun/.test(cmd)) return cmd;
+			ppid = Number.parseInt(sh(`ps -p ${ppid} -o ppid=`), 10);
+		}
+	} catch {}
+	return "";
 }
 
 /**
- * @param {{branch: string, command: string}} p
+ * @param {{branch: string, client: string, command: string}} p
  * @returns {{ok: true} | {ok: false, reason: string}}
  */
-export function guard({ branch, command }) {
+export function guard({ branch, client, command }) {
 	if (branch === "main") return { ok: true };
 	// npm: tagging is already governed by the repo .npmrc (git-tag-version=false).
-	if (/(^|\/|\b)npm(\s|$)/.test(command) && !/\bpnpm\b/.test(command)) return { ok: true };
+	if (/^npm\//.test(client)) return { ok: true };
 	if (/--no-git-tag-version/.test(command)) return { ok: true };
 
 	return {
@@ -78,9 +89,13 @@ if (isDirectRun) {
 			return ""; // not a git checkout — treat as non-main, guarded
 		}
 	})();
-	const { ok, reason } = guard({ branch, command: invokingCommandLine() });
+	const { ok, reason } = guard({
+		branch,
+		client: process.env.npm_config_user_agent ?? "",
+		command: invokingCommandLine(),
+	});
 	if (!ok) {
-		process.stderr.write(`preversion: ${reason}\n`);
+		process.stderr.write(`version-guard: ${reason}\n`);
 		process.exit(1);
 	}
 }
