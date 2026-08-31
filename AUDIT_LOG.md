@@ -50,3 +50,15 @@
 - 2026-08-31 P4: guardrails — couplings.test.js gains "every bare static-catalog id has a usable ROUTES entry" and "every published /v1/models field is named in README/OPERATIONS/ARCHITECTURE" (fields parsed from the ModelEntry typedef). Ran: 15 pass / 0 fail.
 - 2026-08-31 P4: context transfer — CLAUDE.md couplings table updated (two ⚠ rows now name their locks); publishing-contract paragraph updated; CHANGELOG [0.8.1] unreleased section written (3 Fixed, 1 Changed).
 - 2026-08-31 P4: FINAL GATE `pnpm check` (post-docs edits): 473 tests / 471 pass / 0 fail / 2 skipped, lint clean. AUDIT_STATE.md rewritten to cursor DONE with verdict, remediation table, residual-risk register, decisions.
+- 2026-08-31 CI: first CI run on PR #50 head 32ecd82 failed — 1 test: start-proxy.test.js "falls back to settings.json PROXY_PATH when the tree has no bin" (3082ms ≈ full readiness timeout, empty stdout). Diff-unrelated; root-caused below.
+
+### [F04] start-proxy tests race concurrent test files for the freePort() port — stand-in bin dies on EADDRINUSE
+- **Location:** test/start-proxy.test.js:24 (standinBin, no 'error' handler) + :12 (freePort releases the port before the spawn uses it)
+- **Severity:** P2
+- **Confidence:** high
+- **Claim tag:** CONFIRMED — reproduced deterministically (scratchpad/port-steal-probe.mjs): occupy the freed port before the spawn → stand-in exit 1, "listen EADDRINUSE", flag never written; matches CI's empty-stdout assertion failure and its ~3000ms duration (readiness poll exhausting).
+- **Failure trigger:** node --test runs test FILES concurrently; another file's listen(0) is assigned the ephemeral port freePort() just released, in the gap before the spawned stand-in binds it.
+- **Blast radius:** flaky CI red on an untouched test — erodes trust in the gate and burns re-run cycles; fails loud but misattributes (looks like a resolution bug).
+- **Evidence:** probe output above; CI job 99362121103 log: "not ok 3 … Expected started, got: ''", duration_ms 3082.
+- **Fix:** stand-in retries listen on EADDRINUSE (bounded, 50×100ms — the thief is an ephemeral test socket); per-run PROXY_READY_TIMEOUT_MS=8000 in the test harness env for headroom. Shipped defaults untouched.
+- **Guardrail:** the retry IS the guardrail (a wrong-bin regression still never writes the right flag, so test semantics are preserved); validated 5 consecutive green runs + full suite green.

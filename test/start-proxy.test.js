@@ -21,13 +21,34 @@ function freePort() {
 
 // A stand-in bin/cc-proxy.js: binds PROXY_PORT (so readiness passes) and
 // records its pid + which file ran, for assertions and cleanup.
+//
+// The listen RETRIES on EADDRINUSE, and that is a real race, not paranoia:
+// freePort() must RELEASE the port before handing it over, test FILES run
+// concurrently under node --test, so another file's listen(0) can be assigned
+// the same ephemeral port in the gap. Without the retry the stand-in dies
+// uncaught, the flag never appears, and the readiness poll runs out — the
+// exact empty-stdout "Expected started, got:" failure CI showed (reproduced
+// deterministically by occupying the port before the spawn: exit 1,
+// "listen EADDRINUSE"). The steal is momentary — the thief is an ephemeral
+// test socket — so bounded retries recover; a genuine resolution bug (wrong
+// bin, no bin) is untouched by this, since the wrong file retrying still
+// never writes THIS flag.
 function standinBin(flagFile) {
 	return `import net from "node:net";
 import fs from "node:fs";
 const s = net.createServer();
-s.listen(Number(process.env.PROXY_PORT), "127.0.0.1", () => {
+let tries = 0;
+s.on("error", (e) => {
+  if (e.code === "EADDRINUSE" && tries++ < 50) {
+    setTimeout(() => s.listen(Number(process.env.PROXY_PORT), "127.0.0.1"), 100);
+  } else {
+    throw e;
+  }
+});
+s.on("listening", () => {
   fs.writeFileSync(${JSON.stringify(flagFile)}, String(process.pid));
 });
+s.listen(Number(process.env.PROXY_PORT), "127.0.0.1");
 `;
 }
 
@@ -62,7 +83,11 @@ function run(tree, env) {
 		execFile(
 			"node",
 			[path.join(tree, "scripts", "start-proxy.js")],
-			{ env },
+			// 8s readiness (default 3s): headroom for the stand-in's EADDRINUSE
+			// retries (up to ~5s) plus two cold node spawns on a loaded CI runner.
+			// Env-only — the shipped 3s default and its hooks.json coupling are
+			// untouched.
+			{ env: { PROXY_READY_TIMEOUT_MS: "8000", ...env } },
 			(err, stdout, stderr) => {
 				resolve({ code: err?.code ?? 0, stdout, stderr });
 			},
