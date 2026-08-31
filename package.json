@@ -23,7 +23,7 @@
     "probe:vendors": "node scripts/probe-vendors.mjs",
     "sync-version": "node scripts/sync-version.mjs",
     "preversion": "node scripts/version-guard.js",
-    "version": "node scripts/_ppid-probe.mjs"
+    "version": "node scripts/version-guard.js && node scripts/sync-version.mjs && git add .claude-plugin/plugin.json"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9"
