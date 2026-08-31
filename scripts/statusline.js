@@ -267,11 +267,25 @@ function takeRefreshLock(cacheDir) {
 		fs.writeFileSync(lockPath, String(process.pid), { flag: "wx" });
 		return true;
 	} catch {
-		// Exists (or unwritable). Reclaim only if abandoned.
+		// Exists (or unwritable). Reclaim only if abandoned — and reclaim
+		// atomically. The mtime check is check-then-act, so two renders can both
+		// judge the same lock abandoned; a plain overwrite then handed the lock to
+		// BOTH (two refreshers, a duplicate round of quota fetches — the stampede
+		// this function exists to prevent, one level down). rename() is the atomic
+		// takeover: of two racers renaming the same file, exactly one succeeds and
+		// the loser lands in the catch below. The winner re-enters through the same
+		// exclusive `wx` as the fast path, so a third render that slipped in
+		// meanwhile still beats it cleanly.
 		try {
 			const age = Date.now() - fs.statSync(lockPath).mtimeMs;
 			if (age < REFRESH_LOCK_STALE_MS) return false;
-			fs.writeFileSync(lockPath, String(process.pid));
+			// Clear a `.stale` left by a prior crash first — rename onto an existing
+			// destination throws EEXIST on Windows (the rotateLogIfLarge trap), which
+			// would wedge the reclaim forever.
+			fs.rmSync(`${lockPath}.stale`, { force: true });
+			fs.renameSync(lockPath, `${lockPath}.stale`);
+			fs.rmSync(`${lockPath}.stale`, { force: true });
+			fs.writeFileSync(lockPath, String(process.pid), { flag: "wx" });
 			return true;
 		} catch {
 			return false;

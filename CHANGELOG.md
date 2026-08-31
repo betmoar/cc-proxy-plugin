@@ -2,6 +2,16 @@
 
 All notable changes to cc-proxy are recorded here. Versions follow [semver](https://semver.org/); `package.json` is the single source of truth and propagates to `.claude-plugin/plugin.json` via `scripts/sync-version.mjs`.
 
+## [0.8.1] — unreleased
+
+### Fixed
+- **The Host header sent upstream dropped a non-default port.** `buildUpstreamHeaders()` set `Host` from `url.hostname`, which strips the port; RFC 9112 §3.2 requires `host:port` when the port is not the scheme default. Invisible on every hardcoded vendor (all on 443, where the two spellings are identical) but wrong on every LM Studio request, whose documented baseUrl form is `http://host:1234` — measured: a stub behind a port-carrying baseUrl received `Host: 127.0.0.1`, no port. LM Studio itself tolerates it today; any name/port-based front (reverse proxy, vhost router, tunnel) misroutes or 421s, silently, while cc-proxy's own log shows a healthy request. Now `url.host` is passed; the socket options keep `hostname`/`port` separate as Node wants them. Locked end-to-end by `server.test.js` "the Host header sent upstream carries a non-default port" — the local stubs already sit on ephemeral ports, so the test IS the non-default-port case.
+- **The streaming 429-peek answered an upstream death mid-error-body with a socket reset instead of a 502.** `forward()`'s 429 branch handled `upstreamRes` errors with a bare `clientRes.destroy()`, while `forwardBuffered()` answers the identical pre-headers failure with a 502 the client's retry logic can key on — the exact cross-path drift `onUpstreamError()` was extracted to prevent. The branch now routes through `onUpstreamError()` (502 before headers, teardown after). Locked by `server.test.js` "streaming 429 whose upstream dies mid-body yields a 502…", reproduced red before the fix.
+- **The statusline refresh-lock's stale reclaim could hand the lock to two renders at once.** The reclaim path was check-then-act — statSync the mtime, then a plain overwrite — so two ~300ms renders that both judged an abandoned lock stale both "won" and each spawned a refresher: a duplicate round of quota fetches, the stampede the single-flight lock exists to prevent, one level down. (The fast path's exclusive `wx` create was always atomic; only the reclaim raced.) Reclaim now takes the lock over by `rename()` — of two racers renaming the same file exactly one succeeds — and re-enters through the same exclusive `wx` as the fast path. Existing reclaim/hold tests in `statusline.test.js` pin the behavior; the atomicity argument is structural (rename is the primitive), since any timing-based race test would pass against the defect.
+
+### Changed
+- **Two ⚠ coupling rows became executable locks** (`couplings.test.js`): every bare static-catalog id must carry a status-200 `ROUTES` entry, and every published `/v1/models` field name (read from the ModelEntry typedef, so new fields join automatically) must appear in README, OPERATIONS, and ARCHITECTURE. CLAUDE.md's couplings table updated to match. Audit trail for the pass that produced these lives in `AUDIT_STATE.md` / `AUDIT_LOG.md`.
+
 ## [0.8.0] — 2026-08-30
 
 ### Added

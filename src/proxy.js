@@ -128,11 +128,20 @@ export function upstreamRequestOptions(clientReq, provider, bodyLength, forceIde
 			port: url.port || (url.protocol === "https:" ? 443 : 80),
 			path: url.pathname + url.search,
 			method: clientReq.method,
+			// `url.host`, not `url.hostname`: host KEEPS a non-default port
+			// (`127.0.0.1:1234`), hostname drops it. RFC 9112 §3.2 requires the port
+			// in the Host header when it isn't the scheme default — the hardcoded
+			// vendors all sit on 443 so the two are identical there, but
+			// LMSTUDIO_BASE_URL's documented form is `http://host:1234`, and a
+			// port-less Host misroutes any vhost/reverse-proxy front silently
+			// (measured: the stub behind a port-carrying baseUrl received
+			// `Host: 127.0.0.1`, no port). The socket options below keep hostname —
+			// Node wants host and port as separate fields there.
 			headers: buildUpstreamHeaders(
 				provider,
 				clientReq.headers,
 				bodyLength,
-				url.hostname,
+				url.host,
 				forceIdentityEncoding,
 			),
 			agent: pickAgent(proto),
@@ -204,7 +213,12 @@ export function forward(clientReq, clientRes, provider, bodyBuffer) {
 					upstreamRes.pipe(clientRes);
 				}
 			});
-			upstreamRes.on("error", () => clientRes.destroy());
+			// Same error contract as every other pre-headers upstream failure:
+			// onUpstreamError sends a 502 while the head is unsent and tears down
+			// after — a bare destroy() here answered an upstream death mid-429-body
+			// with a socket reset the client's retry logic can't key on, while
+			// forwardBuffered() answers the identical failure with a 502.
+			upstreamRes.on("error", onUpstreamError(clientRes));
 			upstreamRes.on("end", () => {
 				if (piping) return;
 				const bodyBuf = Buffer.concat(chunks);

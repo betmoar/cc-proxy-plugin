@@ -404,6 +404,58 @@ describe("cross-file couplings", () => {
 		);
 	});
 
+	// COUPLING: a STATIC catalog id must have a ROUTES entry (CLAUDE.md carried
+	// this row as ⚠ untested). The live legs discover their ids fresh, but the
+	// two curated bare-id catalogs (Claude, Qwen fallback) publish ids the router
+	// then resolves through ROUTES first — an id curated into a catalog without a
+	// route-table entry silently routes by predicate alone, skipping the
+	// native-first/cheapest ranking the table exists to apply (and for a
+	// plan-resold id, potentially reversing issue #19's rule with no error).
+	// OpenRouter's slash ids are exempt by design: they route unconditionally by
+	// the `includes("/")` predicate and the table holds no slash ids at all.
+	it("every bare static-catalog id has a usable ROUTES entry", async () => {
+		const { DEFAULT_CLAUDE_MODELS, DEFAULT_QWEN_MODELS } = await import("../src/models.js");
+		const { ROUTES } = await import("../src/routes.js");
+		const catalogIds = [...DEFAULT_CLAUDE_MODELS, ...DEFAULT_QWEN_MODELS].map((m) => m.id);
+		const missing = catalogIds.filter(
+			(id) => !Object.hasOwn(ROUTES, id) || !ROUTES[id].some((r) => r.status === 200),
+		);
+		assert.deepEqual(
+			missing,
+			[],
+			`static catalog ids without a status-200 ROUTES entry: ${missing.join(", ")} — add the probed route to src/routes.js (see CLAUDE.md "a static catalog" coupling row)`,
+		);
+	});
+
+	// COUPLING: the /v1/models WIRE SHAPE is documented by hand in three files
+	// (CLAUDE.md carried this row as ⚠ "no test enforcing it"). The published
+	// field names are read out of the ModelEntry typedef itself, so a field
+	// added to the wire joins this assertion the moment it is typed — the test
+	// cannot go stale against the shape it locks. `dedup` is pinned separately:
+	// it is the endpoint's one query parameter, not an entry field.
+	it("every published /v1/models field is named in README, OPERATIONS, and ARCHITECTURE", () => {
+		const typedef = /@typedef \{\{([^}]*)\}\} ModelEntry/.exec(read("src/models.js"));
+		assert.ok(
+			typedef,
+			"could not locate the ModelEntry typedef in src/models.js — update this test",
+		);
+		const optionalFields = [...typedef[1].matchAll(/(\w+)\?:/g)].map((m) => m[1]);
+		assert.ok(
+			optionalFields.length >= 4,
+			`expected several optional ModelEntry fields, parsed: ${optionalFields.join(", ")}`,
+		);
+		const tokens = [...optionalFields, "dedup"];
+		for (const doc of ["README.md", "docs/OPERATIONS.md", "docs/ARCHITECTURE.md"]) {
+			const text = read(doc);
+			for (const token of tokens) {
+				assert.ok(
+					new RegExp(`\\b${token}\\b`).test(text),
+					`${doc} does not mention "${token}" — the /v1/models wire shape is a publishing contract documented in all three docs (CLAUDE.md coupling row)`,
+				);
+			}
+		}
+	});
+
 	// COUPLING: every env var offered in .env.example must be documented in the
 	// README env table and in docs/OPERATIONS.md (new knobs go in all three).
 	it("every .env.example key is documented in README.md and docs/OPERATIONS.md", () => {

@@ -106,8 +106,8 @@ there if you forget. The ones marked ⚠ have no test and drift silently.
 | a statusline gauge | the `GAUGES` table in `statusline.js` — the render path and the background refresher both read it; adding to one only means the gauge shows but never refreshes (or refreshes but never shows) |
 | ⚠ `MODEL_GRADES` | nothing — it is the only copy IN THE REPO, but `gradeOf()` overlays `~/.claude/cc-proxy/grades.json` on top of it, so a reader is not reading this table alone. `render-models.js` re-exports it for coverage assertions only — rendering goes through `gradeOf()` |
 | `identityOf` (`models.js`) | its `@doctest` lines — and keep an example carrying TWO slashes, or `indexOf`→`lastIndexOf` passes the whole suite (measured) |
-| ⚠ a static catalog | confirm the id has a `ROUTES` entry |
-| ⚠ the `/v1/models` wire shape | README + OPERATIONS + ARCHITECTURE, by hand — including `?dedup=identity` |
+| a static catalog | confirm the id has a `ROUTES` entry. Locked by `couplings.test.js` ("every bare static-catalog id…") as of 0.8.1; was ⚠ before |
+| the `/v1/models` wire shape | README + OPERATIONS + ARCHITECTURE, by hand — including `?dedup=identity`. Field NAMES are locked by `couplings.test.js` (read from the ModelEntry typedef) as of 0.8.1; the prose describing their semantics still drifts silently |
 | a handler dispatched without `await`/`.catch` (`server.js`) | wrap its whole body in a `try` — an unhandled rejection TERMINATES the shared process, and no `uncaughtException` handler exists. `handleModels` is the worked example |
 | ⚠ `mediaBaseUrl` (`providers.js`) | the media branch in `server.js` is its only reader; changing one alone silently routes at the skin, which 404s |
 
@@ -132,7 +132,9 @@ shipped `Specialist`, which read as a verdict where it was an absence — 299 of
 the capability axis.) Never read a consumer's file back to decide
 anything here: that inverts the arrow and makes neither plugin installable
 alone. Adding a field means updating the three docs that describe the shape —
-no test enforces that.
+`couplings.test.js` enforces the field NAMES appearing in all three (read from
+the ModelEntry typedef, so a new field joins the lock when it is typed); the
+prose explaining what a field means is still yours to keep true.
 
 ## Traps for the unwary
 

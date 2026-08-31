@@ -564,6 +564,63 @@ describe("server end-to-end routing", () => {
 		assert.equal(glm.calls[0].url, "/v1/messages?beta=true");
 	});
 
+	// The Host header must carry the backend's port when it is not the scheme
+	// default (RFC 9112 §3.2). Every hardcoded vendor sits on 443 so the header
+	// never shows a port there — but LM Studio's documented baseUrl form is
+	// `http://host:1234`, and a port-less Host misroutes any name/port-based
+	// front (reverse proxy, vhost router, tunnel) sitting before the server,
+	// silently: cc-proxy's own log shows a healthy request. The local stub here
+	// listens on an ephemeral port, so it IS the non-default-port case.
+	it("the Host header sent upstream carries a non-default port", async () => {
+		await wire(() => ({
+			status: 200,
+			headers: { "content-type": "application/json" },
+			body: NORMAL_200,
+		}));
+		await post(proxy.port, { model: "glm-5.2", stream: false, messages: [] });
+		assert.equal(
+			glm.calls[0].headers.host,
+			`127.0.0.1:${glm.port}`,
+			"Host must be host:port for a non-default port, or a vhost front misroutes the request",
+		);
+	});
+
+	// The streaming 429-peek must answer an upstream death mid-error-body the
+	// way every other pre-headers upstream failure is answered: a 502 the client
+	// can key retry logic on — not a bare socket reset. forwardBuffered() already
+	// does this for the same failure; the two paths must not drift (the same
+	// duplication class that shipped the query-string bug twice).
+	it("streaming 429 whose upstream dies mid-body yields a 502, not a socket hang-up", async () => {
+		claude = await startBackend(() => ({
+			status: 200,
+			headers: { "content-type": "application/json" },
+			body: NORMAL_200,
+		}));
+		// Custom stub: promise a 1000-byte 429 body, send a fragment, then kill
+		// the socket so the proxy's upstreamRes emits 'error' before 'end'.
+		const dying = http.createServer((req, res) => {
+			req.resume();
+			req.on("end", () => {
+				res.writeHead(429, { "content-type": "application/json", "content-length": "1000" });
+				res.write('{"error":{"code":"1302"');
+				setTimeout(() => res.destroy(), 20);
+			});
+		});
+		await new Promise((resolve) => dying.listen(0, "127.0.0.1", resolve));
+		const dyingPort = /** @type {import("node:net").AddressInfo} */ (dying.address()).port;
+		try {
+			const providers = buildProviders({ GLM_API_KEY: "glm-test" }, "claude");
+			providers.find((p) => p.id === "glm").baseUrl = `http://127.0.0.1:${dyingPort}`;
+			providers.find((p) => p.id === "claude").baseUrl = claude.baseUrl;
+			proxy = await startProxy({ port: 0, providers });
+			const res = await post(proxy.port, { model: "glm-5.2", stream: true, messages: [] });
+			assert.equal(res.status, 502, "a pre-headers upstream failure must be a 502");
+			assert.match(res.body, /Upstream error/);
+		} finally {
+			await close(dying);
+		}
+	});
+
 	it(
 		"client abort mid-stream aborts the upstream request (no quota leak) and the proxy survives",
 		{ timeout: 5000 },
