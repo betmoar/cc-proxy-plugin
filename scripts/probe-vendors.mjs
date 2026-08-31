@@ -27,9 +27,13 @@
 // nothing" is one `&& echo verified` away from becoming the silent green this
 // whole file was written to prevent.
 
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { loadEnv } from "../src/env.js";
 
-loadEnv();
+// loadEnv() runs in the CLI guard at the bottom, NOT at import time: the test
+// that imports `judge` must not spend real quota or capture the pre-~/.env
+// environment mid-import (the scripts/quota.js coupling).
 
 const JSON_OUT = process.argv.includes("--json");
 
@@ -215,8 +219,77 @@ const CASES = [
 				},
 			],
 		}),
-		expect: 200,
+	expect: 200,
 		bodyMatch: /"type"\s*:\s*"tool_use"/,
+	},
+	{
+		// NEGATIVE claim behind the Gemini line (src/models.js:88-95, issue #42):
+		// Google publishes no Anthropic Messages endpoint, so Gemini reaches this
+		// proxy ONLY through OpenRouter. Probed by hand 2026-08-23 (four paths,
+		// valid key, all 404 while :generateContent returned 200 the same minute)
+		// and again keyless 2026-08-31 (all 404 with an EMPTY body, text/html,
+		// while the real API path answers a structured JSON error — that shape
+		// split is what tells a routing miss from a live-but-refusing endpoint).
+		// One case per candidate path, so a Google change on ANY of them shows
+		// its name in the FAIL line instead of averaging into a set.
+		name: "google: /v1/messages is a routing miss (404, empty body)",
+		claim: "src/models.js MODEL_GRADES — no native Google Anthropic leg (invariant 5)",
+		url: "https://generativelanguage.googleapis.com/v1/messages",
+		auth: () => ({}),
+		key: "GEMINI_API_KEY",
+		model: "gemini-2.0-flash",
+		expect: 404,
+		bodyMatch: /^$/,
+	},
+	{
+		name: "google: /v1beta/messages is a routing miss",
+		claim: "src/models.js MODEL_GRADES — no native Google Anthropic leg (invariant 5)",
+		url: "https://generativelanguage.googleapis.com/v1beta/messages",
+		auth: () => ({}),
+		key: "GEMINI_API_KEY",
+		model: "gemini-2.0-flash",
+		expect: 404,
+		bodyMatch: /^$/,
+	},
+	{
+		name: "google: /v1beta/anthropic/v1/messages is a routing miss",
+		claim: "src/models.js MODEL_GRADES — no native Google Anthropic leg (invariant 5)",
+		url: "https://generativelanguage.googleapis.com/v1beta/anthropic/v1/messages",
+		auth: () => ({}),
+		key: "GEMINI_API_KEY",
+		model: "gemini-2.0-flash",
+		expect: 404,
+		bodyMatch: /^$/,
+	},
+	{
+		name: "google: /anthropic/v1/messages is a routing miss",
+		claim: "src/models.js MODEL_GRADES — no native Google Anthropic leg (invariant 5)",
+		url: "https://generativelanguage.googleapis.com/anthropic/v1/messages",
+		auth: () => ({}),
+		key: "GEMINI_API_KEY",
+		model: "gemini-2.0-flash",
+		expect: 404,
+		bodyMatch: /^$/,
+	},
+	{
+		// The POSITIVE control — the 404s above are only meaningful if the same
+		// host can reach the real API. The routing-miss 404s are EMPTY with
+		// text/html; the real path answers a structured JSON error instead, so
+		// the split stays measurable even on a machine with no key at all
+		// (measured 2026-08-31, keyless, empty body → 403 "Method doesn't allow
+		// unregistered callers"; a Messages-shaped body → 400 "Unknown name
+		// max_tokens"). Either proves the endpoint is live, so the case accepts
+		// both via bodyMatch on the structured shape.
+		name: "google: the generateContent path answers (positive control)",
+		claim: "src/models.js MODEL_GRADES — the 404s are endpoint misses, not a dead host",
+		url: "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
+		auth: () => ({}),
+		// No `key` gate: a structured error IS the expected live-host signature,
+		// and a machine without a key still gets the control for free.
+		expect: 400,
+		// [\s\S] not dot: the body is pretty-printed across newlines and a bare
+		// dot stops at the first one (measured — a `.` regex false-FAILs here).
+		bodyMatch: /"error"[\s\S]*"message"/,
 	},
 ];
 
@@ -321,13 +394,32 @@ function probeWebSocketTask(c, key) {
 	});
 }
 
+/**
+ * The verdict rule, factored out of `probe()` so the hermetic suite can pin it
+ * without a network: a case passes when the status matches AND the body
+ * pattern holds against the FULL body — never a truncated one (the 0.8.1
+ * audit defect: truncating first made any pattern deeper than 300 chars a
+ * false FAIL, exit 1).
+ * @param {{status?: number, body?: string, expect: number|string, bodyMatch?: RegExp}} r
+ * @returns {boolean}
+ */
+export function judge(r) {
+	if (r.status !== r.expect) return false;
+	if (!r.bodyMatch) return true;
+	return r.bodyMatch.test(r.body ?? "");
+}
+
 async function probe(c) {
-	const key = process.env[c.key];
-	if (!key) return { ...c, skipped: `${c.key} not set` };
+	// A case with no `key` gate runs unconditionally — the Google positive
+	// control is measurable keyless BY DESIGN (its expected 403 IS the
+	// live-host signature; issue #42). `key` stays undefined for it, which is
+	// fine: auth is `() => ({})` there.
+	const key = c.key ? process.env[c.key] : "keyless-by-design";
+	if (c.key && !key) return { ...c, skipped: `${c.key} not set` };
 	if (c.transport === "ws") {
 		const r = await probeWebSocketTask(c, key);
 		if (r.reason === "network") return { ...c, ...r, ok: false };
-		const ok = r.status === c.expect && (!c.bodyMatch || c.bodyMatch.test(r.body));
+		const ok = judge({ ...r, expect: c.expect, bodyMatch: c.bodyMatch });
 		return { ...c, ...r, ok, reason: ok ? "match" : "mismatch" };
 	}
 	const ctl = new AbortController();
@@ -353,8 +445,11 @@ async function probe(c) {
 						},
 			),
 		});
-		const body = (await res.text()).slice(0, 300);
-		const ok = res.status === c.expect && (!c.bodyMatch || c.bodyMatch.test(body));
+		// bodyMatch runs on the FULL body: truncating first would make a pattern
+		// deeper than 300 chars a false FAIL (exit 1) — the audit defect (issue
+		// #52). Only the PRINTED body is capped (display, not measurement).
+		const body = await res.text();
+		const ok = judge({ status: res.status, body, expect: c.expect, bodyMatch: c.bodyMatch });
 		return { ...c, status: res.status, body, ok, reason: ok ? "match" : "mismatch" };
 	} catch (err) {
 		// NOT the same fact as a mismatch: the vendor said nothing, so the claim
@@ -372,57 +467,69 @@ async function probe(c) {
 	}
 }
 
-const results = [];
-for (const c of CASES) results.push(await probe(c));
+async function main() {
+	const results = [];
+	for (const c of CASES) results.push(await probe(c));
 
-if (JSON_OUT) {
-	console.log(JSON.stringify({ probedAt: new Date().toISOString(), results }, null, 2));
-} else {
-	console.log(`vendor probe — ${new Date().toISOString()}\n`);
-	for (const r of results) {
-		if (r.skipped) {
-			console.log(`SKIP  ${r.name}\n      ${r.skipped}\n`);
-			continue;
+	if (JSON_OUT) {
+		console.log(JSON.stringify({ probedAt: new Date().toISOString(), results }, null, 2));
+	} else {
+		console.log(`vendor probe — ${new Date().toISOString()}\n`);
+		for (const r of results) {
+			if (r.skipped) {
+				console.log(`SKIP  ${r.name}\n      ${r.skipped}\n`);
+				continue;
+			}
+			const mark = r.ok ? "OK  " : "FAIL";
+			console.log(`${mark}  ${r.name}`);
+			console.log(`      model=${r.model} expected=${r.expect} got=${r.status ?? r.error}`);
+			console.log(`      claim: ${r.claim}`);
+			// A network failure has no body, and the old guard meant it printed LESS
+			// detail than a mismatch — backwards, since it is the harder one to read.
+			if (!r.ok && r.body) console.log(`      body: ${r.body.replace(/\s+/g, " ").slice(0, 160)}`);
+			if (!r.ok && r.error) console.log(`      unreachable: ${r.error}`);
+			console.log();
 		}
-		const mark = r.ok ? "OK  " : "FAIL";
-		console.log(`${mark}  ${r.name}`);
-		console.log(`      model=${r.model} expected=${r.expect} got=${r.status ?? r.error}`);
-		console.log(`      claim: ${r.claim}`);
-		// A network failure has no body, and the old guard meant it printed LESS
-		// detail than a mismatch — backwards, since it is the harder one to read.
-		if (!r.ok && r.body) console.log(`      body: ${r.body.replace(/\s+/g, " ").slice(0, 160)}`);
-		if (!r.ok && r.error) console.log(`      unreachable: ${r.error}`);
-		console.log();
 	}
+
+	const ran = results.filter((r) => !r.skipped);
+	const disagreed = ran.filter((r) => !r.ok && r.reason === "mismatch");
+	const unreachable = ran.filter((r) => r.reason === "network");
+	const skipped = results.length - ran.length;
+
+	if (!JSON_OUT) {
+		const matched = ran.length - disagreed.length - unreachable.length;
+		const parts = [`${matched}/${ran.length} matched`];
+		if (unreachable.length) parts.push(`${unreachable.length} unreachable`);
+		if (skipped) parts.push(`${skipped} skipped (no key)`);
+		console.log(parts.join(", "));
+		if (disagreed.length) {
+			console.log("\nA vendor no longer behaves the way a source comment says it does.");
+			console.log("Update the comment AND re-check the decision that rested on it.");
+		}
+		if (unreachable.length && !disagreed.length) {
+			console.log("\nNothing was refuted — some cases could not be reached at all.");
+			console.log("Treat this as UNVERIFIED, not as confirmation.");
+		}
+		if (!ran.length) {
+			console.log("\nNo keys, so no claim was checked. This is not a pass.");
+		}
+	}
+
+	// Precedence: a real disagreement outranks unreachability, which outranks
+	// having run nothing — the most actionable fact wins the exit code.
+	if (disagreed.length) return 1;
+	if (unreachable.length) return 2;
+	if (!ran.length) return 3;
+	return 0;
 }
 
-const ran = results.filter((r) => !r.skipped);
-const disagreed = ran.filter((r) => !r.ok && r.reason === "mismatch");
-const unreachable = ran.filter((r) => r.reason === "network");
-const skipped = results.length - ran.length;
-
-if (!JSON_OUT) {
-	const matched = ran.length - disagreed.length - unreachable.length;
-	const parts = [`${matched}/${ran.length} matched`];
-	if (unreachable.length) parts.push(`${unreachable.length} unreachable`);
-	if (skipped) parts.push(`${skipped} skipped (no key)`);
-	console.log(parts.join(", "));
-	if (disagreed.length) {
-		console.log("\nA vendor no longer behaves the way a source comment says it does.");
-		console.log("Update the comment AND re-check the decision that rested on it.");
-	}
-	if (unreachable.length && !disagreed.length) {
-		console.log("\nNothing was refuted — some cases could not be reached at all.");
-		console.log("Treat this as UNVERIFIED, not as confirmation.");
-	}
-	if (!ran.length) {
-		console.log("\nNo keys, so no claim was checked. This is not a pass.");
-	}
+// Only run the CLI when invoked directly, not when imported by tests — the
+// same guard release-gate.mjs uses. Importing must be free of network calls
+// AND of process.exit: test/probe-vendors.test.js imports `judge` and reads
+// the CASES table statically, and an import-time probe run would both spend
+// real quota and kill the test process with its own exit code.
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+	loadEnv();
+	process.exit(await main());
 }
-
-// Precedence: a real disagreement outranks unreachability, which outranks
-// having run nothing — the most actionable fact wins the exit code.
-if (disagreed.length) process.exit(1);
-if (unreachable.length) process.exit(2);
-if (!ran.length) process.exit(3);
-process.exit(0);
