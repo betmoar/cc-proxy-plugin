@@ -442,6 +442,14 @@ describe("cross-file couplings", () => {
 	// so a new published field is an optional property and joins the lock; a
 	// REQUIRED new field would be a change to the Anthropic wire contract
 	// itself, which invariant 5 rules out of this proxy's hands.
+	//
+	// KNOWN COARSENESS, stated rather than implied away: this is a
+	// presence-of-name lock over the WHOLE document, which works because the
+	// current field names are distinctive. A future field named with a common
+	// word (`version`, say) could satisfy it from unrelated prose — if that day
+	// comes, scope the search to the model-discovery section rather than
+	// weakening the name. A section-parsing lock today would be brittler than
+	// the drift it guards (three hand-written docs, three heading styles).
 	it("every published /v1/models field is named in README, OPERATIONS, and ARCHITECTURE", () => {
 		const typedef = /@typedef \{\{([^}]*)\}\} ModelEntry/.exec(read("src/models.js"));
 		assert.ok(
