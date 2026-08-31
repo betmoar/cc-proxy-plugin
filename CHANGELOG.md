@@ -2,7 +2,7 @@
 
 All notable changes to cc-proxy are recorded here. Versions follow [semver](https://semver.org/); `package.json` is the single source of truth and propagates to `.claude-plugin/plugin.json` via `scripts/sync-version.mjs`.
 
-## [0.8.1] — unreleased
+## [0.8.1] — 2026-08-31
 
 ### Fixed
 - **The Host header sent upstream dropped a non-default port.** `buildUpstreamHeaders()` set `Host` from `url.hostname`, which strips the port; RFC 9112 §3.2 requires `host:port` when the port is not the scheme default. Invisible on every hardcoded vendor (all on 443, where the two spellings are identical) but wrong on every LM Studio request, whose documented baseUrl form is `http://host:1234` — measured: a stub behind a port-carrying baseUrl received `Host: 127.0.0.1`, no port. LM Studio itself tolerates it today; any name/port-based front (reverse proxy, vhost router, tunnel) misroutes or 421s, silently, while cc-proxy's own log shows a healthy request. Now `url.host` is passed; the socket options keep `hostname`/`port` separate as Node wants them. Locked end-to-end by `server.test.js` "the Host header sent upstream carries a non-default port" — the local stubs already sit on ephemeral ports, so the test IS the non-default-port case.
