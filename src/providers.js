@@ -450,11 +450,10 @@ const HOP_BY_HOP_HEADERS = [
  * @param {Provider} provider
  * @param {Record<string, any>} sourceHeaders
  * @param {number} bodyLength
- * @param {string} host - the URL's `host` (host:port for a non-default port,
- *   bare hostname otherwise — RFC 9112 §3.2). NOT `url.hostname`: that drops
- *   the port, and a port-less Host header misroutes any vhost/reverse-proxy
- *   front before a non-443 backend (LM Studio's documented form is
- *   `http://host:1234`). See the call in upstreamRequestOptions().
+ * @param {string} host - the URL's `host`: host:port for a non-default port,
+ *   bare hostname otherwise. That spelling is the whole contract, and the
+ *   reason it must be `url.host` and never `url.hostname` is in
+ *   upstreamRequestOptions() at the call site — the single copy.
  * @param {boolean} [forceIdentityEncoding]
  * @returns {Record<string, any>}
  */

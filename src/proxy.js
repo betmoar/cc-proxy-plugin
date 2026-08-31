@@ -129,9 +129,12 @@ export function upstreamRequestOptions(clientReq, provider, bodyLength, forceIde
 			path: url.pathname + url.search,
 			method: clientReq.method,
 			// `url.host`, not `url.hostname`: host KEEPS a non-default port
-			// (`127.0.0.1:1234`), hostname drops it. RFC 9112 §3.2 requires the port
-			// in the Host header when it isn't the scheme default — the hardcoded
-			// vendors all sit on 443 so the two are identical there, but
+			// (`127.0.0.1:1234`), hostname drops it. RFC 9112 §3.2 requires Host to
+			// match the target URI's authority component, and an authority carries
+			// the port whenever it isn't the scheme default (the omit-the-default
+			// rule itself is RFC 9110 §4.2; §3.2's own examples show
+			// `www.example.org:8001`) — the hardcoded vendors all sit on 443 so the
+			// two spellings are identical there, but
 			// LMSTUDIO_BASE_URL's documented form is `http://host:1234`, and a
 			// port-less Host misroutes any vhost/reverse-proxy front silently
 			// (measured: the stub behind a port-carrying baseUrl received
