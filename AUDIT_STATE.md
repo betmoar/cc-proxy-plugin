@@ -12,7 +12,7 @@
 ## Baseline → delta
 
 - Baseline (before any change): `pnpm check` GREEN — lint clean; 469 tests / 467 pass / **0 fail** / 2 skipped (env-gated live-key tests).
-- Final (after remediation, guardrails, the CI-flake fix, and the lock-ceremony rounds — see AUDIT_LOG.md F04/F05 and the review round): `pnpm check` GREEN — **479 tests / 477 pass / 0 fail / 2 skipped**. Delta: +10 tests (2 fix locks in server.test.js, 2 coupling locks in couplings.test.js, 6 deterministic lock-seam tests in statusline.test.js — 3 from the author's rework, 3 from the review round), 0 regressions.
+- Final (after remediation, guardrails, the CI-flake fix, and the lock-ceremony rounds — see AUDIT_LOG.md F04/F05 and the review rounds): `pnpm check` GREEN — **480 tests / 478 pass / 0 fail / 2 skipped**. Delta: +11 tests (2 fix locks in server.test.js, 2 coupling locks in couplings.test.js, 7 deterministic lock-seam tests in statusline.test.js), 0 regressions.
 
 ## What this audit changed (all verified green; see AUDIT_LOG.md for evidence)
 

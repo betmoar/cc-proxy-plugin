@@ -773,6 +773,39 @@ describe("takeRefreshLock (scripts/refresh-lock.js)", () => {
 		}
 	});
 
+	it("hands an abandoned CLAIM to exactly ONE of two racing reclaimers", () => {
+		// The claim's own recovery was the same check-then-act race one level
+		// down (found in review): recovering by rm + recreate let one racer
+		// delete the other's FRESH claim, and both then ran the ceremony. The
+		// claim is now taken over by the same takeStale ceremony as the lock, so
+		// a racer that completes inside the judged-stale window keeps the claim
+		// (and the lock), and the interrupted one's rename gets ENOENT and cedes.
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "refresh-lock-claim-"));
+		try {
+			const lock = stale(dir);
+			// An abandoned claim beside the abandoned lock — the crash artifact.
+			const claim = `${lock}.claim`;
+			fs.writeFileSync(claim, "999999");
+			const old = (Date.now() - 30_000) / 1000;
+			fs.utimesSync(claim, old, old);
+			let second = null;
+			const first = takeRefreshLock(dir, {
+				claim: {
+					afterRestat: () => {
+						if (second === null) second = takeRefreshLock(dir);
+					},
+				},
+			});
+			assert.equal(second, true, "the reclaimer that completes inside the window must win");
+			assert.equal(first, false, "the interrupted claim-recoverer must cede, not double-claim");
+			assert.ok(fs.existsSync(lock), "the winner's lock must be in place");
+			const debris = fs.readdirSync(dir).filter((f) => f !== "refresh.lock");
+			assert.deepEqual(debris, [], `no claim/ceremony debris, got ${debris.join(", ")}`);
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	it("takes a free lock and refuses a fresh one", () => {
 		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "refresh-lock-basic-"));
 		try {
