@@ -2,7 +2,7 @@
 
 All notable changes to cc-proxy are recorded here. Versions follow [semver](https://semver.org/); `package.json` is the single source of truth and propagates to `.claude-plugin/plugin.json` via `scripts/sync-version.mjs`.
 
-## [0.8.3] — unreleased
+## [0.8.3] — 2026-09-02
 
 ### Fixed
 - **Every operator script was a silent no-op from a path containing a space, through a symlink, or on Windows.** Five scripts (`status`, `list-models`, `bench-speed`, `bench-grades`, `render-models`) gated their `main()` on `import.meta.url === "file://" + process.argv[1]` — a URL compared to a raw path. The two agree only on a path with no URL-special character (`with space` becomes `with%20space` on the URL side), no symlink (Node resolves the main module's `import.meta.url` to the realpath while `argv[1]` keeps the shell's spelling), and a POSIX root (`file://C:\…` can never equal `file:///C:/…`). Measured: from a directory named `with space`, `/cc-proxy:status` and `/cc-proxy:models` printed NOTHING and exited 0 — and `commands/status.md` then tells the user "the proxy may be down". Three sibling scripts already used a decoded comparison; the class had been fixed at three of eight sites. All five now share `scripts/direct-run.js` `isDirectRun()` (decode, resolve, realpath both sides; every failure mode is `false`, never a throw). Locked by `test/direct-run.test.js` (unit cases for space/%/#, symlink, relative, foreign entry, no argv — plus `status.js` run end-to-end through a symlinked path with a space, red before the fix) and a `couplings.test.js` lock that forbids the raw spelling anywhere under `src/`, `scripts/`, `hooks/`, `bin/`.
