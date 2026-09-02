@@ -42,6 +42,7 @@ import { loadEnv } from "../src/env.js";
 import { CONTEXT_WINDOW as CONTEXT_WINDOW_TOKENS, DEEPSEEK_PRICING } from "../src/models.js";
 import { buildProviders } from "../src/providers.js";
 import { resolveProvider } from "../src/router.js";
+import { isDirectRun } from "./direct-run.js";
 
 // MUST stay directly under the imports: PROXY_PORT is evaluated at load time,
 // and a loadEnv() call below it would silently ignore a port set only in ~/.env
@@ -222,7 +223,7 @@ async function main() {
 }
 
 // Only run when invoked directly, not when imported by tests.
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isDirectRun(import.meta.url)) {
 	main().catch((err) => {
 		process.stderr.write(`cc-proxy: unexpected error: ${err.message}\n`);
 		process.exit(1);

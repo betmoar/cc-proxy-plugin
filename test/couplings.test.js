@@ -219,8 +219,8 @@ describe("cross-file couplings", () => {
 	// and would appear nowhere on Qwen's without the tag. The reverse is legitimate
 	// — `glm-5.2` is in the display set but NOT in the predicate. Adding it there
 	// would change the PREDICATES without changing where anything routes, because
-	// `resolve()` consults `rankRoutes()` (router.js:90) BEFORE the predicate scan
-	// (router.js:96), and `ROUTES["glm-5.2"]` lists glm first. Measured, with
+	// `resolve()` consults `rankRoutes()` BEFORE the predicate scan (both in
+	// src/router.js resolve()), and `ROUTES["glm-5.2"]` lists glm first. Measured, with
 	// `glm-5.2` added to the set and both keys present:
 	//
 	//   glm.match  true → false      qwen.match  false → true
@@ -484,5 +484,115 @@ describe("cross-file couplings", () => {
 			assert.ok(readme.includes(key), `${key} is in .env.example but missing from README.md`);
 			assert.ok(ops.includes(key), `${key} is in .env.example but missing from docs/OPERATIONS.md`);
 		}
+	});
+	// COUPLING: every scripts/*.js entry point runs its main() behind a guard,
+	// and the guard must be the shared isDirectRun() — never the raw spelling
+	// `import.meta.url === \`file://${process.argv[1]}\``, which compares a URL
+	// to a path and is FALSE for any path with a space/%/#, any symlink, and
+	// every Windows path (measured: status.js and list-models.js printed nothing
+	// and exited 0 from a directory named "with space"). Three scripts had the
+	// decoded form and five the raw one; the class is forbidden here so the sixth
+	// cannot come back. Behaviour is pinned in test/direct-run.test.js.
+	it("no script spells the direct-run guard as a raw file:// comparison", () => {
+		const raw = /import\.meta\.url\s*===\s*`file:\/\//;
+		const offenders = [];
+		for (const dir of ["src", "scripts", "hooks", "bin"]) {
+			for (const name of fs.readdirSync(path.join(root, dir))) {
+				if (!/\.(js|mjs)$/.test(name)) continue;
+				const rel = `${dir}/${name}`;
+				if (raw.test(read(rel))) offenders.push(rel);
+			}
+		}
+		assert.deepEqual(
+			offenders,
+			[],
+			`${offenders.join(", ")} compare import.meta.url to a raw file:// path — use isDirectRun(import.meta.url) from scripts/direct-run.js (URL-decoded, symlink-safe, Windows-safe)`,
+		);
+	});
+
+	// COUPLING: a comment that cites source by LINE NUMBER is a claim that rots
+	// on the next edit above it, and nothing else in this repo can execute it
+	// (doctests pin values, not locations). Audited 2026-09-02: eight such
+	// citations, four already pointing at unrelated code (a models.js citation
+	// off by 39 lines, a router.js one off by 125). Name the
+	// SYMBOL instead — it survives line churn and a reader can grep for it.
+	it("no comment cites a source file by line number", () => {
+		const cite = /\b[\w./-]+\.(?:js|mjs|md):\d+(?:-\d+)?\b/;
+		const offenders = [];
+		const walk = (dir) => {
+			for (const entry of fs.readdirSync(path.join(root, dir), { withFileTypes: true })) {
+				const rel = path.join(dir, entry.name);
+				if (entry.isDirectory()) {
+					if (entry.name !== "node_modules") walk(rel);
+					continue;
+				}
+				if (!/\.(js|mjs)$/.test(entry.name)) continue;
+				read(rel)
+					.split("\n")
+					.forEach((line, i) => {
+						const m = cite.exec(line);
+						if (m) offenders.push(`${rel}:${i + 1} → "${m[0]}"`);
+					});
+			}
+		};
+		for (const dir of ["src", "scripts", "hooks", "bin", "test"]) walk(dir);
+		assert.deepEqual(
+			offenders,
+			[],
+			`line-number citations rot silently — name the function or constant instead:\n  ${offenders.join("\n  ")}`,
+		);
+	});
+
+	// COUPLING: src/models.js fetchOpenRouterModels DROPS every `anthropic/` id
+	// from discovery, on purpose: reaching Claude through a reseller bills per
+	// token for what the session's OAuth plan already covers, and invariants 3
+	// and 4 exist to keep Claude traffic on the Claude route. Three docs then
+	// offered `anthropic/claude-opus-4` as THE example of an OpenRouter id — the
+	// docs recommending what the code refuses to advertise. Docs that contradict
+	// an invariant's stated reasoning are how the reasoning gets "fixed" away.
+	it("no reader-facing doc offers an anthropic/ id as the OpenRouter example", () => {
+		const docs = [
+			"README.md",
+			".env.example",
+			"skills/setup/SKILL.md",
+			"docs/OPERATIONS.md",
+			"docs/ARCHITECTURE.md",
+			"CONTRIBUTING.md",
+		];
+		for (const doc of docs) {
+			const hits = read(doc)
+				.split("\n")
+				.map((l, i) =>
+					/(e\.g\.|like|such as|example)[^\n]*`?anthropic\/claude/i.test(l) ? i + 1 : 0,
+				)
+				.filter(Boolean);
+			assert.deepEqual(
+				hits,
+				[],
+				`${doc} lines ${hits.join(", ")} give an anthropic/ id as an OpenRouter example — discovery drops those ids (src/models.js fetchOpenRouterModels) because a resold Claude route bills what OAuth already covers; use deepseek/deepseek-v4-pro`,
+			);
+		}
+	});
+
+	// COUPLING: the comment above DEFAULT_BACKEND= in .env.example is the one
+	// place a user learns which values are legal, and it said `"claude" or "glm"`
+	// three providers after the list grew. The legal set is PROVIDER_IDS (any
+	// registered provider may be the default — src/providers.js buildProviders
+	// sets isDefault by id), so the comment is read against that set and a new
+	// provider joins the lock the moment it is registrable.
+	it(".env.example's DEFAULT_BACKEND comment names every provider id", async () => {
+		const { PROVIDER_IDS } = await import("../src/providers.js");
+		const lines = read(".env.example").split("\n");
+		const at = lines.findIndex((l) => /^DEFAULT_BACKEND=/.test(l));
+		assert.ok(at > 0, ".env.example no longer defines DEFAULT_BACKEND= — update this test");
+		let start = at;
+		while (start > 0 && lines[start - 1].startsWith("#")) start--;
+		const comment = lines.slice(start, at).join("\n");
+		const missing = [...PROVIDER_IDS].filter((id) => !new RegExp(`\\b${id}\\b`).test(comment));
+		assert.deepEqual(
+			missing,
+			[],
+			`.env.example's DEFAULT_BACKEND comment does not mention ${missing.join(", ")} — every PROVIDER_IDS entry is a legal DEFAULT_BACKEND value`,
+		);
 	});
 });

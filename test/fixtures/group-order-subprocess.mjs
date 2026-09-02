@@ -7,7 +7,7 @@
 // arrives too late — the module cache already holds whatever the first import
 // read. Measured before this fixture existed: a HOME whose grades.json calls
 // glm-5.2 "Specialist" and glm-4.5 "Flagship" inverted the expected order and
-// failed the test. Same reason test/models.test.js:415 spawns rather than swaps.
+// failed the test. Same reason the grade-agreement case in test/models.test.js spawns rather than swaps.
 //
 // Prints the ordered ids as JSON on stdout; the parent asserts.
 

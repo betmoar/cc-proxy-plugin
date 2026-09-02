@@ -93,7 +93,10 @@ there if you forget. The ones marked ⚠ have no test and drift silently.
 | a `v<x.y.z>` tag | its CHANGELOG section, non-empty, BEFORE tagging |
 | `PROXY_PORT` default | `config.js`, `proxy-lifecycle.js`, `statusline.js`, `status.js` |
 | `PROXY_READY_TIMEOUT_MS` | `hooks/hooks.json` `timeout: 10` — ≥10000 ms never completes |
-| `buildProviders()` | `PROVIDER_IDS` + `CONTRIBUTING.md` 1b — else the raw lens leaks upstream |
+| `buildProviders()` | `PROVIDER_IDS` + `CONTRIBUTING.md` 1b — else the raw lens leaks upstream. Also the `DEFAULT_BACKEND` comment in `.env.example` (locked by `couplings.test.js` as of 0.8.3 — it read the id list off `PROVIDER_IDS`) |
+| a `scripts/*.js` entry point | its `main()` guard is `isDirectRun(import.meta.url)` from `scripts/direct-run.js`, never a raw `import.meta.url` vs `file://` string compare — that spelling is false on a path with a space, through a symlink, and on every Windows path, and the script then exits 0 with EMPTY stdout (measured 0.8.3). `couplings.test.js` forbids the raw form |
+| a comment that cites `file.js:NNN` | rewrite it to the SYMBOL. Line numbers rot on the next edit above them and nothing can execute them; four of eight were already wrong when `couplings.test.js` started rejecting the pattern (0.8.3) |
+| an OpenRouter example id in a doc | never `anthropic/…` — discovery drops those ids on purpose (invariants 3/4: a resold Claude route bills what OAuth covers). `couplings.test.js` scans README, `.env.example`, SKILL.md, OPERATIONS, ARCHITECTURE, CONTRIBUTING |
 | a new env var | `.env.example` + README table + `docs/OPERATIONS.md` |
 | a human-facing `pnpm` script | README / CONTRIBUTING / OPERATIONS — a manual gate nobody knows about is not a gate |
 | a comment claiming an input→output | write it as `@doctest fn(<json>) -> <json>`; `doc-examples.test.js` runs it |
@@ -224,6 +227,15 @@ prose explaining what a field means is still yours to keep true.
 - **CC internals may drift**: `[1m]` suffix, `claude-haiku-*` ids,
   `ANTHROPIC_CUSTOM_MODEL_OPTION` (one slot) are not public API — check these
   first when routing looks wrong after a CC update.
+- **A script that prints nothing and exits 0 may never have run.** The operator
+  scripts are both commands and importable modules, so `main()` sits behind a
+  direct-run guard — and the guard is the first suspect when `/cc-proxy:status`
+  or `/cc-proxy:models` is silent, BEFORE "the proxy is down". The old spelling
+  compared `import.meta.url` to a raw `file://` + path string, which is false on
+  any path with a space/`%`/`#`, through a symlink (the main module's URL is the
+  realpath, `argv[1]` is not), and on Windows. Use `isDirectRun()`; the lifecycle
+  probes had the sibling shape (settle only on `'end'`, so a mid-body cut hung
+  the hook to its 10 s kill) — a process that goes quiet is a defect, not a hint.
 - **`/v1/models` is synthesized**, but `/v1/models/<id>` is forwarded. Uncurated
   ids OMIT `context_window` rather than sending `null`; attach via
   `withContextWindow()` — a bare lookup inherits from `Object.prototype` and

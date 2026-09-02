@@ -12,6 +12,8 @@ import {
 	ensureProxyRunning,
 	isOlderVersion,
 	pluginVersion,
+	probeProxyVersion,
+	requestShutdown,
 	resolveProxyPath,
 	rotateLogIfLarge,
 	spawnProxy,
@@ -504,5 +506,59 @@ s.listen(${port}, "127.0.0.1", () => {
 			await waitForFile(marker, "ok");
 			assert.equal(fs.readFileSync(marker, "utf8"), "ok");
 		});
+	});
+});
+
+// A response that STARTS and is then cut off emits neither 'end' nor an
+// uncaught 'error' on the IncomingMessage — only 'aborted' and 'close'
+// (measured: the promise below stayed pending for 2.5 s against a stub that
+// wrote the head plus half a body and destroyed the socket). Both probes used to
+// resolve only on 'end', so a wedged or crashing old proxy — the process the
+// version check exists to REPLACE — hung ensureProxyRunning() until hooks.json
+// killed the SessionStart hook at 10 s, silently, with the stale proxy left in
+// place. The `timeout` request option does not help: it is an inactivity timer,
+// and a destroyed socket is not idle, it is gone.
+describe("lifecycle probes settle when the response is cut mid-body", () => {
+	function cutMidBody() {
+		return new Promise((resolve) => {
+			const srv = http.createServer((req, res) => {
+				res.writeHead(200, { "content-type": "application/json", "content-length": "80" });
+				res.write('{"providers":["claude"],"vers');
+				setTimeout(() => req.socket.destroy(), 20);
+			});
+			srv.listen(0, "127.0.0.1", () => resolve(srv));
+		});
+	}
+	const settles = (p, what) =>
+		Promise.race([
+			p,
+			new Promise((_, reject) =>
+				setTimeout(
+					() => reject(new Error(`${what} never settled — 'end' is not the only terminal event`)),
+					3000,
+				),
+			),
+		]);
+
+	it("probeProxyVersion resolves undefined (not a cc-proxy we can trust)", async () => {
+		const srv = await cutMidBody();
+		try {
+			const v = await settles(probeProxyVersion(srv.address().port), "probeProxyVersion");
+			assert.equal(v, undefined);
+		} finally {
+			srv.closeAllConnections();
+			srv.close();
+		}
+	});
+
+	it("requestShutdown resolves false (no acknowledged 200 arrived)", async () => {
+		const srv = await cutMidBody();
+		try {
+			const ok = await settles(requestShutdown(srv.address().port), "requestShutdown");
+			assert.equal(ok, false);
+		} finally {
+			srv.closeAllConnections();
+			srv.close();
+		}
 	});
 });

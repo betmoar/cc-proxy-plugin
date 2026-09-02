@@ -1,54 +1,58 @@
-# Audit state — cc-proxy-plugin — 2026-08-31
+# Audit state — cc-proxy-plugin — 2026-09-02
 
-- **Mode:** AUTONOMOUS (principal-architect-audit)
+- **Mode:** AUTONOMOUS (principal-architect-audit, run 2)
 - **Phase cursor:** DONE (P1→P4 complete, self-verified)
-- **Commit audited:** a6f05ab (branch `claude/principal-audit-autonomous-fd05gq`); remediation committed on the same branch.
+- **Commit audited:** f28fa27 (`main` after PR #53 / v0.8.2); remediation on branch `claude/principal-audit-autonomous-wgn520`.
 - **Iteration budget:** none set; Phase 2 ran to a dry pass.
+- **Previous run:** 2026-08-31 @ a6f05ab (findings F01–F05, PR #50). This run's ids are F06–F10.
 
 ## Verdict (one line)
 
-**Healthy — unusually so.** The load-bearing paths match their (measured, dated) comments, every named invariant has a locking test that runs green, and the three defects found were P2/P3, all fixed with tests in this pass. No architecture-root issues.
+**Healthy.** Forwarding, routing, credential isolation and the lifecycle handshake match their measured comments and every named invariant has a green lock. This run's defects sit at the product's edges — operator scripts and hook probes — and share one shape: a process that goes quiet (empty stdout, a promise that never settles, a wrong error label) instead of failing. No architecture-root issue.
 
 ## Baseline → delta
 
-- Baseline (before any change): `pnpm check` GREEN — lint clean; 469 tests / 467 pass / **0 fail** / 2 skipped (env-gated live-key tests).
-- Final (after remediation, guardrails, the CI-flake fix, and the lock-ceremony rounds — see AUDIT_LOG.md F04/F05 and the review rounds): `pnpm check` GREEN — **480 tests / 478 pass / 0 fail / 2 skipped**. Delta: +11 tests (2 fix locks in server.test.js, 2 coupling locks in couplings.test.js, 7 deterministic lock-seam tests in statusline.test.js), 0 regressions.
+- Baseline: `pnpm check` GREEN — 504 tests / 502 pass / 0 fail / 2 skipped (env-gated live-key tests), lint clean.
+- Final: `pnpm check` GREEN — **517 tests / 515 pass / 0 fail / 2 skipped**, lint clean. Delta +13 tests (6 `direct-run.test.js`, 2 `proxy-lifecycle.test.js`, 1 `models.test.js`, 4 `couplings.test.js`), 0 regressions. Evidence lines in AUDIT_LOG.md (P3/P4 entries dated 2026-09-02).
 
-## What this audit changed (all verified green; see AUDIT_LOG.md for evidence)
+## What this audit changed (all verified green; evidence in AUDIT_LOG.md)
 
 | Finding | Fix | Lock |
 |---|---|---|
-| F01 (P2) Host header dropped non-default port | `src/proxy.js` passes `url.host`; `providers.js` param renamed/doc'd | `server.test.js` "the Host header sent upstream carries a non-default port" (red before fix) |
-| F02 (P3) statusline lock stale-reclaim raced (check-then-act overwrite) | evolved across three rounds into `scripts/refresh-lock.js`: identity check by inode AND mtime (F05 — inode alone recycles on ext4/overlayfs), reclaimers serialized on a claim file, restore via `link()` so a contender on the emptied path is never clobbered | six deterministic seam tests in `statusline.test.js` (mutation-verified against the overwrite, the bare rename, the inode-only check, and the rename-back restore) |
-| F03 (P3) streaming 429-peek answered upstream death with a reset, not 502 | `src/proxy.js` 429 branch routes through `onUpstreamError()` | `server.test.js` "streaming 429 whose upstream dies mid-body yields a 502…" (red before fix) |
-| ⚠ coupling: static catalog ↔ ROUTES | — | `couplings.test.js` "every bare static-catalog id has a usable ROUTES entry" |
-| ⚠ coupling: /v1/models wire shape ↔ 3 docs | — | `couplings.test.js` "every published /v1/models field is named in…" (fields read from the ModelEntry typedef) |
+| F06 (P2) five operator scripts' direct-run guard compared a URL to a raw path → silent exit 0 on a path with a space, through a symlink, or on Windows | `scripts/direct-run.js` `isDirectRun()`; guard replaced in status/list-models/bench-speed/bench-grades/render-models | `direct-run.test.js` (5 unit + 1 e2e through a symlinked "with space" path, red before fix); `couplings.test.js` "no script spells the direct-run guard as a raw file:// comparison" |
+| F07 (P2) `probeProxyVersion`/`requestShutdown` never settled on a mid-body cut → SessionStart hook hung to its 10 s kill, stale proxy kept | both settle on `'close'` | `proxy-lifecycle.test.js` "lifecycle probes settle when the response is cut mid-body" ×2 (red before fix) |
+| F10 (P3) `/v1/models` legs labelled a mid-body abort "invalid response shape" | inner catches classify `AbortError` → `timeout` (4 legs) | `models.test.js` "collectModels reports a stall AFTER the headers as a timeout" (red before fix) |
+| F08 (P3) eight `file.js:NNN` comment citations, four stale | all rewritten to symbols | `couplings.test.js` "no comment cites a source file by line number" (tripped on its own draft comment → detection proven) |
+| F09 (P3) docs recommended `anthropic/claude-opus-4` as the OpenRouter example; `.env.example` listed 2/6 `DEFAULT_BACKEND` values | README:69, `.env.example`, SKILL.md rewritten | `couplings.test.js` "no reader-facing doc offers an anthropic/ id…" and "`.env.example`'s DEFAULT_BACKEND comment names every provider id" (both mutation-verified red, then restored) |
 
-CLAUDE.md couplings table + publishing-contract paragraph updated; CHANGELOG gains a `[0.8.1] — unreleased` section.
+Context transfer: CLAUDE.md gained three couplings rows, an extension to the `buildProviders()` row, and one Traps bullet; CHANGELOG gained `[0.8.3] — unreleased`. Version deliberately NOT bumped (release decision; the tag gate enforces it).
 
-## Confirmed-sound (checked, no finding — where NOT to spend successor effort)
+## Registered on GitHub (unknowns that outlive this run)
 
-- Streaming client-abort teardown: 60 timed mid-stream aborts against the real server, zero unhandled errors (scratchpad probe, logged P2 entry).
-- Log-forging defenses (logSafe/requestIdOf/vendorRequestIdOf), credential isolation (applyAuth drops both inbound credential headers off-oauth), haiku pin on the stripped tail, selector/variant strips, dedupByIdentity, hooks lifecycle (stale-version replace, ordered compare), render-html isolation, release gate, slash-command bodies, wire-shape docs (in sync).
+- **#54** (question) — Windows: the F06 class is fixed by construction but unmeasured there; five remaining unknowns each with what confirms it (`ps` in version-guard fails closed for pnpm, `lsof` in bench-speed, detached spawn, log rotation, POSIX command bodies). Supersedes the one-line backlog item 7.
+- **#55** (enhancement, question) — the SessionStart hook is silent on every failure state; the blocking unknown is how CC surfaces hook stdout/stderr on exit 0, with the measurement to run first.
+- **#45 comment** — the inbound request body is buffered without a cap; only a hazard off-loopback, so it rides with the LAN-exposure issue and constrains the `PROXY_AUTH_TOKEN` design ("401 before buffering").
 
-## Load-bearing map / implicit contracts
+## Confirmed-sound this run (where NOT to spend successor effort)
 
-Unchanged from recon — CLAUDE.md's own ranked table was verified accurate against the code and remains the canonical copy (this audit deliberately does not duplicate it; see IC1–IC9 in AUDIT_LOG.md P1/P2 entries for the implicit-contract list and their dispositions).
+All five `writeHead` sites pass `withoutRequestId`; `applyAuth` drops both inbound credential headers; `push()` grouping in `collectModels` (five shapes traced); `rankRoutes` native-first; `refresh-lock.js` ceremony (unchanged since PR #50 round 3); `version-guard.js` fail-closed on missing `ps`/git; `release-gate.mjs`; `render-html.mjs` HOME isolation; the 429/1302 gate; `spawnProxy` fd handling; the probe-vendors exit-code contract; bench-grades' atomic write.
 
 ## Open decisions
 
-- `// DECISION:` (SUPERSEDED) F02 initially shipped without a dedicated race test on the reasoning that any timing-based test passes against the defect. The author's rework superseded this the right way: `scripts/refresh-lock.js` gives the lock an in-process seam (`afterStat`/`afterRestat`/`afterRename` hooks) so each interleaving is forced DETERMINISTICALLY — six seam tests now pin the race, the inode-recycling fix (F05), and the three-contender ceremony, several of them mutation-verified. The original reasoning stands only for its narrow claim (statistical race tests prove nothing); the seam is what made a real race test possible.
-- `// DECISION:` docs/BACKLOG.md left untouched — its item numbering and evidence style are maintainer-curated; residual risks live here and in the PR body instead.
-- `// DECISION:` `pnpm probe:vendors` not run — real keys/quota (manual gate by design); routing/forwarding changes here touch neither vendor claims nor routing decisions (Host header + error shape only).
+- `// DECISION:` COMMIT gate cleared for THIS branch + issue creation on the task statement's explicit words. Never main, never a tag, never a merge. Rollback: `git push origin --delete claude/principal-audit-autonomous-wgn520`; close #54/#55 as not_planned.
+- `// DECISION:` `.operator/` charter tooling absent (unchanged); audit-skill evidence discipline applied.
+- `// DECISION:` `pnpm probe:vendors` not run — no keys here and no vendor claim touched.
+- `// DECISION:` docs/BACKLOG.md untouched (maintainer-curated numbering); #54 and #55 cite item numbers so the maintainer can annotate items 7 and the hook behaviour when they choose.
+- `// DECISION:` F08's lock scans `.js`/`.mjs` only. CLAUDE.md and AUDIT_*.md legitimately carry `file:line` (they are evidence records, not code comments) and are out of scope by design.
 
 ## Residual risk register (prioritized)
 
-1. **ROUTES rots silently** (BACKLOG item 12): hand-probed 2026-08-04/14; only `pnpm probe:vendors` re-measures. Run it before the next release touching routing.
-2. **LAN exposure under `PROXY_HOST` opt-out**: unauthenticated `/_shutdown` + credential-injecting proxy reachable off-host. Documented tradeoff; optional auth is BACKLOG item 17.
-3. **Remaining ⚠ rows**: `MODEL_GRADES` (gradeOf overlays user grades.json — documented) and `mediaBaseUrl` (one-sided edits; partially mitigated by models.test.js e2e).
-4. **Un-line-audited tails**: `scripts/bench-grades.js` (from ~line 120) and `scripts/probe-vendors.mjs` (from ~line 80) were skimmed, not line-audited (logged truncation). Both are manual tools with their own test files.
-5. **docs/models.html** is a committed artifact CI cannot rebuild — regenerate per the release procedure whenever routing/catalog/renderer changes.
+1. **ROUTES / catalog rot** (backlog 12, issue #37) — unchanged; only `pnpm probe:vendors` re-measures.
+2. **LAN exposure under `PROXY_HOST`** (issue #45, now also the uncapped body) — documented tradeoff, unfixed by design until auth lands.
+3. **Windows** (#54) — one class fixed blind; five unknowns listed.
+4. **Hook silence** (#55) — every start failure is invisible until ECONNREFUSED.
+5. **Un-re-read this run:** `scripts/render-models.js` 1–679 (prior run swept it), README/OPERATIONS/ARCHITECTURE grepped not line-read, most test files. Logged as truncation in AUDIT_LOG.md.
 
 ## What's left
 
-Nothing in-phase. Cursor DONE — a future run should pick a new surface (e.g., the bench-* tails, or a probe:vendors session with real keys), not redo this one.
+Nothing in-phase. Cursor DONE — a future run should pick a NEW surface (render-models.js body, a probe:vendors session with real keys, or the #54 Windows measurement), not redo this one.

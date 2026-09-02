@@ -235,7 +235,7 @@ const CASES = [
 		bodyMatch: /"type"\s*:\s*"tool_use"/,
 	},
 	{
-		// NEGATIVE claim behind the Gemini line (src/models.js:88-95, issue #42):
+		// NEGATIVE claim behind the Gemini line (the `google/*` block of MODEL_GRADES in src/models.js, issue #42):
 		// Google publishes no Anthropic Messages endpoint, so Gemini reaches this
 		// proxy ONLY through OpenRouter. Probed by hand 2026-08-23 (four paths,
 		// valid key, all 404 while :generateContent returned 200 the same minute)

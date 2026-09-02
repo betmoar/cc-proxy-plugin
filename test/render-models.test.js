@@ -438,7 +438,7 @@ describe("render-models against a live-shaped proxy", () => {
 		});
 		await new Promise((r) => server.listen(0, "127.0.0.1", r));
 		const { port } = server.address();
-		// Throwaway HOME, same pattern as test/models.test.js:415 and
+		// Throwaway HOME, same pattern as the grade-agreement subprocess in test/models.test.js and
 		// grades-refresh.test.js. The renderer grades through gradeOf(), which
 		// overlays ~/.claude/cc-proxy/grades.json at module load — so inheriting
 		// the real HOME made these assertions depend on whatever the developer

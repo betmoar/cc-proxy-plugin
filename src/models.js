@@ -618,7 +618,14 @@ async function fetchGlmModels(glm, timeoutMs) {
 		let body;
 		try {
 			body = await res.json();
-		} catch {
+		} catch (err) {
+			// The abort can land HERE — headers arrived, then the vendor stalled past
+			// modelsTimeoutMs while the body was being read. Reported as a schema
+			// problem, that sends the operator hunting for a vendor change when the
+			// cause is latency (measured: a stub that sent `{"data":[` and stopped
+			// came back "invalid response shape"). Classify before the outer catch
+			// would have, since this catch shadows it.
+			if (err?.name === "AbortError") return { error: "timeout" };
 			return { error: "invalid response shape" };
 		}
 		if (!body || !Array.isArray(body.data)) return { error: "invalid response shape" };
@@ -731,7 +738,14 @@ async function fetchQwenModels(qwen, timeoutMs) {
 		let body;
 		try {
 			body = await res.json();
-		} catch {
+		} catch (err) {
+			// The abort can land HERE — headers arrived, then the vendor stalled past
+			// modelsTimeoutMs while the body was being read. Reported as a schema
+			// problem, that sends the operator hunting for a vendor change when the
+			// cause is latency (measured: a stub that sent `{"data":[` and stopped
+			// came back "invalid response shape"). Classify before the outer catch
+			// would have, since this catch shadows it.
+			if (err?.name === "AbortError") return { error: "timeout" };
 			return { error: "invalid response shape" };
 		}
 		if (!body || !Array.isArray(body.data)) return { error: "invalid response shape" };
@@ -781,7 +795,14 @@ async function fetchOpenRouterModels(openrouter, timeoutMs) {
 		let body;
 		try {
 			body = await res.json();
-		} catch {
+		} catch (err) {
+			// The abort can land HERE — headers arrived, then the vendor stalled past
+			// modelsTimeoutMs while the body was being read. Reported as a schema
+			// problem, that sends the operator hunting for a vendor change when the
+			// cause is latency (measured: a stub that sent `{"data":[` and stopped
+			// came back "invalid response shape"). Classify before the outer catch
+			// would have, since this catch shadows it.
+			if (err?.name === "AbortError") return { error: "timeout" };
 			return { error: "invalid response shape" };
 		}
 		if (!body || !Array.isArray(body.data)) return { error: "invalid response shape" };
@@ -852,7 +873,14 @@ async function fetchDeepSeekModels(deepseek, timeoutMs) {
 		let body;
 		try {
 			body = await res.json();
-		} catch {
+		} catch (err) {
+			// The abort can land HERE — headers arrived, then the vendor stalled past
+			// modelsTimeoutMs while the body was being read. Reported as a schema
+			// problem, that sends the operator hunting for a vendor change when the
+			// cause is latency (measured: a stub that sent `{"data":[` and stopped
+			// came back "invalid response shape"). Classify before the outer catch
+			// would have, since this catch shadows it.
+			if (err?.name === "AbortError") return { error: "timeout" };
 			return { error: "invalid response shape" };
 		}
 		if (!body || !Array.isArray(body.data)) return { error: "invalid response shape" };

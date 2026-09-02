@@ -29,6 +29,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { loadEnv } from "../src/env.js";
+import { isDirectRun } from "./direct-run.js";
 
 loadEnv();
 
@@ -268,7 +269,7 @@ async function main() {
 	console.log("  and the task is trivial; capability comes from benchlm (bench-grades).");
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isDirectRun(import.meta.url)) {
 	main().catch((e) => {
 		console.error(`cc-proxy bench-speed failed: ${e.message}`);
 		process.exit(1);

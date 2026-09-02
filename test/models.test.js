@@ -538,7 +538,7 @@ describe("collectModels fan-out", () => {
 	// import), which is what the isolation below is for. Run in a
 	// SUBPROCESS with a throwaway HOME — an in-process env.HOME swap can't
 	// isolate this, the module cache already pinned whatever the first import
-	// read. Same pattern as test/grades-refresh.test.js:18-45.
+	// read. Same pattern as test/grades-refresh.test.js's subprocess-per-HOME header.
 	it("GLM entry coercion: drops no-id, converts numeric created, defaults display_name", async () => {
 		const home = fs.mkdtempSync(path.join(os.tmpdir(), "ccp-models-"));
 		try {
@@ -1495,5 +1495,42 @@ describe("live catalog legs (qwen + openrouter)", () => {
 			data.filter((m) => m.provider === "openrouter").map((m) => m.id),
 			["only/this"],
 		);
+	});
+});
+
+// The four live legs share one shape: an inner `try { await res.json() }` whose
+// catch returns "invalid response shape". An abort that lands while the BODY is
+// being read (headers arrived, then the vendor stalled past modelsTimeoutMs)
+// throws inside that inner try, so the AbortError was classified as a schema
+// problem — measured: `{"provider":"glm","message":"invalid response shape"}`
+// for a stub that sent `{"data":[` and stopped. The operator reading `_errors`
+// (or `/cc-proxy:models`'s `! glm: …` line) is sent looking for a vendor schema
+// change when the cause is latency. Same fix in all four legs; pinned on GLM.
+describe("collectModels reports a stall AFTER the headers as a timeout", () => {
+	it("GLM: headers + partial body then silence → _errors timeout, not invalid response shape", async () => {
+		const srv = http.createServer((req, res) => {
+			res.writeHead(200, { "content-type": "application/json" });
+			res.write('{"data":[');
+			// never ends; the abort must be what terminates this leg
+		});
+		await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+		try {
+			const providers = buildProviders({ GLM_API_KEY: "k" }, "claude");
+			providers.find((p) => p.id === "glm").baseUrl = `http://127.0.0.1:${srv.address().port}`;
+			const t0 = Date.now();
+			const { _errors } = await collectModels({
+				providers,
+				claudeModels: [],
+				qwenModels: [],
+				openRouterModels: [],
+				openRouterModelsExplicit: true,
+				modelsTimeoutMs: 100,
+			});
+			assert.deepEqual(_errors, [{ provider: "glm", message: "timeout" }]);
+			assert.ok(Date.now() - t0 < 2000, "the abort, not a hang, ended the leg");
+		} finally {
+			srv.closeAllConnections();
+			srv.close();
+		}
 	});
 });

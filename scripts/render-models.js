@@ -34,6 +34,7 @@
 import { loadEnv } from "../src/env.js";
 import { MODEL_GRADES, gradeOf } from "../src/models.js";
 import { buildProviders } from "../src/providers.js";
+import { isDirectRun } from "./direct-run.js";
 import {
 	CONTEXT_WINDOW,
 	DISPLAY,
@@ -702,7 +703,7 @@ async function main() {
 }
 
 // Only run when invoked directly, not when imported by tests.
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isDirectRun(import.meta.url)) {
 	main().catch((err) => {
 		process.stderr.write(`cc-proxy: unexpected error: ${err.message}\n`);
 		process.exit(1);

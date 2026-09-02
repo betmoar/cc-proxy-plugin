@@ -107,6 +107,16 @@ export function probeProxyVersion(port) {
 					} catch {}
 					resolve(undefined);
 				});
+				// A response that starts and is then cut off emits neither 'end' nor
+				// an uncaught 'error' — only 'aborted' and 'close' (measured: without
+				// this line the promise stayed pending against a stub that wrote the
+				// head plus half a body and destroyed the socket). The `timeout`
+				// option below is an INACTIVITY timer and never fires for a socket that
+				// is gone rather than idle. A wedged old proxy is exactly what this
+				// probe exists to detect, so it must settle on every terminal event;
+				// 'end' fires before 'close' on a complete response, so a good answer
+				// still wins (first resolve counts).
+				res.on("close", () => resolve(undefined));
 			},
 		);
 		req.on("timeout", () => req.destroy());
@@ -127,6 +137,10 @@ export function requestShutdown(port) {
 			(res) => {
 				res.resume();
 				res.on("end", () => resolve(res.statusCode === 200));
+				// Same shape as probeProxyVersion: a mid-body cut has no 'end'. A
+				// shutdown that was not acknowledged to completion reads as false, and
+				// the caller's waitGone() poll decides what actually happened to the port.
+				res.on("close", () => resolve(false));
 			},
 		);
 		req.on("timeout", () => req.destroy());
