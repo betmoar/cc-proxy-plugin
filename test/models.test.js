@@ -1557,4 +1557,49 @@ describe("collectModels reports a stall AFTER the headers as a timeout", () => {
 			}
 		});
 	}
+
+	// The sibling case the abort fix does NOT cover, and must not pretend to: a
+	// vendor that RESETS the socket after the headers (its own idle timeout
+	// firing before ours) throws `TypeError: terminated` / cause "other side
+	// closed" here — measured 2026-09-02 — not an AbortError. That is a
+	// connection failure wearing the schema error's label. The public message
+	// stays "invalid response shape" (it is pinned API surface, and the leg
+	// genuinely could not read a shape), but the inner catch used to log NOTHING
+	// while the outer catch logs err.message, so the operator got the misleading
+	// label with no trail at all. The log line is the fix; this pins it.
+	it("a socket reset mid-body is logged with its real cause, not silently relabelled", async () => {
+		const srv = http.createServer((req, res) => {
+			res.writeHead(200, { "content-type": "application/json" });
+			res.write('{"data":[');
+			setTimeout(() => req.socket.destroy(), 20);
+		});
+		await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+		const lines = [];
+		const realError = console.error;
+		console.error = (...a) => lines.push(a.join(" "));
+		try {
+			const providers = buildProviders({ GLM_API_KEY: "k" }, "claude");
+			providers.find((p) => p.id === "glm").baseUrl = `http://127.0.0.1:${srv.address().port}`;
+			const { _errors } = await collectModels({
+				providers,
+				claudeModels: [],
+				qwenModels: [],
+				openRouterModels: [],
+				openRouterModelsExplicit: true,
+				// Generous: the socket reset, not the abort, must be what ends this.
+				modelsTimeoutMs: 5000,
+			});
+			assert.deepEqual(_errors, [{ provider: "glm", message: "invalid response shape" }]);
+			const logged = lines.find((l) => l.includes("[models] glm body read failed"));
+			assert.ok(
+				logged,
+				`nothing logged the real cause — the operator sees "invalid response shape" for a socket reset with no trail. Lines: ${JSON.stringify(lines)}`,
+			);
+			assert.match(logged, /terminated|closed/);
+		} finally {
+			console.error = realError;
+			srv.closeAllConnections();
+			srv.close();
+		}
+	});
 });

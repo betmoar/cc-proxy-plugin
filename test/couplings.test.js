@@ -515,6 +515,34 @@ describe("cross-file couplings", () => {
 		);
 	});
 
+	// COUPLING (the third spelling): the DECODED-but-not-realpath'd form,
+	//   process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+	// which the 0.8.3 audit classified as already-correct and left in place at
+	// three sites. It survives a space/%/# and Windows but NOT a symlink: Node
+	// resolves the main module's import.meta.url to the REALPATH while argv[1]
+	// keeps the shell's spelling. Measured 2026-09-02 through a symlinked
+	// checkout — `node <link>/scripts/version-guard.js` exited 0 with the guard
+	// never running (direct: exit 1), and release-gate.mjs the same (direct:
+	// exit 2). Those two are the release procedure's only automated refusals, so
+	// the failure mode was "the gate silently agrees with you".
+	it("no script spells the direct-run guard as a decoded comparison without realpath", () => {
+		const decoded =
+			/(?:resolve\(process\.argv\[1\]\)\s*===?\s*fileURLToPath\(import\.meta\.url\)|import\.meta\.url\s*===?\s*pathToFileURL\(\s*resolve\(process\.argv\[1\]\)\s*\)\.href)/;
+		const offenders = [];
+		for (const dir of ["src", "scripts", "hooks", "bin"]) {
+			for (const name of fs.readdirSync(path.join(root, dir))) {
+				if (!/\.(js|mjs)$/.test(name)) continue;
+				const rel = `${dir}/${name}`;
+				if (decoded.test(read(rel))) offenders.push(rel);
+			}
+		}
+		assert.deepEqual(
+			offenders,
+			[],
+			`${offenders.join(", ")} decode but do not realpath — false through a symlinked checkout, so main() never runs and the script exits 0 silently. Use isDirectRun(import.meta.url).`,
+		);
+	});
+
 	// COUPLING (the other half of the guard): forbidding the raw spelling does not
 	// make the CALL right. `isDirectRun()` with no argument reads process.argv[1]
 	// for BOTH sides, so it is true for every module in the process — main() then

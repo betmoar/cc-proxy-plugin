@@ -94,7 +94,7 @@ there if you forget. The ones marked ⚠ have no test and drift silently.
 | `PROXY_PORT` default | `config.js`, `proxy-lifecycle.js`, `statusline.js`, `status.js` |
 | `PROXY_READY_TIMEOUT_MS` | `hooks/hooks.json` `timeout: 10` — ≥10000 ms never completes |
 | `buildProviders()` | `PROVIDER_IDS` + `CONTRIBUTING.md` 1b — else the raw lens leaks upstream. Also the `DEFAULT_BACKEND` comment in `.env.example` (locked by `couplings.test.js` as of 0.8.3 — it read the id list off `PROVIDER_IDS`) |
-| a `scripts/*.js` entry point | its `main()` guard is `isDirectRun(import.meta.url)` from `scripts/direct-run.js`, never a raw `import.meta.url` vs `file://` string compare — that spelling is false on a path with a space, through a symlink, and on every Windows path, and the script then exits 0 with EMPTY stdout (measured 0.8.3). `couplings.test.js` forbids the raw form AND requires the argument to be `import.meta.url` — a bare `isDirectRun()` compares `argv[1]` to itself, so it is true for every module and `main()` runs on import |
+| a `scripts/*.js` entry point | its `main()` guard is `isDirectRun(import.meta.url)` from `scripts/direct-run.js`, never a raw `import.meta.url` vs `file://` string compare — that spelling is false on a path with a space, through a symlink, and on every Windows path, and the script then exits 0 with EMPTY stdout (measured 0.8.3). `couplings.test.js` forbids the raw form AND requires the argument to be `import.meta.url` — a bare `isDirectRun()` compares `argv[1]` to itself, so it is true for every module and `main()` runs on import. A DECODED comparison is not enough either: it is still false through a symlinked checkout, which silently disarmed `version-guard.js` and `release-gate.mjs` (measured 0.8.3 — exit 0, guard never ran). Three locks, one per spelling |
 | an `await res.json()` catch in a `src/models.js` live leg | classify `AbortError` as `timeout` BEFORE returning `invalid response shape`, in all four legs. Only the glm and deepseek legs can be tested through `_errors` — openrouter and qwen swallow a leg error and substitute the static catalog, so an assertion there passes with the fix reverted. `couplings.test.js` covers those two structurally (0.8.3) |
 | a comment that cites `file.js:NNN` | rewrite it to the SYMBOL. Line numbers rot on the next edit above them and nothing can execute them; four of eight were already wrong when `couplings.test.js` started rejecting the pattern (0.8.3) |
 | an OpenRouter example id in a doc | never `anthropic/…` — discovery drops those ids on purpose (invariants 3/4: a resold Claude route bills what OAuth covers). `couplings.test.js` scans README, `.env.example`, SKILL.md, OPERATIONS, ARCHITECTURE, CONTRIBUTING |
@@ -234,7 +234,12 @@ prose explaining what a field means is still yours to keep true.
   or `/cc-proxy:models` is silent, BEFORE "the proxy is down". The old spelling
   compared `import.meta.url` to a raw `file://` + path string, which is false on
   any path with a space/`%`/`#`, through a symlink (the main module's URL is the
-  realpath, `argv[1]` is not), and on Windows. Use `isDirectRun()`; the lifecycle
+  realpath, `argv[1]` is not), and on Windows. DECODING the path fixes the first
+  and third and NOT the symlink — the 0.8.3 audit fixed five scripts and left
+  three "already-correct" decoded ones, two of which (`version-guard.js`,
+  `release-gate.mjs`) were the release procedure's only automated refusals and
+  exited 0 without running through a symlinked checkout. Use `isDirectRun()`,
+  which realpaths both sides; the lifecycle
   probes had the sibling shape (settle only on `'end'`, so a mid-body cut hung
   the hook to its 10 s kill) — a process that goes quiet is a defect, not a hint.
 - **`/v1/models` is synthesized**, but `/v1/models/<id>` is forwarded. Uncurated

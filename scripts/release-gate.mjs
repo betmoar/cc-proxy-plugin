@@ -21,6 +21,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isDirectRun } from "./direct-run.js";
 
 const TAG_RE = /^v(\d+\.\d+\.\d+)$/;
 // Newest-first list of semver headings, e.g. "## [0.3.3] — 2026-07-09".
@@ -136,7 +137,11 @@ function main(argv) {
 	return 0;
 }
 
-// Only run the CLI when invoked directly, not when imported by tests.
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+// Only run the CLI when invoked directly, not when imported by tests. The
+// decoded comparison this used to spell inline survived a space/%/# and Windows
+// but NOT a symlink (import.meta.url is the main module's REALPATH; argv[1] is
+// the shell's spelling) — measured 2026-09-02: through a symlinked checkout this
+// exited 0 having never run, where the direct invocation exits 2.
+if (isDirectRun(import.meta.url)) {
 	process.exit(main(process.argv));
 }
