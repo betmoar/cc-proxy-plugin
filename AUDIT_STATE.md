@@ -13,15 +13,16 @@
 ## Baseline → delta
 
 - Baseline: `pnpm check` GREEN — 504 tests / 502 pass / 0 fail / 2 skipped (env-gated live-key tests), lint clean.
-- Final: `pnpm check` GREEN — **517 tests / 515 pass / 0 fail / 2 skipped**, lint clean. Delta +13 tests (6 `direct-run.test.js`, 2 `proxy-lifecycle.test.js`, 1 `models.test.js`, 4 `couplings.test.js`), 0 regressions. Evidence lines in AUDIT_LOG.md (P3/P4 entries dated 2026-09-02).
+- Final (audit commits): `pnpm check` GREEN — 517 tests / 515 pass / 0 fail / 2 skipped. Delta +13 tests (6 `direct-run.test.js`, 2 `proxy-lifecycle.test.js`, 1 `models.test.js`, 4 `couplings.test.js`), 0 regressions.
+- Final (PR #56 head 2810baa, after the maintainer's review-panel commits 89b22ac + 2810baa and the 0.8.3 release bump): `pnpm check` GREEN — **522 tests / 520 pass / 0 fail / 2 skipped**, lint clean. Evidence lines in AUDIT_LOG.md (P3/P4 and CORRECTION entries dated 2026-09-02).
 
 ## What this audit changed (all verified green; evidence in AUDIT_LOG.md)
 
 | Finding | Fix | Lock |
 |---|---|---|
-| F06 (P2) five operator scripts' direct-run guard compared a URL to a raw path → silent exit 0 on a path with a space, through a symlink, or on Windows | `scripts/direct-run.js` `isDirectRun()`; guard replaced in status/list-models/bench-speed/bench-grades/render-models | `direct-run.test.js` (5 unit + 1 e2e through a symlinked "with space" path, red before fix); `couplings.test.js` "no script spells the direct-run guard as a raw file:// comparison" |
+| F06 (P2) five operator scripts' direct-run guard compared a URL to a raw path → silent exit 0 on a path with a space, through a symlink, or on Windows. **CORRECTED by the maintainer (2810baa):** the three scripts this audit called "already correct" (probe-vendors, release-gate, version-guard) decoded the path but did not realpath it, so both RELEASE GUARDS silently disarmed through a symlinked checkout — measured. All eight now use `isDirectRun()` | `scripts/direct-run.js` `isDirectRun()`; guard replaced in all eight scripts (five by the audit, three by 2810baa) | `direct-run.test.js` (5 unit + 1 e2e through a symlinked "with space" path, red before fix); `couplings.test.js` "no script spells the direct-run guard as a raw file:// comparison" |
 | F07 (P2) `probeProxyVersion`/`requestShutdown` never settled on a mid-body cut → SessionStart hook hung to its 10 s kill, stale proxy kept | both settle on `'close'` | `proxy-lifecycle.test.js` "lifecycle probes settle when the response is cut mid-body" ×2 (red before fix) |
-| F10 (P3) `/v1/models` legs labelled a mid-body abort "invalid response shape" | inner catches classify `AbortError` → `timeout` (4 legs) | `models.test.js` "collectModels reports a stall AFTER the headers as a timeout" (red before fix) |
+| F10 (P3) `/v1/models` legs labelled a mid-body abort "invalid response shape" | inner catches classify `AbortError` → `timeout` (4 legs); **89b22ac/2810baa added** a deepseek behavioural case, a couplings lock over all four legs, and a `[models] <provider> body read failed` log line for a socket RESET (`TypeError: terminated`, not AbortError — measured) | `models.test.js` "collectModels reports a stall AFTER the headers as a timeout" (red before fix) + the maintainer's deepseek case and leg lock |
 | F08 (P3) eight `file.js:NNN` comment citations, four stale | all rewritten to symbols | `couplings.test.js` "no comment cites a source file by line number" (tripped on its own draft comment → detection proven) |
 | F09 (P3) docs recommended `anthropic/claude-opus-4` as the OpenRouter example; `.env.example` listed 2/6 `DEFAULT_BACKEND` values | README:69, `.env.example`, SKILL.md rewritten | `couplings.test.js` "no reader-facing doc offers an anthropic/ id…" and "`.env.example`'s DEFAULT_BACKEND comment names every provider id" (both mutation-verified red, then restored) |
 
@@ -35,7 +36,7 @@ Context transfer: CLAUDE.md gained three couplings rows, an extension to the `bu
 
 ## Confirmed-sound this run (where NOT to spend successor effort)
 
-All five `writeHead` sites pass `withoutRequestId`; `applyAuth` drops both inbound credential headers; `push()` grouping in `collectModels` (five shapes traced); `rankRoutes` native-first; `refresh-lock.js` ceremony (unchanged since PR #50 round 3); `version-guard.js` fail-closed on missing `ps`/git; `release-gate.mjs`; `render-html.mjs` HOME isolation; the 429/1302 gate; `spawnProxy` fd handling; the probe-vendors exit-code contract; bench-grades' atomic write.
+All five `writeHead` sites pass `withoutRequestId`; `applyAuth` drops both inbound credential headers; `push()` grouping in `collectModels` (five shapes traced); `rankRoutes` native-first; `refresh-lock.js` ceremony (unchanged since PR #50 round 3); `version-guard.js` fail-closed on missing `ps`/git (but NOT symlink-safe as an entry point until 2810baa — see the F06 correction); `release-gate.mjs`; `render-html.mjs` HOME isolation; the 429/1302 gate; `spawnProxy` fd handling; the probe-vendors exit-code contract; bench-grades' atomic write.
 
 ## Open decisions
 
@@ -43,6 +44,7 @@ All five `writeHead` sites pass `withoutRequestId`; `applyAuth` drops both inbou
 - `// DECISION:` `.operator/` charter tooling absent (unchanged); audit-skill evidence discipline applied.
 - `// DECISION:` `pnpm probe:vendors` not run — no keys here and no vendor claim touched.
 - `// DECISION:` docs/BACKLOG.md untouched (maintainer-curated numbering); #54 and #55 cite item numbers so the maintainer can annotate items 7 and the hook behaviour when they choose.
+- `// DECISION:` (REVERSED by measurement, 2810baa) "three sibling scripts already use the correct decoded comparison" — decoded is not realpath'd; a symlinked checkout disarmed both release guards. The audit's own `isDirectRun` JSDoc named the symlink mechanism and the audit did not re-check it at the three sites it exempted. Recorded so the next reader does not repeat the exemption.
 - `// DECISION:` F08's lock scans `.js`/`.mjs` only. CLAUDE.md and AUDIT_*.md legitimately carry `file:line` (they are evidence records, not code comments) and are out of scope by design.
 
 ## Residual risk register (prioritized)
