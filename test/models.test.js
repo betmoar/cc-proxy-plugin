@@ -1505,32 +1505,56 @@ describe("live catalog legs (qwen + openrouter)", () => {
 // problem — measured: `{"provider":"glm","message":"invalid response shape"}`
 // for a stub that sent `{"data":[` and stopped. The operator reading `_errors`
 // (or `/cc-proxy:models`'s `! glm: …` line) is sent looking for a vendor schema
-// change when the cause is latency. Same fix in all four legs; pinned on GLM.
+// change when the cause is latency. Same fix in all four legs.
+//
+// Only TWO of the four can be pinned through `_errors`, and that is a property
+// of collectModels, not a gap: the OpenRouter and Qwen legs SWALLOW a leg error
+// and substitute the static catalog (`live.entries ? … : config.<x>Models`), so
+// their `_errors` is empty for every failure mode including this one — measured
+// against the same stub: glm/deepseek report `timeout`, openrouter/qwen report
+// `[]`. Asserting on `_errors` for those two would pass with the fix reverted,
+// which is worse than not asserting. They are covered by the shared shape plus
+// the couplings-level rule that all four legs stay identical.
 describe("collectModels reports a stall AFTER the headers as a timeout", () => {
-	it("GLM: headers + partial body then silence → _errors timeout, not invalid response shape", async () => {
-		const srv = http.createServer((req, res) => {
-			res.writeHead(200, { "content-type": "application/json" });
-			res.write('{"data":[');
-			// never ends; the abort must be what terminates this leg
-		});
-		await new Promise((r) => srv.listen(0, "127.0.0.1", r));
-		try {
-			const providers = buildProviders({ GLM_API_KEY: "k" }, "claude");
-			providers.find((p) => p.id === "glm").baseUrl = `http://127.0.0.1:${srv.address().port}`;
-			const t0 = Date.now();
-			const { _errors } = await collectModels({
-				providers,
-				claudeModels: [],
-				qwenModels: [],
-				openRouterModels: [],
-				openRouterModelsExplicit: true,
-				modelsTimeoutMs: 100,
+	/** A backend that sends 200 + headers + half a JSON body and then goes quiet. */
+	function stall() {
+		return new Promise((resolve) => {
+			const srv = http.createServer((req, res) => {
+				res.writeHead(200, { "content-type": "application/json" });
+				res.write('{"data":[');
+				// never ends; the abort must be what terminates this leg
 			});
-			assert.deepEqual(_errors, [{ provider: "glm", message: "timeout" }]);
-			assert.ok(Date.now() - t0 < 2000, "the abort, not a hang, ended the leg");
-		} finally {
-			srv.closeAllConnections();
-			srv.close();
-		}
-	});
+			srv.listen(0, "127.0.0.1", () => resolve(srv));
+		});
+	}
+
+	// DeepSeek derives its models root by stripping `/anthropic` off the provider
+	// baseUrl, so pointing baseUrl straight at the stub is what makes it GET
+	// `${stub}/models` — same wiring wireConfig() uses for the other DeepSeek cases.
+	for (const [id, env] of [
+		["glm", { GLM_API_KEY: "k" }],
+		["deepseek", { DEEPSEEK_API_KEY: "k" }],
+	]) {
+		it(`${id}: headers + partial body then silence → _errors timeout, not invalid response shape`, async () => {
+			const srv = await stall();
+			try {
+				const providers = buildProviders(env, "claude");
+				providers.find((p) => p.id === id).baseUrl = `http://127.0.0.1:${srv.address().port}`;
+				const t0 = Date.now();
+				const { _errors } = await collectModels({
+					providers,
+					claudeModels: [],
+					qwenModels: [],
+					openRouterModels: [],
+					openRouterModelsExplicit: true,
+					modelsTimeoutMs: 100,
+				});
+				assert.deepEqual(_errors, [{ provider: id, message: "timeout" }]);
+				assert.ok(Date.now() - t0 < 2000, "the abort, not a hang, ended the leg");
+			} finally {
+				srv.closeAllConnections();
+				srv.close();
+			}
+		});
+	}
 });

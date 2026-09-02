@@ -515,6 +515,73 @@ describe("cross-file couplings", () => {
 		);
 	});
 
+	// COUPLING (the other half of the guard): forbidding the raw spelling does not
+	// make the CALL right. `isDirectRun()` with no argument reads process.argv[1]
+	// for BOTH sides, so it is true for every module in the process — main() then
+	// runs on import and the suite hangs or double-prints — and any other argument
+	// is a silent always-false, the exact no-op class this PR removed. The five
+	// call sites were hand-edited one by one, so a slip in one of the four without
+	// an end-to-end test (only status.js has one) had no other detector.
+	it("every direct-run guard passes import.meta.url", () => {
+		const call = /isDirectRun\(([^)]*)\)/g;
+		const offenders = [];
+		for (const dir of ["src", "scripts", "hooks", "bin"]) {
+			for (const name of fs.readdirSync(path.join(root, dir))) {
+				if (!/\.(js|mjs)$/.test(name)) continue;
+				const rel = `${dir}/${name}`;
+				if (rel === "scripts/direct-run.js") continue; // the definition itself
+				for (const m of read(rel).matchAll(call)) {
+					const arg = m[1].split(",")[0].trim();
+					if (arg !== "import.meta.url") offenders.push(`${rel} → isDirectRun(${m[1]})`);
+				}
+			}
+		}
+		assert.deepEqual(
+			offenders,
+			[],
+			`isDirectRun must be called with import.meta.url — no argument compares argv[1] to itself (true for every module, so main() runs on import):\n  ${offenders.join("\n  ")}`,
+		);
+	});
+
+	// COUPLING: the four live catalog legs in src/models.js are hand-duplicated,
+	// and each one's inner `try { await res.json() }` catch must classify an
+	// AbortError as "timeout" before falling through to "invalid response shape" —
+	// otherwise a vendor that stalls AFTER the headers is reported as a schema
+	// change and the operator hunts the wrong thing. Only glm and deepseek can be
+	// pinned behaviourally (test/models.test.js "collectModels reports a stall
+	// AFTER the headers as a timeout"): the openrouter and qwen legs swallow their
+	// error and substitute the static catalog, so `_errors` is empty for them by
+	// design. This lock is what covers those two.
+	it("every live catalog leg classifies a mid-body abort as a timeout", async () => {
+		const src = read("src/models.js");
+		const legs = [...src.matchAll(/async function (fetch\w+Models)\(/g)].map((m) => m[1]);
+		assert.ok(legs.length >= 4, `expected the four live legs, found ${legs.join(", ")}`);
+		const missing = legs.filter((name) => {
+			const at = src.indexOf(`async function ${name}(`);
+			const next = legs
+				.map((n) => src.indexOf(`async function ${n}(`))
+				.filter((i) => i > at)
+				.sort((a, b) => a - b)[0];
+			const body = src.slice(at, next === undefined ? src.length : next);
+			const inner = body.indexOf("await res.json()");
+			if (inner === -1) return false; // no body-read leg, nothing to classify
+			// Match the RETURN STATEMENTS, not the words: every one of these legs
+			// carries a comment quoting "invalid response shape", so a prose search
+			// finds the comment above the check and reports all four as broken (it
+			// did). The timeout return must come first in the catch that FOLLOWS the
+			// read — the outer catch never sees a throw the inner one swallowed.
+			const after = body.slice(inner);
+			const shape = after.search(/return \{ error: "invalid response shape" \}/);
+			if (shape === -1) return false;
+			return !/return \{ error: "timeout" \}/.test(after.slice(0, shape));
+		});
+		assert.deepEqual(
+			missing,
+			[],
+			`${missing.join(", ")}: the catch around await res.json() returns "invalid response shape" without first classifying an AbortError as "timeout" — a vendor stalling after the headers is then reported as a schema change`,
+		);
+	});
+
 	// COUPLING: a comment that cites source by LINE NUMBER is a claim that rots
 	// on the next edit above it, and nothing else in this repo can execute it
 	// (doctests pin values, not locations). Audited 2026-09-02: eight such
