@@ -52,8 +52,7 @@
 // Fail-safe: an unknown client needs --no-git-tag-version.
 
 import { execSync } from "node:child_process";
-import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { isDirectRun } from "./direct-run.js";
 
 function sh(cmd) {
 	return execSync(cmd, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
@@ -120,10 +119,14 @@ export function guard({ branch, client, command, tagEnv }) {
 	};
 }
 
-const isDirectRun =
-	process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
-
-if (isDirectRun) {
+// The decoded comparison this used to spell inline handles a space/%/# and
+// Windows, but NOT a symlink: Node resolves the main module's import.meta.url to
+// the REALPATH while argv[1] keeps the shell's spelling. Measured 2026-09-02
+// through a symlinked checkout — `node <link>/scripts/version-guard.js` exited 0
+// with the guard NEVER RUNNING, where the direct invocation exits 1. A guard
+// that disarms itself on the machines most likely to have a symlinked checkout
+// is worse than no guard, because the release procedure trusts it.
+if (isDirectRun(import.meta.url)) {
 	// `--show-current` prints EMPTY on a detached HEAD (not the literal "HEAD"
 	// that `rev-parse --abbrev-ref` would give), so both the detached case and
 	// the throw below land on "" — non-main, guarded. Fail-closed either way;

@@ -618,7 +618,24 @@ async function fetchGlmModels(glm, timeoutMs) {
 		let body;
 		try {
 			body = await res.json();
-		} catch {
+		} catch (err) {
+			// The abort can land HERE — headers arrived, then the vendor stalled past
+			// modelsTimeoutMs while the body was being read. Reported as a schema
+			// problem, that sends the operator hunting for a vendor change when the
+			// cause is latency (measured: a stub that sent `{"data":[` and stopped
+			// came back "invalid response shape"). Classify before the outer catch
+			// would have, since this catch shadows it.
+			if (err?.name === "AbortError") return { error: "timeout" };
+			// Not an abort, and not necessarily malformed JSON either: a vendor that
+			// resets the socket after the headers (its own idle timeout firing before
+			// ours) throws `TypeError: terminated` here, cause "other side closed"
+			// (measured 2026-09-02). That is a CONNECTION failure wearing the schema
+			// error's label — and this catch, unlike the outer one, logged nothing at
+			// all, so the operator got "invalid response shape" with no trail to the
+			// real cause. The public message stays pinned; the log carries the truth.
+			console.error(
+				`[models] glm body read failed: ${err?.message || err}${err?.cause?.message ? ` (${err.cause.message})` : ""}`,
+			);
 			return { error: "invalid response shape" };
 		}
 		if (!body || !Array.isArray(body.data)) return { error: "invalid response shape" };
@@ -731,7 +748,24 @@ async function fetchQwenModels(qwen, timeoutMs) {
 		let body;
 		try {
 			body = await res.json();
-		} catch {
+		} catch (err) {
+			// The abort can land HERE — headers arrived, then the vendor stalled past
+			// modelsTimeoutMs while the body was being read. Reported as a schema
+			// problem, that sends the operator hunting for a vendor change when the
+			// cause is latency (measured: a stub that sent `{"data":[` and stopped
+			// came back "invalid response shape"). Classify before the outer catch
+			// would have, since this catch shadows it.
+			if (err?.name === "AbortError") return { error: "timeout" };
+			// Not an abort, and not necessarily malformed JSON either: a vendor that
+			// resets the socket after the headers (its own idle timeout firing before
+			// ours) throws `TypeError: terminated` here, cause "other side closed"
+			// (measured 2026-09-02). That is a CONNECTION failure wearing the schema
+			// error's label — and this catch, unlike the outer one, logged nothing at
+			// all, so the operator got "invalid response shape" with no trail to the
+			// real cause. The public message stays pinned; the log carries the truth.
+			console.error(
+				`[models] qwen body read failed: ${err?.message || err}${err?.cause?.message ? ` (${err.cause.message})` : ""}`,
+			);
 			return { error: "invalid response shape" };
 		}
 		if (!body || !Array.isArray(body.data)) return { error: "invalid response shape" };
@@ -781,7 +815,24 @@ async function fetchOpenRouterModels(openrouter, timeoutMs) {
 		let body;
 		try {
 			body = await res.json();
-		} catch {
+		} catch (err) {
+			// The abort can land HERE — headers arrived, then the vendor stalled past
+			// modelsTimeoutMs while the body was being read. Reported as a schema
+			// problem, that sends the operator hunting for a vendor change when the
+			// cause is latency (measured: a stub that sent `{"data":[` and stopped
+			// came back "invalid response shape"). Classify before the outer catch
+			// would have, since this catch shadows it.
+			if (err?.name === "AbortError") return { error: "timeout" };
+			// Not an abort, and not necessarily malformed JSON either: a vendor that
+			// resets the socket after the headers (its own idle timeout firing before
+			// ours) throws `TypeError: terminated` here, cause "other side closed"
+			// (measured 2026-09-02). That is a CONNECTION failure wearing the schema
+			// error's label — and this catch, unlike the outer one, logged nothing at
+			// all, so the operator got "invalid response shape" with no trail to the
+			// real cause. The public message stays pinned; the log carries the truth.
+			console.error(
+				`[models] openrouter body read failed: ${err?.message || err}${err?.cause?.message ? ` (${err.cause.message})` : ""}`,
+			);
 			return { error: "invalid response shape" };
 		}
 		if (!body || !Array.isArray(body.data)) return { error: "invalid response shape" };
@@ -852,7 +903,24 @@ async function fetchDeepSeekModels(deepseek, timeoutMs) {
 		let body;
 		try {
 			body = await res.json();
-		} catch {
+		} catch (err) {
+			// The abort can land HERE — headers arrived, then the vendor stalled past
+			// modelsTimeoutMs while the body was being read. Reported as a schema
+			// problem, that sends the operator hunting for a vendor change when the
+			// cause is latency (measured: a stub that sent `{"data":[` and stopped
+			// came back "invalid response shape"). Classify before the outer catch
+			// would have, since this catch shadows it.
+			if (err?.name === "AbortError") return { error: "timeout" };
+			// Not an abort, and not necessarily malformed JSON either: a vendor that
+			// resets the socket after the headers (its own idle timeout firing before
+			// ours) throws `TypeError: terminated` here, cause "other side closed"
+			// (measured 2026-09-02). That is a CONNECTION failure wearing the schema
+			// error's label — and this catch, unlike the outer one, logged nothing at
+			// all, so the operator got "invalid response shape" with no trail to the
+			// real cause. The public message stays pinned; the log carries the truth.
+			console.error(
+				`[models] deepseek body read failed: ${err?.message || err}${err?.cause?.message ? ` (${err.cause.message})` : ""}`,
+			);
 			return { error: "invalid response shape" };
 		}
 		if (!body || !Array.isArray(body.data)) return { error: "invalid response shape" };

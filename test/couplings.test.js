@@ -219,8 +219,8 @@ describe("cross-file couplings", () => {
 	// and would appear nowhere on Qwen's without the tag. The reverse is legitimate
 	// — `glm-5.2` is in the display set but NOT in the predicate. Adding it there
 	// would change the PREDICATES without changing where anything routes, because
-	// `resolve()` consults `rankRoutes()` (router.js:90) BEFORE the predicate scan
-	// (router.js:96), and `ROUTES["glm-5.2"]` lists glm first. Measured, with
+	// `resolve()` consults `rankRoutes()` BEFORE the predicate scan (both in
+	// src/router.js resolve()), and `ROUTES["glm-5.2"]` lists glm first. Measured, with
 	// `glm-5.2` added to the set and both keys present:
 	//
 	//   glm.match  true → false      qwen.match  false → true
@@ -484,5 +484,215 @@ describe("cross-file couplings", () => {
 			assert.ok(readme.includes(key), `${key} is in .env.example but missing from README.md`);
 			assert.ok(ops.includes(key), `${key} is in .env.example but missing from docs/OPERATIONS.md`);
 		}
+	});
+	// COUPLING: every scripts/*.js entry point runs its main() behind a guard,
+	// and the guard must be the shared isDirectRun() — never the raw spelling
+	// `import.meta.url === \`file://${process.argv[1]}\``, which compares a URL
+	// to a path and is FALSE for any path with a space/%/#, any symlink, and
+	// every Windows path (measured: status.js and list-models.js printed nothing
+	// and exited 0 from a directory named "with space"). Three scripts had the
+	// decoded form and five the raw one; the class is forbidden here so the sixth
+	// cannot come back. Behaviour is pinned in test/direct-run.test.js.
+	it("no script spells the direct-run guard as a raw file:// comparison", () => {
+		// Every spelling of the class, not the one instance that shipped: template
+		// literal, double- or single-quoted `"file://" + …` concatenation, and
+		// either operand order. (Review on PR #56: the first cut matched only the
+		// backtick form, so the quoted form would have passed the lock.)
+		const raw =
+			/import\.meta\.url\s*===?\s*[`"']file:\/\/|[`"']file:\/\/[^`"'\n]*[`"'](?:\s*\+[^\n=]*)?\s*===?\s*import\.meta\.url/;
+		const offenders = [];
+		for (const dir of ["src", "scripts", "hooks", "bin"]) {
+			for (const name of fs.readdirSync(path.join(root, dir))) {
+				if (!/\.(js|mjs)$/.test(name)) continue;
+				const rel = `${dir}/${name}`;
+				if (raw.test(read(rel))) offenders.push(rel);
+			}
+		}
+		assert.deepEqual(
+			offenders,
+			[],
+			`${offenders.join(", ")} compare import.meta.url to a raw file:// path — use isDirectRun(import.meta.url) from scripts/direct-run.js (URL-decoded, symlink-safe, Windows-safe)`,
+		);
+	});
+
+	// COUPLING (the third spelling): the DECODED-but-not-realpath'd form,
+	//   process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+	// which the 0.8.3 audit classified as already-correct and left in place at
+	// three sites. It survives a space/%/# and Windows but NOT a symlink: Node
+	// resolves the main module's import.meta.url to the REALPATH while argv[1]
+	// keeps the shell's spelling. Measured 2026-09-02 through a symlinked
+	// checkout — `node <link>/scripts/version-guard.js` exited 0 with the guard
+	// never running (direct: exit 1), and release-gate.mjs the same (direct:
+	// exit 2). Those two are the release procedure's only automated refusals, so
+	// the failure mode was "the gate silently agrees with you".
+	it("no script spells the direct-run guard as a decoded comparison without realpath", () => {
+		const decoded =
+			/(?:resolve\(process\.argv\[1\]\)\s*===?\s*fileURLToPath\(import\.meta\.url\)|import\.meta\.url\s*===?\s*pathToFileURL\(\s*resolve\(process\.argv\[1\]\)\s*\)\.href)/;
+		const offenders = [];
+		for (const dir of ["src", "scripts", "hooks", "bin"]) {
+			for (const name of fs.readdirSync(path.join(root, dir))) {
+				if (!/\.(js|mjs)$/.test(name)) continue;
+				const rel = `${dir}/${name}`;
+				if (decoded.test(read(rel))) offenders.push(rel);
+			}
+		}
+		assert.deepEqual(
+			offenders,
+			[],
+			`${offenders.join(", ")} decode but do not realpath — false through a symlinked checkout, so main() never runs and the script exits 0 silently. Use isDirectRun(import.meta.url).`,
+		);
+	});
+
+	// COUPLING (the other half of the guard): forbidding the raw spelling does not
+	// make the CALL right. `isDirectRun()` with no argument reads process.argv[1]
+	// for BOTH sides, so it is true for every module in the process — main() then
+	// runs on import and the suite hangs or double-prints — and any other argument
+	// is a silent always-false, the exact no-op class this PR removed. The five
+	// call sites were hand-edited one by one, so a slip in one of the four without
+	// an end-to-end test (only status.js has one) had no other detector.
+	it("every direct-run guard passes import.meta.url", () => {
+		const call = /isDirectRun\(([^)]*)\)/g;
+		const offenders = [];
+		for (const dir of ["src", "scripts", "hooks", "bin"]) {
+			for (const name of fs.readdirSync(path.join(root, dir))) {
+				if (!/\.(js|mjs)$/.test(name)) continue;
+				const rel = `${dir}/${name}`;
+				if (rel === "scripts/direct-run.js") continue; // the definition itself
+				for (const m of read(rel).matchAll(call)) {
+					const arg = m[1].split(",")[0].trim();
+					if (arg !== "import.meta.url") offenders.push(`${rel} → isDirectRun(${m[1]})`);
+				}
+			}
+		}
+		assert.deepEqual(
+			offenders,
+			[],
+			`isDirectRun must be called with import.meta.url — no argument compares argv[1] to itself (true for every module, so main() runs on import):\n  ${offenders.join("\n  ")}`,
+		);
+	});
+
+	// COUPLING: the four live catalog legs in src/models.js are hand-duplicated,
+	// and each one's inner `try { await res.json() }` catch must classify an
+	// AbortError as "timeout" before falling through to "invalid response shape" —
+	// otherwise a vendor that stalls AFTER the headers is reported as a schema
+	// change and the operator hunts the wrong thing. Only glm and deepseek can be
+	// pinned behaviourally (test/models.test.js "collectModels reports a stall
+	// AFTER the headers as a timeout"): the openrouter and qwen legs swallow their
+	// error and substitute the static catalog, so `_errors` is empty for them by
+	// design. This lock is what covers those two.
+	it("every live catalog leg classifies a mid-body abort as a timeout", async () => {
+		const src = read("src/models.js");
+		const legs = [...src.matchAll(/async function (fetch\w+Models)\(/g)].map((m) => m[1]);
+		assert.ok(legs.length >= 4, `expected the four live legs, found ${legs.join(", ")}`);
+		const missing = legs.filter((name) => {
+			const at = src.indexOf(`async function ${name}(`);
+			const next = legs
+				.map((n) => src.indexOf(`async function ${n}(`))
+				.filter((i) => i > at)
+				.sort((a, b) => a - b)[0];
+			const body = src.slice(at, next === undefined ? src.length : next);
+			const inner = body.indexOf("await res.json()");
+			if (inner === -1) return false; // no body-read leg, nothing to classify
+			// Match the RETURN STATEMENTS, not the words: every one of these legs
+			// carries a comment quoting "invalid response shape", so a prose search
+			// finds the comment above the check and reports all four as broken (it
+			// did). The timeout return must come first in the catch that FOLLOWS the
+			// read — the outer catch never sees a throw the inner one swallowed.
+			const after = body.slice(inner);
+			const shape = after.search(/return \{ error: "invalid response shape" \}/);
+			if (shape === -1) return false;
+			return !/return \{ error: "timeout" \}/.test(after.slice(0, shape));
+		});
+		assert.deepEqual(
+			missing,
+			[],
+			`${missing.join(", ")}: the catch around await res.json() returns "invalid response shape" without first classifying an AbortError as "timeout" — a vendor stalling after the headers is then reported as a schema change`,
+		);
+	});
+
+	// COUPLING: a comment that cites source by LINE NUMBER is a claim that rots
+	// on the next edit above it, and nothing else in this repo can execute it
+	// (doctests pin values, not locations). Audited 2026-09-02: eight such
+	// citations, four already pointing at unrelated code (a models.js citation
+	// off by 39 lines, a router.js one off by 125). Name the
+	// SYMBOL instead — it survives line churn and a reader can grep for it.
+	it("no comment cites a source file by line number", () => {
+		const cite = /\b[\w./-]+\.(?:js|mjs|md):\d+(?:-\d+)?\b/;
+		const offenders = [];
+		const walk = (dir) => {
+			for (const entry of fs.readdirSync(path.join(root, dir), { withFileTypes: true })) {
+				const rel = path.join(dir, entry.name);
+				if (entry.isDirectory()) {
+					if (entry.name !== "node_modules") walk(rel);
+					continue;
+				}
+				if (!/\.(js|mjs)$/.test(entry.name)) continue;
+				read(rel)
+					.split("\n")
+					.forEach((line, i) => {
+						const m = cite.exec(line);
+						if (m) offenders.push(`${rel}:${i + 1} → "${m[0]}"`);
+					});
+			}
+		};
+		for (const dir of ["src", "scripts", "hooks", "bin", "test"]) walk(dir);
+		assert.deepEqual(
+			offenders,
+			[],
+			`line-number citations rot silently — name the function or constant instead:\n  ${offenders.join("\n  ")}`,
+		);
+	});
+
+	// COUPLING: src/models.js fetchOpenRouterModels DROPS every `anthropic/` id
+	// from discovery, on purpose: reaching Claude through a reseller bills per
+	// token for what the session's OAuth plan already covers, and invariants 3
+	// and 4 exist to keep Claude traffic on the Claude route. Three docs then
+	// offered `anthropic/claude-opus-4` as THE example of an OpenRouter id — the
+	// docs recommending what the code refuses to advertise. Docs that contradict
+	// an invariant's stated reasoning are how the reasoning gets "fixed" away.
+	it("no reader-facing doc offers an anthropic/ id as the OpenRouter example", () => {
+		const docs = [
+			"README.md",
+			".env.example",
+			"skills/setup/SKILL.md",
+			"docs/OPERATIONS.md",
+			"docs/ARCHITECTURE.md",
+			"CONTRIBUTING.md",
+		];
+		for (const doc of docs) {
+			const hits = read(doc)
+				.split("\n")
+				.map((l, i) =>
+					/(e\.g\.|like|such as|example)[^\n]*`?anthropic\/claude/i.test(l) ? i + 1 : 0,
+				)
+				.filter(Boolean);
+			assert.deepEqual(
+				hits,
+				[],
+				`${doc} lines ${hits.join(", ")} give an anthropic/ id as an OpenRouter example — discovery drops those ids (src/models.js fetchOpenRouterModels) because a resold Claude route bills what OAuth already covers; use deepseek/deepseek-v4-pro`,
+			);
+		}
+	});
+
+	// COUPLING: the comment above DEFAULT_BACKEND= in .env.example is the one
+	// place a user learns which values are legal, and it said `"claude" or "glm"`
+	// three providers after the list grew. The legal set is PROVIDER_IDS (any
+	// registered provider may be the default — src/providers.js buildProviders
+	// sets isDefault by id), so the comment is read against that set and a new
+	// provider joins the lock the moment it is registrable.
+	it(".env.example's DEFAULT_BACKEND comment names every provider id", async () => {
+		const { PROVIDER_IDS } = await import("../src/providers.js");
+		const lines = read(".env.example").split("\n");
+		const at = lines.findIndex((l) => /^DEFAULT_BACKEND=/.test(l));
+		assert.ok(at > 0, ".env.example no longer defines DEFAULT_BACKEND= — update this test");
+		let start = at;
+		while (start > 0 && lines[start - 1].startsWith("#")) start--;
+		const comment = lines.slice(start, at).join("\n");
+		const missing = [...PROVIDER_IDS].filter((id) => !new RegExp(`\\b${id}\\b`).test(comment));
+		assert.deepEqual(
+			missing,
+			[],
+			`.env.example's DEFAULT_BACKEND comment does not mention ${missing.join(", ")} — every PROVIDER_IDS entry is a legal DEFAULT_BACKEND value`,
+		);
 	});
 });

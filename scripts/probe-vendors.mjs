@@ -27,9 +27,8 @@
 // nothing" is one `&& echo verified` away from becoming the silent green this
 // whole file was written to prevent.
 
-import { resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { loadEnv } from "../src/env.js";
+import { isDirectRun } from "./direct-run.js";
 
 // loadEnv() runs in the CLI guard at the bottom, NOT at import time: the test
 // that imports `judge` must not spend real quota or capture the pre-~/.env
@@ -235,7 +234,7 @@ const CASES = [
 		bodyMatch: /"type"\s*:\s*"tool_use"/,
 	},
 	{
-		// NEGATIVE claim behind the Gemini line (src/models.js:88-95, issue #42):
+		// NEGATIVE claim behind the Gemini line (the `google/*` block of MODEL_GRADES in src/models.js, issue #42):
 		// Google publishes no Anthropic Messages endpoint, so Gemini reaches this
 		// proxy ONLY through OpenRouter. Probed by hand 2026-08-23 (four paths,
 		// valid key, all 404 while :generateContent returned 200 the same minute)
@@ -597,7 +596,10 @@ async function main() {
 // AND of process.exit: test/probe-vendors.test.js imports `judge` and reads
 // the CASES table statically, and an import-time probe run would both spend
 // real quota and kill the test process with its own exit code.
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+// (Symlink note: the inline decoded comparison this replaced was still false
+// through a symlinked checkout — import.meta.url is the realpath, argv[1] is
+// not — so the probe silently did nothing there. isDirectRun realpaths both.)
+if (isDirectRun(import.meta.url)) {
 	loadEnv();
 	process.exit(await main());
 }

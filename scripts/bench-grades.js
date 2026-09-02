@@ -25,6 +25,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { loadEnv } from "../src/env.js";
+import { isDirectRun } from "./direct-run.js";
 
 loadEnv();
 
@@ -392,17 +393,17 @@ async function main() {
 	console.log("           measurement — new models are usually estimated.");
 	console.log("  Two axes: never read one off the other. Price never lowers a grade.");
 	// The file is written; the RUNNING proxy has not read it. `REFRESHED_GRADES`
-	// binds once at module import (src/models.js:162) — a boot-time config read,
+	// binds once at module import (`REFRESHED_GRADES` in src/models.js) — a boot-time config read,
 	// not per-request state (invariant 2). Without this line the success table
 	// above reads as "done" while /v1/models keeps publishing the pre-refresh
 	// grades, which is the same stale-process trap `bench speed` records
-	// proxy_pid/proxy_version to catch. docs/OPERATIONS.md:87 says so too, but
+	// proxy_pid/proxy_version to catch. docs/OPERATIONS.md's grades.json row says so too, but
 	// whoever just ran this command has no reason to be in that file.
 	console.log("\n  Restart the proxy for this to reach GET /v1/models — it reads");
 	console.log("  grades.json at startup only.");
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isDirectRun(import.meta.url)) {
 	main().catch((e) => {
 		console.error(`cc-proxy bench-grades failed: ${e.message}`);
 		console.error("Nothing was written — the previous grades.json (if any) is untouched.");

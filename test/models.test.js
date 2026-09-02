@@ -538,7 +538,7 @@ describe("collectModels fan-out", () => {
 	// import), which is what the isolation below is for. Run in a
 	// SUBPROCESS with a throwaway HOME — an in-process env.HOME swap can't
 	// isolate this, the module cache already pinned whatever the first import
-	// read. Same pattern as test/grades-refresh.test.js:18-45.
+	// read. Same pattern as test/grades-refresh.test.js's subprocess-per-HOME header.
 	it("GLM entry coercion: drops no-id, converts numeric created, defaults display_name", async () => {
 		const home = fs.mkdtempSync(path.join(os.tmpdir(), "ccp-models-"));
 		try {
@@ -1495,5 +1495,111 @@ describe("live catalog legs (qwen + openrouter)", () => {
 			data.filter((m) => m.provider === "openrouter").map((m) => m.id),
 			["only/this"],
 		);
+	});
+});
+
+// The four live legs share one shape: an inner `try { await res.json() }` whose
+// catch returns "invalid response shape". An abort that lands while the BODY is
+// being read (headers arrived, then the vendor stalled past modelsTimeoutMs)
+// throws inside that inner try, so the AbortError was classified as a schema
+// problem — measured: `{"provider":"glm","message":"invalid response shape"}`
+// for a stub that sent `{"data":[` and stopped. The operator reading `_errors`
+// (or `/cc-proxy:models`'s `! glm: …` line) is sent looking for a vendor schema
+// change when the cause is latency. Same fix in all four legs.
+//
+// Only TWO of the four can be pinned through `_errors`, and that is a property
+// of collectModels, not a gap: the OpenRouter and Qwen legs SWALLOW a leg error
+// and substitute the static catalog (`live.entries ? … : config.<x>Models`), so
+// their `_errors` is empty for every failure mode including this one — measured
+// against the same stub: glm/deepseek report `timeout`, openrouter/qwen report
+// `[]`. Asserting on `_errors` for those two would pass with the fix reverted,
+// which is worse than not asserting. They are covered by the shared shape plus
+// the couplings-level rule that all four legs stay identical.
+describe("collectModels reports a stall AFTER the headers as a timeout", () => {
+	/** A backend that sends 200 + headers + half a JSON body and then goes quiet. */
+	function stall() {
+		return new Promise((resolve) => {
+			const srv = http.createServer((req, res) => {
+				res.writeHead(200, { "content-type": "application/json" });
+				res.write('{"data":[');
+				// never ends; the abort must be what terminates this leg
+			});
+			srv.listen(0, "127.0.0.1", () => resolve(srv));
+		});
+	}
+
+	// DeepSeek derives its models root by stripping `/anthropic` off the provider
+	// baseUrl, so pointing baseUrl straight at the stub is what makes it GET
+	// `${stub}/models` — same wiring wireConfig() uses for the other DeepSeek cases.
+	for (const [id, env] of [
+		["glm", { GLM_API_KEY: "k" }],
+		["deepseek", { DEEPSEEK_API_KEY: "k" }],
+	]) {
+		it(`${id}: headers + partial body then silence → _errors timeout, not invalid response shape`, async () => {
+			const srv = await stall();
+			try {
+				const providers = buildProviders(env, "claude");
+				providers.find((p) => p.id === id).baseUrl = `http://127.0.0.1:${srv.address().port}`;
+				const t0 = Date.now();
+				const { _errors } = await collectModels({
+					providers,
+					claudeModels: [],
+					qwenModels: [],
+					openRouterModels: [],
+					openRouterModelsExplicit: true,
+					modelsTimeoutMs: 100,
+				});
+				assert.deepEqual(_errors, [{ provider: id, message: "timeout" }]);
+				assert.ok(Date.now() - t0 < 2000, "the abort, not a hang, ended the leg");
+			} finally {
+				srv.closeAllConnections();
+				srv.close();
+			}
+		});
+	}
+
+	// The sibling case the abort fix does NOT cover, and must not pretend to: a
+	// vendor that RESETS the socket after the headers (its own idle timeout
+	// firing before ours) throws `TypeError: terminated` / cause "other side
+	// closed" here — measured 2026-09-02 — not an AbortError. That is a
+	// connection failure wearing the schema error's label. The public message
+	// stays "invalid response shape" (it is pinned API surface, and the leg
+	// genuinely could not read a shape), but the inner catch used to log NOTHING
+	// while the outer catch logs err.message, so the operator got the misleading
+	// label with no trail at all. The log line is the fix; this pins it.
+	it("a socket reset mid-body is logged with its real cause, not silently relabelled", async () => {
+		const srv = http.createServer((req, res) => {
+			res.writeHead(200, { "content-type": "application/json" });
+			res.write('{"data":[');
+			setTimeout(() => req.socket.destroy(), 20);
+		});
+		await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+		const lines = [];
+		const realError = console.error;
+		console.error = (...a) => lines.push(a.join(" "));
+		try {
+			const providers = buildProviders({ GLM_API_KEY: "k" }, "claude");
+			providers.find((p) => p.id === "glm").baseUrl = `http://127.0.0.1:${srv.address().port}`;
+			const { _errors } = await collectModels({
+				providers,
+				claudeModels: [],
+				qwenModels: [],
+				openRouterModels: [],
+				openRouterModelsExplicit: true,
+				// Generous: the socket reset, not the abort, must be what ends this.
+				modelsTimeoutMs: 5000,
+			});
+			assert.deepEqual(_errors, [{ provider: "glm", message: "invalid response shape" }]);
+			const logged = lines.find((l) => l.includes("[models] glm body read failed"));
+			assert.ok(
+				logged,
+				`nothing logged the real cause — the operator sees "invalid response shape" for a socket reset with no trail. Lines: ${JSON.stringify(lines)}`,
+			);
+			assert.match(logged, /terminated|closed/);
+		} finally {
+			console.error = realError;
+			srv.closeAllConnections();
+			srv.close();
+		}
 	});
 });

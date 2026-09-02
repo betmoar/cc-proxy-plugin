@@ -8,6 +8,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { loadEnv } from "../src/env.js";
+import { isDirectRun } from "./direct-run.js";
 import { fetchGlmQuota, fetchOpenRouterCredits, formatDuration } from "./quota.js";
 
 // Load API keys from ~/.env (+ repo .env in dev) so the quota/credit fetches
@@ -186,7 +187,7 @@ async function main() {
 }
 
 // Only run when invoked directly, not when imported by tests.
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isDirectRun(import.meta.url)) {
 	main().catch((err) => {
 		process.stderr.write(`cc-proxy status error: ${err.message}\n`);
 		process.exit(1);
