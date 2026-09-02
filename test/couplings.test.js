@@ -494,7 +494,12 @@ describe("cross-file couplings", () => {
 	// decoded form and five the raw one; the class is forbidden here so the sixth
 	// cannot come back. Behaviour is pinned in test/direct-run.test.js.
 	it("no script spells the direct-run guard as a raw file:// comparison", () => {
-		const raw = /import\.meta\.url\s*===\s*`file:\/\//;
+		// Every spelling of the class, not the one instance that shipped: template
+		// literal, double- or single-quoted `"file://" + …` concatenation, and
+		// either operand order. (Review on PR #56: the first cut matched only the
+		// backtick form, so the quoted form would have passed the lock.)
+		const raw =
+			/import\.meta\.url\s*===?\s*[`"']file:\/\/|[`"']file:\/\/[^`"'\n]*[`"'](?:\s*\+[^\n=]*)?\s*===?\s*import\.meta\.url/;
 		const offenders = [];
 		for (const dir of ["src", "scripts", "hooks", "bin"]) {
 			for (const name of fs.readdirSync(path.join(root, dir))) {

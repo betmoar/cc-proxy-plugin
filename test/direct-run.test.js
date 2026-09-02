@@ -11,6 +11,24 @@ import { isDirectRun } from "../scripts/direct-run.js";
 const execFile = promisify(execFileCb);
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
+// Can this process create symlinks? On Windows that needs Developer Mode or an
+// elevated shell (EPERM/EACCES otherwise), so the two symlink cases below SKIP
+// there with the reason on record rather than failing a suite whose code is
+// correct. Probed once, with a real symlink in a throwaway dir — never assumed
+// from process.platform, which would also skip on a Windows box that can.
+const symlinkSkip = (() => {
+	const d = fs.mkdtempSync(path.join(os.tmpdir(), "cc-proxy-symlink-probe-"));
+	try {
+		fs.writeFileSync(path.join(d, "t"), "");
+		fs.symlinkSync(path.join(d, "t"), path.join(d, "l"));
+		return false;
+	} catch (err) {
+		return `cannot create symlinks here (${err?.code ?? err}) — Windows needs Developer Mode or an elevated shell`;
+	} finally {
+		fs.rmSync(d, { recursive: true, force: true });
+	}
+})();
+
 // The guard every operator script sits behind: "run main() only when I am the
 // entry point, not when a test imports me". Five scripts spelled it as
 //   import.meta.url === `file://${process.argv[1]}`
@@ -39,7 +57,7 @@ describe("scripts/direct-run.js isDirectRun", () => {
 		assert.notEqual(pathToFileURL(target).href, `file://${target}`);
 	});
 
-	it("is true when argv[1] reaches the module through a symlink", () => {
+	it("is true when argv[1] reaches the module through a symlink", { skip: symlinkSkip }, () => {
 		// Node resolves the MAIN module's import.meta.url to the realpath (unless
 		// --preserve-symlinks-main), while argv[1] keeps the spelling the shell
 		// used. A plugin tree reached via a symlinked HOME or checkout hits this.
@@ -72,7 +90,7 @@ describe("scripts/direct-run.js isDirectRun", () => {
 // invokes it, with PROXY_PORT pointing at a port nothing listens on. The report
 // must say DOWN. Against the pre-fix guard this printed nothing and exited 0.
 describe("scripts/status.js runs its main() from a symlinked path containing a space", () => {
-	it("prints the DOWN report instead of silently exiting", async () => {
+	it("prints the DOWN report instead of silently exiting", { skip: symlinkSkip }, async () => {
 		const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "cc-proxy-with space-"));
 		try {
 			const link = path.join(tmp, "repo");
