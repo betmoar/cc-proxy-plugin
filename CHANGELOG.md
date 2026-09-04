@@ -2,6 +2,12 @@
 
 All notable changes to cc-proxy are recorded here. Versions follow [semver](https://semver.org/); `package.json` is the single source of truth and propagates to `.claude-plugin/plugin.json` via `scripts/sync-version.mjs`.
 
+## [0.9.2] — 2026-09-04
+
+### Added
+- **`pnpm probe:vendors` prints a catalog drift report (issue #37).** The hand-owned tables (`ROUTES` above all) rot silently because no test can reach a vendor — the glm-5.3 promotion found Z.ai publishing three model-list endpoints that disagree with each other and with what gets served. The drift pass compares our tables against the vendors' own lists and against what `/v1/messages` actually serves, in both plain and `--json` runs: `DRIFT` for aliasing (200 but the body names a different model) and for an expected-200 route that stopped answering 200; `STALE` for a `ROUTES` status-200 id the vendor's own list cannot see (non-200 rows are agreement, not staleness — the plan's 400/403s are documented refusals); `INFO` for shape-routed ids the vendor lists but `ROUTES` does not rank (media/audio namespaces excluded — they path-route, never shape-route). Drift lines fold into the existing exit contract as disagreements (exit 1). It never edits anything: backlog item 12 keeps `ROUTES` hand-owned, and the point is that rot becomes a printed diff instead of a rediscovery. The comparison is a pure exported `diffCatalogs()` pinned hermetically; both the STALE status-gate and the exit fold are mutation-verified. First live run (2026-09-04): Z.ai still aliases `glm-5.2`/`glm-5.1` → `glm-5.3` (re-confirming the `ROUTES` comment), and the Qwen plan's list omits `qwen3.8-max-preview` which `ROUTES` records as 200 — flagged for re-probe before the next Qwen-touching release.
+
+
 ## [0.9.1] — 2026-09-04
 
 ### Added

@@ -327,3 +327,76 @@ describe("version-guard CLI", () => {
 		}
 	});
 });
+
+// ── Catalog drift (issue #37) ────────────────────────────────────────────────
+import { diffCatalogs } from "../scripts/probe-vendors.mjs";
+import { ROUTES } from "../src/routes.js";
+
+describe("diffCatalogs()", () => {
+	it("STALE fires only for a status-200 route the vendor list cannot see", () => {
+		// glm-5.3 is ROUTES glm:200 and IS in the (real) vendor list today; feed a
+		// list that omits it -> exactly one STALE line naming the contract.
+		const lines = diffCatalogs("glm", ["glm-5.2"], "glm test-endpoint");
+		assert.ok(
+			lines.some((l) => l.includes("STALE") && l.includes("glm-5.3") && l.includes("glm:200")),
+		);
+	});
+
+	it("a non-200 ROUTES row omitted by the vendor is AGREEMENT, not staleness", () => {
+		// qwen rows for glm-5.3 (400) and glm-5.1/5 (403) document refusal; the
+		// vendor list omitting them must not print STALE.
+		const lines = diffCatalogs("qwen", ["qwen3.8-max"], "qwen test-endpoint");
+		const stale = lines.filter((l) => l.startsWith("STALE"));
+		for (const l of stale) {
+			assert.ok(!/glm-5\.3|glm-5\.1|glm-5(?!\.)/.test(l), `non-200 row reported STALE: ${l}`);
+		}
+	});
+
+	it("INFO fires only for shape-matched, non-media ids the vendor lists but ROUTES lacks", () => {
+		const lines = diffCatalogs(
+			"qwen",
+			["qwen3.9-max", "qwen-audio-9-tts", "wan9-image", "z-ai/glm-9"],
+			"qwen t",
+		);
+		const info = lines.filter((l) => l.startsWith("INFO"));
+		assert.equal(
+			info.length,
+			1,
+			`exactly one INFO (a new qwen shape id), got: ${info.join(" | ")}`,
+		);
+		assert.ok(info[0].includes("qwen3.9-max"));
+	});
+
+	it("a clean list prints nothing", () => {
+		// The exact current ROUTES glm ids, listed by the vendor: no STALE, no INFO.
+		const glmIds = Object.keys(ROUTES).filter((id) => ROUTES[id].some((r) => r.provider === "glm"));
+		const lines = diffCatalogs("glm", glmIds, "glm t");
+		assert.equal(lines.length, 0, `unexpected lines: ${lines.join(" | ")}`);
+	});
+
+	it("a slash id never reports (OpenRouter namespace, not shape-routed)", () => {
+		const lines = diffCatalogs("glm", ["z-ai/glm-9"], "glm t");
+		assert.equal(lines.filter((l) => l.startsWith("INFO")).length, 0);
+	});
+});
+
+// The drift pass folds into the same exit contract as case mismatches. This is
+// pinned by reading main()'s exit block textually — the same style the CASES
+// invariants above use for run-time-only checks. A drift that did NOT raise
+// the exit code would print as a warning and never gate a release.
+describe("drift exit-code fold", () => {
+	it("a drift line makes main() return 1 (source-table disagreement)", () => {
+		const src = fs.readFileSync(
+			path.join(import.meta.dirname, "..", "scripts", "probe-vendors.mjs"),
+			"utf8",
+		);
+		assert.match(src, /disagreed\.length \|\| drift\.drifts\) return 1/);
+	});
+	it("the drift pass runs in BOTH modes (plain runs must not hide drift)", () => {
+		const src = fs.readFileSync(
+			path.join(import.meta.dirname, "..", "scripts", "probe-vendors.mjs"),
+			"utf8",
+		);
+		assert.match(src, /const drift = await driftReport\(\);\n\n\t\/\/ Precedence/);
+	});
+});

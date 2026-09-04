@@ -223,7 +223,7 @@ cp .env.example .env   # set GLM_API_KEY (and OPENROUTER_API_KEY if used)
 pnpm install
 pnpm proxy             # standalone on PROXY_PORT (default 4000)
 pnpm test && pnpm lint
-pnpm probe:vendors     # MANUAL: re-measure the vendor behaviour source comments claim
+pnpm probe:vendors     # MANUAL: re-measure vendor claims + report catalog drift (issue #37)
 ```
 
 `probe:vendors` is deliberately outside `pnpm check` — it spends real quota
