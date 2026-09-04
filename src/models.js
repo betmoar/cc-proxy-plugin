@@ -13,9 +13,14 @@ import { tierOf } from "./routes.js";
 /**
  * CAPABILITY grade per model id — how strong the model is. Promoted here from
  * `scripts/render-models.js` (2026-08-06) for the same reason CONTEXT_WINDOW
- * was: a second consumer needed it programmatically. cc-operator dispatches
- * work by model strength and was otherwise left guessing whenever an id it had
- * never seen appeared in the catalog.
+ * was: a second consumer needed it programmatically. The consumer TODAY is the
+ * human-facing surface — `docs/models.html` via `gradeOf()`, `/cc-proxy:models`
+ * — plus any downstream plugin reading the wire. cc-operator reads `/v1/models`
+ * for id membership only and DELIBERATELY does not read `grade` (its decision
+ * record: betmoar/cc-operator-plugin#121 — capability judgment stays in the
+ * user's tiers.env, not a curated table of another system's facts); a planned
+ * tiers.env auto-match would read it as an advisory default. Do not re-assert
+ * cc-operator as a live consumer without checking that repo first.
  *
  * DELIBERATELY A DIFFERENT AXIS FROM `tier`. `tier` is what a route COSTS
  * (1 oauth-plan … 4 reseller); `grade` is what the model can DO. They are not
@@ -136,8 +141,9 @@ export const MODEL_GRADES = {
  * a command that can be interrupted mid-write and lives in a directory the user
  * edits by hand, so an arbitrary string there is not a grade — probed on a live
  * proxy 2026-08-12, a hand-edited file published `"grade":"SuperDuperMax"` and
- * `"grade":"   "` straight onto `/v1/models`, i.e. straight into cc-operator's
- * dispatch input. Membership here is the only way in.
+ * `"grade":"   "` straight onto `/v1/models` — a field any wire consumer (and
+ * `docs/models.html`, the human surface) would render as a verdict. Membership
+ * here is the only way in.
  * @type {ReadonlySet<string>}
  */
 export const GRADES = new Set(["Flagship", "Strong", "Specialist"]);
@@ -157,8 +163,9 @@ export const GRADES = new Set(["Flagship", "Strong", "Specialist"]);
  * different one — measured 2026-08-12, they disagreed on 13 of 24 ids
  * (`qwen3.8-max` Strong vs Flagship, `claude-sonnet-5` Strong vs Specialist, …).
  * That is the "same curated data in two places" drift `test/couplings.test.js`
- * exists to catch, inside one repo, with cc-operator dispatching on the stale
- * half.
+ * exists to catch, inside one repo, with the wire publishing the stale half —
+ * cc-operator reads ids only today (its #121), so the stale half reached
+ * humans via `/cc-proxy:models` and `docs/models.html`.
  *
  * Bad JSON, a missing file, or an unreadable one all fall back to the built-in
  * table in silence: discovery must keep answering. A malformed entry is skipped
@@ -209,8 +216,9 @@ const REFRESHED_GRADES = loadRefreshedGrades();
  * models nobody had looked at. Returning undefined (and omitting the key, see
  * withGrade) is the same rule `context_window` already follows, and it is a
  * BREAKING change for a consumer reading the field unconditionally. Affordable
- * because `grade` has no consumer in this repo and cc-operator reads
- * `/v1/models` for membership only. → docs/BACKLOG.md item 9.
+ * because `grade` has no consumer in this repo: cc-operator reads
+ * `/v1/models` for membership only (its decision record, cc-operator#121) and
+ * no other plugin reads it yet. → docs/BACKLOG.md item 9.
  *
  * Callers must tolerate undefined: `claude-haiku-*` is unlisted by invariant 4,
  * and any of ~320 live-catalog ids may simply never have been assessed.

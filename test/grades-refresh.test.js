@@ -12,8 +12,8 @@ const execFile = promisify(execFileCb);
 // reads it at STARTUP so a refresh actually reaches `GET /v1/models`. Before
 // 0.6.1 nothing read that file: discovery kept publishing the built-in table
 // while the command showed the operator a different one (measured 2026-08-12:
-// they disagreed on 13 of 24 ids). cc-operator dispatches on the published
-// field, so the refresh was a dead end.
+// they disagreed on 13 of 24 ids). No consumer saw a changed answer from a
+// refresh, so the command was a dead end.
 //
 // The load happens once at module import, so each case runs in a SUBPROCESS
 // with its own HOME — the module cache would otherwise pin whatever the first
