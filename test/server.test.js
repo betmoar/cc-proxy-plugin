@@ -1736,3 +1736,228 @@ describe("review findings: config, log-forging, header clobber", () => {
 		);
 	});
 });
+
+// PROXY_AUTH_TOKEN (issue #45). The auth gate is an inverted allowlist: with a
+// token configured, everything except GET /_ping and /_status demands it — not
+// just /v1/*, because unmatched paths fall through to handleProxy and forward
+// with injected keys. Each test builds the smallest config that exercises one
+// property of the gate; all of them use real local HTTP on both sides, per the
+// suite's contract (the proxy must be tested against live sockets).
+describe("PROXY_AUTH_TOKEN gate (issue #45)", () => {
+	// wireAuth records everything it started here; afterEach closes it all.
+	// Every earlier version of this suite closed only the servers a given test
+	// destructured — and a leaked LISTEN socket keeps the shared test process
+	// alive forever (node --test waits for the event loop), which hung the file
+	// with every test green. The safety net, not per-test finally blocks, is the
+	// contract: a test that forgets a server must still not hang CI.
+	let started = [];
+
+	async function wireAuth(token) {
+		const glm = await startBackend(() => ({
+			status: 200,
+			headers: { "content-type": "application/json" },
+			body: NORMAL_200,
+		}));
+		const claude = await startBackend(() => ({
+			status: 200,
+			headers: { "content-type": "application/json" },
+			body: NORMAL_200,
+		}));
+		const providers = buildProviders({ GLM_API_KEY: "glm-test" }, "claude");
+		providers.find((p) => p.id === "glm").baseUrl = glm.baseUrl;
+		providers.find((p) => p.id === "claude").baseUrl = claude.baseUrl;
+		const proxy = await startProxy(
+			token ? { port: 0, providers, authToken: token } : { port: 0, providers },
+		);
+		started.push(glm.server, claude.server, proxy.server);
+		return { glm, claude, proxy };
+	}
+
+	afterEach(async () => {
+		const servers = started;
+		started = [];
+		await Promise.all(servers.map((s) => new Promise((r) => s.close(r))));
+	});
+
+	it("unset token keeps every path open (the default install is unchanged)", async () => {
+		const { glm, claude, proxy } = await wireAuth(undefined);
+		const res = await post(proxy.port, {
+			model: "glm-5.2",
+			messages: [{ role: "user", content: "hi" }],
+		});
+		assert.equal(res.status, 200);
+		assert.equal(glm.calls.length, 1);
+		const status = await get(proxy.port, "/_status");
+		assert.equal(status.status, 200);
+	});
+
+	it("a missing token is refused on /v1/messages before any upstream call", async () => {
+		const { glm, claude, proxy } = await wireAuth("sekrit");
+		const res = await post(proxy.port, {
+			model: "glm-5.2",
+			messages: [{ role: "user", content: "hi" }],
+		});
+		assert.equal(res.status, 401, "a bare 401, per the issue contract");
+		assert.equal(glm.calls.length, 0, "no upstream call may leave the proxy");
+		assert.equal(claude.calls.length, 0);
+	});
+
+	it("a wrong token is refused", async () => {
+		const { glm, proxy } = await wireAuth("sekrit");
+		const res = await post(
+			proxy.port,
+			{ model: "glm-5.2", messages: [{ role: "user", content: "hi" }] },
+			{ authorization: "Bearer wrong" },
+		);
+		assert.equal(res.status, 401);
+		assert.equal(glm.calls.length, 0);
+	});
+
+	it("a matching Bearer token is accepted (the Claude Code client shape)", async () => {
+		const { glm, proxy } = await wireAuth("sekrit");
+		const res = await post(
+			proxy.port,
+			{ model: "glm-5.2", messages: [{ role: "user", content: "hi" }] },
+			{ authorization: "Bearer sekrit" },
+		);
+		assert.equal(res.status, 200);
+		assert.equal(glm.calls.length, 1);
+	});
+
+	it("a matching x-api-key is accepted (the sibling credential header)", async () => {
+		const { glm, proxy } = await wireAuth("sekrit");
+		const res = await post(
+			proxy.port,
+			{ model: "glm-5.2", messages: [{ role: "user", content: "hi" }] },
+			{ "x-api-key": "sekrit" },
+		);
+		assert.equal(res.status, 200);
+		assert.equal(glm.calls.length, 1);
+	});
+
+	// The leak this whole gate could have introduced: on the claude route the
+	// OAuth strategy passes inbound headers through untouched, so a token
+	// presented via Authorization would reach api.anthropic.com verbatim —
+	// the proxy's own credential, sent off-box to a third party. The gate
+	// DELETES both credential headers from req.headers on a successful match,
+	// before any forwarding path can copy them (buildUpstreamHeaders reads
+	// req.headers).
+	it("the presented token never reaches an upstream: stripped on the claude (oauth) route", async () => {
+		const { glm, claude, proxy } = await wireAuth("sekrit");
+		const res = await post(
+			proxy.port,
+			{ model: "claude-opus-5", messages: [{ role: "user", content: "hi" }] },
+			{ authorization: "Bearer sekrit" },
+		);
+		assert.equal(res.status, 200);
+		assert.equal(claude.calls.length, 1);
+		assert.equal(
+			claude.calls[0].headers.authorization,
+			undefined,
+			"the proxy token must not be forwarded to api.anthropic.com (oauth passthrough route)",
+		);
+		assert.equal(
+			claude.calls[0].headers["x-api-key"],
+			undefined,
+			"no credential header may leak to the oauth upstream",
+		);
+	});
+
+	// The sibling route: on a third-party (x-api-key) leg the presented proxy
+	// token would otherwise survive into `rest` and ride alongside the
+	// injected vendor key.
+	it("the presented token is stripped on the glm (x-api-key) route too", async () => {
+		const { glm, proxy } = await wireAuth("sekrit");
+		const res = await post(
+			proxy.port,
+			{ model: "glm-5.2", messages: [{ role: "user", content: "hi" }] },
+			{ "x-api-key": "sekrit" },
+		);
+		assert.equal(res.status, 200);
+		assert.equal(glm.calls.length, 1);
+		// The INJECTED vendor key is what must be there; the proxy token is not.
+		assert.equal(glm.calls[0].headers["x-api-key"], "glm-test");
+		assert.equal(glm.calls[0].headers.authorization, undefined);
+	});
+
+	it("GET /_ping and /_status stay open under auth (hook liveness probes)", async () => {
+		const { glm, proxy } = await wireAuth("sekrit");
+		const ping = await get(proxy.port, "/_ping");
+		assert.equal(ping.status, 200);
+		const status = await get(proxy.port, "/_status");
+		assert.equal(status.status, 200);
+		assert.equal(glm.calls.length, 0);
+	});
+
+	// The 401 must beat body buffering (issue #45's 2026-09-02 addendum): a
+	// peer that opens a request, streams a body and never ends it must still
+	// be refused immediately. A gate placed after the req.on("data") wiring
+	// would wait for "end" — which never comes — and hold every streamed byte
+	// in memory: the unbounded-buffer OOM this gate exists to close. Small
+	// complete bodies cannot see the difference; only this shape can.
+	it("the 401 arrives without waiting for the request body to end", async () => {
+		const { glm, proxy } = await wireAuth("sekrit");
+		const status = await new Promise((resolve, reject) => {
+			const req = http.request(
+				{
+					hostname: "127.0.0.1",
+					port: proxy.port,
+					path: "/v1/messages",
+					method: "POST",
+					headers: { "content-type": "application/json", authorization: "Bearer wrong" },
+				},
+				(res) => {
+					res.resume();
+					res.on("end", () => resolve(res.statusCode));
+				},
+			);
+			req.on("error", reject);
+			// A body, deliberately NEVER ended: the 401 must arrive anyway. If the
+			// gate regresses to wait for 'end', this test hangs the file — loud,
+			// which is the honest failure mode for a security gate.
+			req.write("x".repeat(64 * 1024));
+		});
+		assert.equal(status, 401, "refusal must not wait for the upload to finish");
+		assert.equal(glm.calls.length, 0);
+	});
+
+	it("POST /_shutdown without the token is refused (destructive endpoint)", async () => {
+		const { glm, proxy } = await wireAuth("sekrit");
+		const res = await post(proxy.port, {}, {}, "/_shutdown");
+		assert.equal(res.status, 401);
+		assert.equal(
+			await portOpen(proxy.port),
+			true,
+			"server must survive an unauthenticated /_shutdown",
+		);
+	});
+
+	it("POST /_shutdown with the token still works (hook replacement flow)", async () => {
+		const { glm, proxy } = await wireAuth("sekrit");
+		const res = await post(proxy.port, {}, { authorization: "Bearer sekrit" }, "/_shutdown");
+		assert.equal(res.status, 200);
+		let open = true;
+		for (let i = 0; i < 40 && open; i++) {
+			open = await portOpen(proxy.port);
+			if (open) await new Promise((r) => setTimeout(r, 50));
+		}
+		assert.equal(open, false, "listener should be released after an authenticated /_shutdown");
+	});
+
+	// The fall-through is the reason the gate is an inverted allowlist: a
+	// non-/v1 path still reaches handleProxy and forwards with the injected
+	// GLM key. Gating only /v1/* would leave THIS open to the LAN — so the
+	// path here must be genuinely outside /v1 (a /v1 path with a query string
+	// would pass under the allowlist mutation too; verified by mutation).
+	it("a non-/v1 forwarded path (fall-through) also demands the token", async () => {
+		const { glm, proxy } = await wireAuth("sekrit");
+		const res = await post(
+			proxy.port,
+			{ model: "glm-5.2", messages: [{ role: "user", content: "hi" }] },
+			{},
+			"/api/v1/messages",
+		);
+		assert.equal(res.status, 401);
+		assert.equal(glm.calls.length, 0);
+	});
+});

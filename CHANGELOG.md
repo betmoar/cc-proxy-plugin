@@ -2,6 +2,11 @@
 
 All notable changes to cc-proxy are recorded here. Versions follow [semver](https://semver.org/); `package.json` is the single source of truth and propagates to `.claude-plugin/plugin.json` via `scripts/sync-version.mjs`.
 
+## [0.9.0] — 2026-09-04
+
+### Added
+- **Optional `PROXY_AUTH_TOKEN` (issue #45).** The `PROXY_HOST=0.0.0.0` opt-out shipped with no authentication: anyone who could reach the port could spend the injected GLM/DeepSeek/Qwen/OpenRouter keys and ride the Claude OAuth passthrough. When `PROXY_AUTH_TOKEN` is set, every request except `GET /_ping` and `GET /_status` must present it (`Authorization: Bearer <token>` or `x-api-key: <token>`), and a mismatch is a bare 401 written **before the request body is buffered** — off-loopback, the unbounded inbound buffer was itself a free OOM against every session on the machine (2026-09-02 addendum in the issue), so the gate is checked in the dispatcher's first tick and the rejected upload is drained via `req.resume()`, never chunked. Unset keeps every install byte-identical. The gate is an inverted allowlist on purpose: unmatched paths fall through to forwarding with injected keys, so gating only `/v1/*` would have left that open. The compare is constant-time (length-safe via SHA-256 digests + `timingSafeEqual`). `/_shutdown` requires the token too, and `requestShutdown()` (SessionStart hook) presents it from env so stale-proxy replacement still works on auth-enabled installs — pinned by `proxy-lifecycle.test.js`. **On a successful match the presented credential header is deleted before forwarding**: on the claude (oauth) route the passthrough would otherwise send the proxy's own token verbatim to api.anthropic.com — the exact leak class invariant 3 exists for, one layer in. Known consequence, documented in README/OPERATIONS/setup: Claude Code has a single credential slot (`ANTHROPIC_AUTH_TOKEN`), so under auth the claude route forwards without OAuth — the mode targets third-party routing. Operator scripts (`list-models`, `bench-speed`) present the token from env; the statusline's TCP probe is unaffected.
+
 ## [0.8.3] — 2026-09-02
 
 ### Fixed
