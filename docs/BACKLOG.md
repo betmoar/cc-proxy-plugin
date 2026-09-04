@@ -312,8 +312,9 @@ notes referencing "backlog item N" still resolve.
    measured on 2026-08-12 they disagreed on **13 of 24 ids** (`qwen3.8-max`
    Strong vs Flagship, `glm-4.7` Economy vs Specialist — Economy being a value
    the same release then retired, `claude-sonnet-5` Strong vs Specialist, …).
-   cc-operator dispatches on the published field, so it was
-   dispatching on the stale half. The lesson generalizes: a refresh command that
+   the wire published the stale half — humans saw it via
+   `/cc-proxy:models` and `docs/models.html`; cc-operator reads ids only
+   (decision record: cc-operator#121). The lesson generalizes: a refresh command that
    writes a file nobody reads looks exactly like a working feature — the
    observable that catches it is "does a consumer's answer CHANGE after the
    refresh", not "did the command succeed".
@@ -328,8 +329,8 @@ notes referencing "backlog item N" still resolve.
 
    The refresh is also VALIDATED as of 0.6.1, per entry. It used to accept any
    non-empty string, and a live proxy was made to publish `"grade":"SuperDuperMax"`
-   and `"grade":"   "` on `/v1/models` from a hand-edited file — straight into
-   cc-operator's dispatch input. Anything outside the allowed set is skipped and
+   and `"grade":"   "` on `/v1/models` from a hand-edited file — straight onto
+   the wire and the human surface. Anything outside the allowed set is skipped and
    the id falls back to its built-in grade; skipping the ENTRY rather than the
    file is the house style, because one bad row must not void a refresh of 300
    good ones. Note the second thing this buys: a stale `grades.json` written
@@ -338,7 +339,12 @@ notes referencing "backlog item N" still resolve.
    **DECIDED 2026-08-12 — the field now means what it says.** Both halves of the
    question this item held open are answered, and both are breaking changes to a
    published contract, affordable only because `grade` has no consumer yet
-   (cc-operator reads `/v1/models` for membership only).
+   (cc-operator reads `/v1/models` for membership only — its own recorded
+   decision, betmoar/cc-operator-plugin#121, 2026-09-04; the planned future
+   reader is an advisory tiers.env auto-match, not a gate). Issue #57 closed on
+   that record: the consumer of `grade` today is the human surface
+   (`/cc-proxy:models`, `docs/models.html`), and no comment in this repo may
+   name cc-operator as a live consumer.
 
    (a) **An unassessed id OMITS `grade`.** `DEFAULT_GRADE` is deleted; `gradeOf()`
    returns `undefined` and `withGrade()` leaves the key off — never `null`, never
