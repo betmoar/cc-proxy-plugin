@@ -1,4 +1,5 @@
 import { strict as assert } from "node:assert";
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
 import net from "node:net";
@@ -588,5 +589,134 @@ describe("lifecycle probes settle when the response is cut mid-body", () => {
 			srv.closeAllConnections();
 			srv.close();
 		}
+	});
+});
+
+// ── #55: the SessionStart hook's failure notice ─────────────────────────────
+//
+// The hook is run as a SUBPROCESS against a fake plugin tree, because the
+// interesting states live in main(): resolveProxyPath() prefers the tree's own
+// bin, so a same-process import would resolve THIS repo's bin and (on a dev
+// machine) touch the real proxy. The fake tree's bin never listens, which
+// makes "unreachable" deterministic: spawn fires, waitReady expires.
+describe("session-start failure notice (issue #55)", () => {
+	/** Build a fake plugin tree whose bin spawns but never listens. */
+	function fakeTree() {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ccproxy-hook-"));
+		fs.mkdirSync(path.join(dir, "hooks"), { recursive: true });
+		fs.mkdirSync(path.join(dir, "bin"), { recursive: true });
+		fs.copyFileSync(
+			path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../hooks/proxy-lifecycle.js"),
+			path.join(dir, "hooks", "proxy-lifecycle.js"),
+		);
+		fs.copyFileSync(
+			path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../hooks/session-start.js"),
+			path.join(dir, "hooks", "session-start.js"),
+		);
+		fs.writeFileSync(
+			path.join(dir, "package.json"),
+			JSON.stringify({ name: "t", version: "9.9.9", type: "module" }),
+		);
+		fs.writeFileSync(path.join(dir, "bin", "cc-proxy.js"), "setTimeout(() => {}, 60000);\n");
+		return dir;
+	}
+
+	/** Run the hook; resolves { code, stdout }. */
+	function runHook(tree, env) {
+		return new Promise((resolve) => {
+			const child = spawn(process.execPath, [path.join(tree, "hooks", "session-start.js")], {
+				env: { ...process.env, ...env },
+				stdio: ["ignore", "pipe", "inherit"],
+			});
+			let out = "";
+			child.stdout.on("data", (c) => {
+				out += c;
+			});
+			child.on("exit", (code) => resolve({ code: code ?? -1, stdout: out }));
+		});
+	}
+
+	/** A free TCP port (bind :0, read it, release). */
+	function freePort() {
+		return new Promise((resolve) => {
+			const srv = net.createServer();
+			srv.listen(0, "127.0.0.1", () => {
+				const { port } = srv.address();
+				srv.close(() => resolve(port));
+			});
+		});
+	}
+
+	it("unreachable: emits ONE JSON additionalContext line and exits 0", async () => {
+		const tree = fakeTree();
+		const port = await freePort();
+		const { code, stdout } = await runHook(tree, {
+			PROXY_PORT: String(port),
+			PROXY_READY_TIMEOUT_MS: "700",
+			PROXY_LOG: path.join(tree, "proxy.log"),
+		});
+		fs.rmSync(tree, { recursive: true, force: true });
+		assert.equal(code, 0, "a hook must never block the session");
+		const lines = stdout.trim().split("\n");
+		assert.equal(lines.length, 1, "exactly one line, not a wall of text");
+		const parsed = JSON.parse(lines[0]);
+		// The measured channel (2026-09-04): stdout/stderr text is debug-log-only;
+		// hookSpecificOutput.additionalContext is the one line that becomes context.
+		assert.equal(parsed.hookSpecificOutput?.hookEventName, "SessionStart");
+		const ctx = parsed.hookSpecificOutput?.additionalContext;
+		assert.match(ctx, /state: unreachable/);
+		assert.match(ctx, /ECONNREFUSED/, "the line names the symptom the user will meet");
+		assert.match(ctx, /Tell the user/, "the model is asked to relay it");
+		assert.match(ctx, /cc-proxy\.log/, "the line points at the log");
+	});
+
+	it("missing-path: same one-line shape, different state", async () => {
+		// A tree with NO bin and no PROXY_PATH fallback.
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ccproxy-hook-"));
+		fs.mkdirSync(path.join(dir, "hooks"), { recursive: true });
+		fs.copyFileSync(
+			path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../hooks/proxy-lifecycle.js"),
+			path.join(dir, "hooks", "proxy-lifecycle.js"),
+		);
+		fs.copyFileSync(
+			path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../hooks/session-start.js"),
+			path.join(dir, "hooks", "session-start.js"),
+		);
+		fs.writeFileSync(
+			path.join(dir, "package.json"),
+			JSON.stringify({ name: "t", version: "9.9.9", type: "module" }),
+		);
+		const port = await freePort();
+		const { code, stdout } = await runHook(dir, {
+			PROXY_PORT: String(port),
+			PROXY_PATH: "",
+			PROXY_LOG: path.join(dir, "proxy.log"),
+		});
+		fs.rmSync(dir, { recursive: true, force: true });
+		assert.equal(code, 0);
+		const parsed = JSON.parse(stdout.trim());
+		assert.match(parsed.hookSpecificOutput?.additionalContext, /state: missing-path/);
+	});
+
+	it("success: emits NOTHING (a healthy line every session would be context noise)", async () => {
+		// The healthy path is "already-up": something that speaks the /_status
+		// contract at the tree's version is already on the port. A stub server
+		// is that something.
+		const port = await freePort();
+		const srv = http.createServer((req, res) => {
+			res.writeHead(200, { "content-type": "application/json" });
+			res.end(JSON.stringify({ version: "9.9.9", providers: [] }));
+		});
+		await new Promise((r) => srv.listen(port, "127.0.0.1", r));
+		const tree = fakeTree();
+		const { code, stdout } = await runHook(tree, {
+			PROXY_PORT: String(port),
+			PROXY_LOG: path.join(tree, "proxy.log"),
+		});
+		fs.rmSync(tree, { recursive: true, force: true });
+		srv.closeAllConnections();
+		srv.close();
+		assert.equal(code, 0);
+		assert.equal(stdout.trim(), "", "success must stay silent");
 	});
 });
