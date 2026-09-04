@@ -2,6 +2,10 @@
 
 All notable changes to cc-proxy are recorded here. Versions follow [semver](https://semver.org/); `package.json` is the single source of truth and propagates to `.claude-plugin/plugin.json` via `scripts/sync-version.mjs`.
 
+## [0.9.1] — 2026-09-04
+
+### Added
+- **The SessionStart hook says one line when the proxy fails to start (issue #55).** Every failure in the one process that decides whether the session has a working proxy — `missing-path` (no `bin/cc-proxy.js` anywhere), `unreachable` (spawned but never answered the readiness poll), or a rejection — was invisible: the user met a bare `ECONNREFUSED` on their first prompt and had to know to look in `~/.claude/cc-proxy/cc-proxy.log`. The hook now emits ONE JSON `hookSpecificOutput.additionalContext` line naming the state, the symptom, and the log path, so the model sees it as session context and can tell the user why requests will fail. CHANNEL IS MEASURED, not guessed (2026-09-04, CC 2.1.260, sentinel hooks under nested `claude` runs): plain stdout and stderr are debug-log-only — never model context, never UI, on exit 0 AND exit 2 — and exit 2 does not block a SessionStart (only UserPromptSubmit blocks). `additionalContext` is the one channel that reaches anyone; verified by asking a model to quote a sentinel from its context. Exit 0 always (a hook must never block the session — re-confirmed by the same measurement). Success states stay silent: a healthy line every session is context noise. Known blind spot, recorded in the issue: the `!gone` "already-up" (a stale proxy that refused to vacate) is indistinguishable from healthy by the return value; the version probe means it is at least functional while it lives. Locked by three subprocess tests against a fake plugin tree (real `node` child, hermetic ports); mutation-verified in both directions — removing the notice fails the failure tests, emitting on success fails the silence test.
 ## [0.9.0] — 2026-09-04
 
 ### Added
