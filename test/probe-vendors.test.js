@@ -385,18 +385,23 @@ describe("diffCatalogs()", () => {
 // invariants above use for run-time-only checks. A drift that did NOT raise
 // the exit code would print as a warning and never gate a release.
 describe("drift exit-code fold", () => {
+	const SRC = () =>
+		fs.readFileSync(path.join(import.meta.dirname, "..", "scripts", "probe-vendors.mjs"), "utf8");
+
 	it("a drift line makes main() return 1 (source-table disagreement)", () => {
-		const src = fs.readFileSync(
-			path.join(import.meta.dirname, "..", "scripts", "probe-vendors.mjs"),
-			"utf8",
-		);
-		assert.match(src, /disagreed\.length \|\| drift\.drifts\) return 1/);
+		assert.match(SRC(), /disagreed\.length \|\| drift\.drifts\) return 1/);
 	});
-	it("the drift pass runs in BOTH modes (plain runs must not hide drift)", () => {
-		const src = fs.readFileSync(
-			path.join(import.meta.dirname, "..", "scripts", "probe-vendors.mjs"),
-			"utf8",
-		);
-		assert.match(src, /const drift = await driftReport\(\);\n\n\t\/\/ Precedence/);
+
+	// Review finding (critical): an UNREACHABLE drift LEG (alias check or list
+	// fetch) that coexists with exit 0 breaks "0 = everything ran and matched".
+	// The exit-2 condition must key on unreachableLegs, not on ran alone.
+	it("any unreachable drift leg feeds exit 2, not just a fully-dead pass", () => {
+		assert.match(SRC(), /unreachable\.length \|\| drift\.unreachableLegs > 0\) return 2/);
+	});
+
+	// Review finding (important): drift prose after the JSON blob would kill
+	// every downstream `| jq`. driftReport() must print nothing in --json mode.
+	it("--json mode keeps stdout parseable: drift prints only in non-JSON mode", () => {
+		assert.match(SRC(), /if \(!JSON_OUT\) \{\n\t\tif \(lines\.length\) \{/);
 	});
 });

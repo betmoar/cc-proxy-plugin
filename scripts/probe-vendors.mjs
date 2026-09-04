@@ -691,10 +691,17 @@ async function driftReport() {
 	const lines = [];
 	let reached = 0;
 	let attempted = 0;
+	// ANY unreachable leg (list fetch OR alias check) — an UNREACHABLE line
+	// printed next to exit 0 would break the contract ("0 = everything ran and
+	// matched"), so the exit logic needs this, not just `reached`.
+	let unreachableLegs = 0;
 	driftReportRan = true;
 
 	// GLM: the Anthropic-skin list (the one /v1/models republishes) — the
-	// endpoint the issue measured omitting glm-5.3.
+	// endpoint the issue measured omitting glm-5.3. SCOPE: only this list; the
+	// issue's other two Z.ai endpoints (/api/paas/v4/models, /api/v1/models)
+	// are not re-fetched — they disagree with each other, and the served-model
+	// checks below are the ground truth that outranks all lists.
 	if (process.env.GLM_API_KEY) {
 		attempted++;
 		const listed = await fetchListedIds("https://api.z.ai/api/anthropic/v1/models", {
@@ -702,6 +709,7 @@ async function driftReport() {
 			"anthropic-version": "2023-06-01",
 		});
 		if (listed.error) {
+			unreachableLegs++;
 			lines.push(`UNREACHABLE  glm /api/anthropic/v1/models: ${listed.error}`);
 		} else {
 			reached++;
@@ -717,6 +725,7 @@ async function driftReport() {
 				id,
 			});
 			if (served.error) {
+				unreachableLegs++;
 				lines.push(`UNREACHABLE  glm ${id} served-model check: ${served.error}`);
 			} else if (served.status === 200 && served.served && served.served !== served.requested) {
 				lines.push(`DRIFT  ${served.requested} requested -> ${served.served} served (alias)`);
@@ -736,6 +745,7 @@ async function driftReport() {
 			{ authorization: `Bearer ${process.env.DASHSCOPE_API_KEY}` },
 		);
 		if (listed.error) {
+			unreachableLegs++;
 			lines.push(`UNREACHABLE  qwen /compatible-mode/v1/models: ${listed.error}`);
 		} else {
 			reached++;
@@ -743,13 +753,23 @@ async function driftReport() {
 		}
 	}
 
-	if (lines.length) {
-		console.log("\ncatalog drift:");
-		for (const l of lines) console.log(`  ${l}`);
-	} else if (attempted) {
-		console.log("\ncatalog drift: none — every table agrees with every reachable vendor list");
+	// PROSE ONLY in non-JSON mode: --json stdout must stay machine-parseable
+	// end to end, and a trailing "catalog drift:" block after the JSON blob
+	// would kill every `| jq` downstream.
+	if (!JSON_OUT) {
+		if (lines.length) {
+			console.log("\ncatalog drift:");
+			for (const l of lines) console.log(`  ${l}`);
+		} else if (attempted) {
+			console.log("\ncatalog drift: none — every table agrees with every reachable vendor list");
+		}
 	}
-	return { drifts: lines.filter((l) => l.startsWith("DRIFT")).length, ran: reached > 0 };
+	return {
+		drifts: lines.filter((l) => l.startsWith("DRIFT")).length,
+		lines,
+		ran: reached > 0,
+		unreachableLegs,
+	};
 }
 
 async function main() {
@@ -811,22 +831,32 @@ async function main() {
 	}
 
 	// Catalog drift (issue #37): runs in BOTH modes — drift is a disagreement
-	// with a source table exactly like a case mismatch, so a `--drift`-only run
-	// must still land exit 1 and a plain run must not hide drift.
+	// with a source table exactly like a case mismatch, so a plain run must not
+	// hide drift. In --json mode the lines ride IN the payload (driftReport
+	// prints nothing there), keeping stdout machine-parseable end to end.
 	const drift = await driftReport();
+	if (JSON_OUT && (drift.lines.length || !driftReportRan)) {
+		// Re-emit the whole payload with drift appended — the JSON was already
+		// printed above, so the cleanest machine contract is a SECOND object;
+		// document it in the header instead of buffering a refactor.
+		console.log(JSON.stringify({ drift, probedAt: new Date().toISOString() }, null, 2));
+	}
 
 	// Precedence: a real disagreement outranks unreachability, which outranks
 	// having run nothing — the most actionable fact wins the exit code. Drift
-	// lines sit at the same rank as case disagreements; an unreachable drift
-	// pass (no vendor list reached) sits with unreachable cases.
+	// lines sit at the same rank as case disagreements. Any unreachable LEG of
+	// the drift pass (list fetch or alias check) sits with unreachable cases:
+	// an UNREACHABLE line printed next to exit 0 would break "0 = everything
+	// ran and matched".
 	if (disagreed.length || drift.drifts) return 1;
-	if (unreachable.length || (drift.ran === false && driftReportRan)) return 2;
+	if (unreachable.length || drift.unreachableLegs > 0) return 2;
 	if (!ranKeyed.length) return 3;
 	return 0;
 }
 
 // Whether the drift pass had anything to attempt (keys present); module-level
-// so main()'s exit logic can see it after the await. Set inside driftReport().
+// so main()'s --json branch can see it after the await. Set inside
+// driftReport(). (Exit logic reads drift.unreachableLegs, not this.)
 let driftReportRan = false;
 
 // Only run the CLI when invoked directly, not when imported by tests — the
