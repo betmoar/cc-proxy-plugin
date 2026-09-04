@@ -13,6 +13,9 @@ import { buildProviders } from "./providers.js";
  * @typedef {object} Config
  * @property {number} port
  * @property {string} host - interface the server binds to (loopback by default).
+ * @property {string} [authToken] - PROXY_AUTH_TOKEN; when set, every request
+ *   except GET /_ping and /_status must present it (issue #45). Unset means no
+ *   auth — the loopback bind (invariant 7) is then the only access control.
  * @property {Provider[]} providers - the routing registry (see providers.js).
  * @property {string} [version] - plugin version, reported on /_status so the
  *   SessionStart hook can detect (and replace) a stale running proxy.
@@ -47,6 +50,9 @@ export function load(overrides = {}) {
 		// Loopback by default: the proxy injects API keys and forwards OAuth, so it
 		// must not be reachable from the LAN. PROXY_HOST is an explicit opt-out.
 		host: overrides.host || process.env.PROXY_HOST || "127.0.0.1",
+		// Issue #45: optional bearer/api-key gate for the PROXY_HOST=0.0.0.0
+		// opt-out. Unset keeps every existing install byte-identical.
+		authToken: overrides.authToken || process.env.PROXY_AUTH_TOKEN || undefined,
 		providers: buildProviders(process.env, defaultId),
 		version: packageVersion(),
 		claudeModels: DEFAULT_CLAUDE_MODELS.filter((m) => m?.id),

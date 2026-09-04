@@ -149,7 +149,12 @@ export function buildRow(m, providers) {
 }
 
 async function fetchJson(url) {
-	const res = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+	// /v1/models requires the token under PROXY_AUTH_TOKEN (#45); /_status stays
+	// open but sending the header unconditionally keeps one code path. Never logged.
+	const headers = process.env.PROXY_AUTH_TOKEN
+		? { authorization: `Bearer ${process.env.PROXY_AUTH_TOKEN}` }
+		: {};
+	const res = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS), headers });
 	if (!res.ok) throw new Error(`HTTP ${res.status}`);
 	return res.json();
 }

@@ -140,6 +140,7 @@ backends; when GLM is the only one missing it says so, because an unset
 | Variable | Effect |
 | --- | --- |
 | `PROXY_HOST` | Interface the proxy binds to (default `127.0.0.1`; loopback on purpose — the proxy injects keys) |
+| `PROXY_AUTH_TOKEN` | Optional bearer/api-key token (issue #45). Set = every request except `GET /_ping`/`/_status` requires it (`Authorization: Bearer …` or `x-api-key: …`), `/_shutdown` included; mismatch is a bare 401 written before the request body is buffered. For off-loopback binds; compare is constant-time. Under auth the CC client presents it as `ANTHROPIC_AUTH_TOKEN`, which occupies CC's single credential slot — claude-route OAuth passthrough degrades to anonymous, so this mode targets third-party routing |
 | `PROXY_UPSTREAM_TIMEOUT_MS` | Upstream socket-inactivity timeout (default 120000); raise for 1M-context cold calls |
 | `DEFAULT_BACKEND` | Backend when no model prefix matches (default `claude`) |
 | `PROXY_DEBUG=1` | Log `metadata` + `system` summary per request |

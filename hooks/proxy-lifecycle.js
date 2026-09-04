@@ -127,13 +127,23 @@ export function probeProxyVersion(port) {
 /**
  * POST /_shutdown to a running proxy. Resolves once the response arrives (or
  * errors); the caller then polls the port until the listener is gone.
+ *
+ * PROXY_AUTH_TOKEN (#45): /_shutdown requires the token when the proxy was
+ * started with one — a destructive endpoint must not stay open to whatever
+ * else can reach the port. Read from env (settings.json `env` plumbing, the
+ * same source the proxy itself read) and presented as Bearer; a 401 reads as
+ * "not acknowledged" so the caller's waitGone() poll decides. Not logged — a
+ * token-bearing header is a secret, and nothing here logs headers.
  * @param {number} port
  * @returns {Promise<boolean>} true if the proxy acknowledged the shutdown.
  */
 export function requestShutdown(port) {
+	const headers = process.env.PROXY_AUTH_TOKEN
+		? { authorization: `Bearer ${process.env.PROXY_AUTH_TOKEN}` }
+		: {};
 	return new Promise((resolve) => {
 		const req = http.request(
-			{ hostname: "127.0.0.1", port, path: "/_shutdown", method: "POST", timeout: 1000 },
+			{ hostname: "127.0.0.1", port, path: "/_shutdown", method: "POST", timeout: 1000, headers },
 			(res) => {
 				res.resume();
 				res.on("end", () => resolve(res.statusCode === 200));

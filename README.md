@@ -295,6 +295,7 @@ The statusline runs as its own subprocess and only inherits `settings.json`'s `e
 | `PROXY_PATH` | auto | Legacy override for the proxy entry point; the plugin tree's own `bin/cc-proxy.js` wins when present |
 | `PROXY_PORT` | `4000` | Proxy listen port |
 | `PROXY_HOST` | `127.0.0.1` | Interface the proxy binds to (loopback by default) |
+| `PROXY_AUTH_TOKEN` | — | Optional bearer token (issue #45). When set, everything except `GET /_ping`/`/_status` requires `Authorization: Bearer <token>` (or `x-api-key`), including `/_shutdown`. For the `PROXY_HOST=0.0.0.0` opt-out; unset = no auth. Claude Code sends it via `ANTHROPIC_AUTH_TOKEN` in settings.json `env` |
 | `PROXY_UPSTREAM_TIMEOUT_MS` | `120000` | Upstream socket-inactivity timeout; raise for 1M-context cold calls |
 | `DEFAULT_BACKEND` | `claude` | Backend when no model prefix matches |
 | `PROXY_READY_TIMEOUT_MS` | `3000` | Hook readiness-poll ceiling after spawn |
@@ -308,6 +309,7 @@ The statusline runs as its own subprocess and only inherits `settings.json`'s `e
 - **API errors after setup** — setup starts the proxy itself, so this is usually an *already-open* session that retargeted before the proxy came up. `/exit` + `/resume` it (the SessionStart hook ensures the proxy is running). If a new session also errors, check `~/.claude/cc-proxy/cc-proxy.log`.
 - **`400 model: String should have at most 256 characters`** — a `"model": "glm-..."` default in settings.json with the proxy not running. Pick the model with `/model` instead, or start the proxy.
 - **Port 4000 in use** — set `PROXY_PORT` in `env`.
+- **Binding off-loopback (`PROXY_HOST=0.0.0.0`)** — the proxy injects API keys and forwards OAuth, so an off-host bind is exposed spend unless you also set `PROXY_AUTH_TOKEN` (any long random string). Then add `"ANTHROPIC_AUTH_TOKEN": "<same token>"` to settings.json `env` so Claude Code presents it. Caveat: CC has one credential slot — with it consumed by the proxy token, `claude-*` requests forward WITHOUT your OAuth token, so auth mode is for third-party routing (GLM/DeepSeek/Qwen/OpenRouter/LM Studio), not Claude. `/_ping` and `/_status` stay open (liveness, no secrets); `/_shutdown` requires the token (the SessionStart hook presents it automatically).
 - **`proxy down` in statusline** — check `lsof -ti:4000` and `~/.claude/cc-proxy/cc-proxy.log`.
 - **A gauge is stuck on `!`** — only worth chasing if it stays for many seconds; a flash once a minute is the normal refresh (above). The refresher runs detached with its output discarded, so run it in the foreground to see the error it is swallowing:
 

@@ -561,4 +561,32 @@ describe("lifecycle probes settle when the response is cut mid-body", () => {
 			srv.close();
 		}
 	});
+
+	// #45: /_shutdown requires PROXY_AUTH_TOKEN when the proxy has one, so the
+	// hook must present it. Pin the wiring (env -> Authorization header) with a
+	// stub that records the header and answers 200; without the header it would
+	// be a 401 and the hook's stale-replacement flow would silently stop working
+	// on any auth-enabled install.
+	it("requestShutdown presents PROXY_AUTH_TOKEN as a Bearer header (issue #45)", async () => {
+		let sawAuth;
+		const srv = http.createServer((req, res) => {
+			sawAuth = req.headers.authorization;
+			res.writeHead(200, { "content-type": "application/json" });
+			res.end("{}");
+		});
+		await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+		const prev = process.env.PROXY_AUTH_TOKEN;
+		process.env.PROXY_AUTH_TOKEN = "hook-tok";
+		try {
+			const ok = await requestShutdown(srv.address().port);
+			assert.equal(ok, true);
+			assert.equal(sawAuth, "Bearer hook-tok");
+		} finally {
+			// biome-ignore lint/performance/noDelete: one-time test env restore
+			if (prev === undefined) delete process.env.PROXY_AUTH_TOKEN;
+			else process.env.PROXY_AUTH_TOKEN = prev;
+			srv.closeAllConnections();
+			srv.close();
+		}
+	});
 });

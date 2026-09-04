@@ -12,6 +12,7 @@ describe("config load", () => {
 	afterEach(() => {
 		process.env.PROXY_HOST = "";
 		process.env.PROXY_PORT = "";
+		process.env.PROXY_AUTH_TOKEN = "";
 	});
 
 	it("defaults host to loopback", () => {
@@ -22,6 +23,21 @@ describe("config load", () => {
 	it("honors PROXY_HOST when set", () => {
 		process.env.PROXY_HOST = "0.0.0.0";
 		assert.equal(load().host, "0.0.0.0");
+	});
+
+	it("PROXY_AUTH_TOKEN is undefined when unset (issue #45: auth off by default)", () => {
+		process.env.PROXY_AUTH_TOKEN = "";
+		assert.equal(load().authToken, undefined);
+	});
+
+	it("PROXY_AUTH_TOKEN is loaded from env when set", () => {
+		process.env.PROXY_AUTH_TOKEN = "tok";
+		assert.equal(load().authToken, "tok");
+	});
+
+	it("an explicit authToken override wins over env", () => {
+		process.env.PROXY_AUTH_TOKEN = "tok";
+		assert.equal(load({ authToken: "other" }).authToken, "other");
 	});
 
 	it("an explicit host override wins over env", () => {

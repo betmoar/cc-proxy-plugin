@@ -104,6 +104,19 @@ skipped GLM, say plainly that the picker entry was skipped too, and that adding
 
 Write the file back with 2-space indentation, matching the existing formatting.
 
+**PROXY_AUTH_TOKEN — only if the user says the proxy must be reachable off this
+machine** (e.g. another device on the LAN, `PROXY_HOST=0.0.0.0`). Ask:
+
+> "You want the proxy reachable from other machines. It injects API keys, so it needs a shared token. Enter one (any long random string), or press Enter to skip and keep loopback-only:"
+
+If given: write `PROXY_AUTH_TOKEN=<value>` to `~/.env` **and** merge
+`"ANTHROPIC_AUTH_TOKEN": "<same value>"` into settings.json `env` (that is how
+Claude Code presents it to the proxy). Also warn, once, in plain words: with the
+token in place, Claude Code's single credential slot is the proxy token, so
+`claude-*` model requests no longer carry OAuth — this mode is for GLM/OpenRouter/
+DeepSeek/Qwen/LM Studio routing. If the user did not ask for off-host access, do
+NOT configure any of this; the loopback default needs no token.
+
 ### 4. Optional: enable the statusline
 
 Ask the user whether they want the quota/credits statusline. It shows Claude 5-hour usage, GLM coding quota, OpenRouter credits (when `OPENROUTER_API_KEY` is set), DeepSeek balance (when `DEEPSEEK_API_KEY` is set), Qwen presence (when `DASHSCOPE_API_KEY` is set), and a bold-red `proxy down` when the local proxy is unreachable.

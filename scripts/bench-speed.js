@@ -113,7 +113,15 @@ export async function timeOne(id, port) {
 	try {
 		const res = await fetch(`http://127.0.0.1:${port}/v1/messages`, {
 			method: "POST",
-			headers: { "content-type": "application/json", "anthropic-version": "2023-06-01" },
+			// PROXY_AUTH_TOKEN (#45): presented when configured so the bench works
+			// against an auth-gated proxy. Never logged.
+			headers: {
+				"content-type": "application/json",
+				"anthropic-version": "2023-06-01",
+				...(process.env.PROXY_AUTH_TOKEN
+					? { authorization: `Bearer ${process.env.PROXY_AUTH_TOKEN}` }
+					: {}),
+			},
 			body: JSON.stringify({
 				model: id,
 				max_tokens: 4,

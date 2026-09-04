@@ -1,5 +1,5 @@
 // @ts-check
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import http from "node:http";
 import {
 	RATE_LIMIT_RETRY_AFTER_SECONDS,
@@ -501,6 +501,89 @@ export function vendorRequestIdOf(body) {
 	return typeof v === "string" && /^[A-Za-z0-9._-]{1,128}$/.test(v) ? v : undefined;
 }
 
+/**
+ * Constant-time token compare. `timingSafeEqual` requires equal lengths, so a
+ * length-leak-free form hashes both sides first (SHA-256 via the digest
+ * shortcut — no interim Buffer) and compares the fixed-size digests; a wrong-
+ * length token then costs one hash, indistinguishable from a right-length one.
+ * The issue (#45) named the constant-time requirement explicitly, and a plain
+ * `===` on a shared-LAN adversary's timing trace is the classic string-oracle.
+ *
+ * @param {string} presented
+ * @param {string} expected
+ * @returns {boolean}
+ */
+function tokenMatches(presented, expected) {
+	const a = createHash("sha256").update(presented).digest();
+	const b = createHash("sha256").update(expected).digest();
+	return timingSafeEqual(a, b);
+}
+
+/**
+ * PROXY_AUTH_TOKEN enforcement (issue #45), applied at the TOP of the dispatcher
+ * — before `req.on("data")` is ever attached, so an unauthenticated request is
+ * rejected with its body never buffered (the 2026-09-02 addendum in the issue:
+ * off-loopback, anyone can stream gigabytes at /v1/messages and the unbounded
+ * `chunks` array takes every session down with an OOM — the 401 must win that
+ * race, and attaching the gate after the data listener loses it).
+ *
+ * TWO headers count: `Authorization: Bearer <token>` (what Claude Code sends
+ * for ANTHROPIC_AUTH_TOKEN, so the client side of this feature is one line in
+ * settings.json) and `x-api-key: <token>` (the sibling credential header this
+ * proxy already speaks on its outbound legs). `GET /_ping` and `GET /_status`
+ * stay open — liveness and config introspection carry no secrets and are the
+ * endpoints the SessionStart hook itself polls.
+ *
+ * AFTER A MATCH the presented header is DELETED from `req.headers` before any
+ * forwarding path can copy it (buildUpstreamHeaders builds from `req.headers`).
+ * This is not tidiness — on the claude route the OAuth strategy passes inbound
+ * headers through, so a token presented via `Authorization: Bearer <proxy
+ * token>` would otherwise be forwarded VERBATIM to api.anthropic.com, leaking
+ * the proxy's own credential off-box. The api-key route overwrites both headers
+ * and the bearer routes overwrite Authorization; the delete is what closes the
+ * passthrough route. It also keeps the third-party strategies from seeing the
+ * proxy token at all (`rest` would carry an x-api-key they don't expect).
+ *
+ * @param {http.IncomingMessage} req
+ * @param {string} token
+ * @returns {boolean} true when the request is authorized to proceed
+ */
+function isAuthorized(req, token) {
+	const auth = typeof req.headers.authorization === "string" ? req.headers.authorization : "";
+	const bearer = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+	const apiKey = typeof req.headers["x-api-key"] === "string" ? req.headers["x-api-key"] : "";
+	if (!bearer && !apiKey) return false;
+	if ((bearer && tokenMatches(bearer, token)) || (apiKey && tokenMatches(apiKey, token))) {
+		// req.headers is a plain per-request object; the deopt this rule guards
+		// is irrelevant on a path that runs once per request.
+		// biome-ignore lint/performance/noDelete: per-request object, not a hot loop
+		delete req.headers.authorization;
+		// biome-ignore lint/performance/noDelete: per-request object, not a hot loop
+		delete req.headers["x-api-key"];
+		return true;
+	}
+	return false;
+}
+
+/**
+ * The 401 itself — written IMMEDIATELY, per the issue's "bare 401 before any
+ * body parse". `req.resume()` then drains and discards whatever the rejected
+ * peer is uploading: the stream flows straight through without one chunk
+ * landing in the `chunks` array, so the OOM channel stays closed while the
+ * client still receives a real status it can key on (a socket destroy would
+ * answer "connection reset", which no client distinguishes from a dead proxy).
+ */
+function rejectUnauthorized(req, res) {
+	res.writeHead(401, { "content-type": "application/json", "www-authenticate": "Bearer" });
+	res.end(
+		JSON.stringify({
+			type: "error",
+			error: { type: "authentication_error", message: "PROXY_AUTH_TOKEN required" },
+		}),
+	);
+	req.resume();
+}
+
 export function createServer(config) {
 	const server = http.createServer((req, res) => {
 		const reqId = requestIdOf(req);
@@ -528,6 +611,20 @@ export function createServer(config) {
 			req.resume();
 			if (pathname === "/_ping") handlePing(res);
 			else handleStatus(res, config);
+			return;
+		}
+
+		// PROXY_AUTH_TOKEN gate (issue #45): everything that is not a GET probe
+		// requires the token when one is configured. Deliberately an INVERTED
+		// allowlist — gating only /v1/* would leave the fall-through (unmatched
+		// paths reach handleProxy and forward with injected keys) open to the LAN
+		// this mode exists to exclude. Placement is after the probes (they stay
+		// open) and before req.on("data") (the 401 must beat body buffering;
+		// see isAuthorized). /_shutdown being gated is the POINT: it is the one
+		// destructive local endpoint, and the hook presents the token too
+		// (requestShutdown reads PROXY_AUTH_TOKEN from its env).
+		if (config.authToken && !isAuthorized(req, config.authToken)) {
+			rejectUnauthorized(req, res);
 			return;
 		}
 
