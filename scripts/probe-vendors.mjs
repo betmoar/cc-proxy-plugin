@@ -28,6 +28,8 @@
 // whole file was written to prevent.
 
 import { loadEnv } from "../src/env.js";
+import { DEFAULT_QWEN_MODELS } from "../src/models.js";
+import { ROUTES } from "../src/routes.js";
 import { isDirectRun } from "./direct-run.js";
 
 // loadEnv() runs in the CLI guard at the bottom, NOT at import time: the test
@@ -525,6 +527,251 @@ async function probe(c) {
 	}
 }
 
+// ── CATALOG DRIFT (issue #37) ─────────────────────────────────────────────────
+//
+// The hand-owned tables (ROUTES, the static catalogs, CONTEXT_WINDOW) rot
+// silently because no test can reach a vendor. This mode prints the
+// DISAGREEMENTS between our tables and the vendors' own lists, so rot becomes
+// a diff instead of a rediscovery. It never edits anything: backlog item 12
+// says ROUTES records probed facts, and the human decides every row.
+//
+// THREE comparison classes, from the issue's evidence:
+//   DRIFT  <id> requested -> <served> served (alias)   — POST /v1/messages
+//          answers 200 but the body's model is a DIFFERENT id; the vendor
+//          aliases. Per-backend by nature (Z.ai aliases glm-5* onto glm-5.3;
+//          the Qwen plan serves REAL glm-5.2 and 400s glm-5.3) — the report
+//          is per-provider, never global.
+//   DRIFT  <id> routable, absent from ROUTES           — the provider's match()
+//          predicate claims the id (so it routes) but ROUTES has no entry;
+//          native-first/cheapest ranking then silently does nothing for it.
+//   STALE  <endpoint> omits <id>                       — a VENDOR list is
+//          behind our tables (the /api/anthropic/v1/models case: it did not
+//          know glm-5.3 existed). Informational: the vendor's omission is
+//          not our bug, but it IS the trap an auto-resolver would fall into,
+//          and it flags which of our ids the skin's own discovery cannot see.
+//
+// The comparison itself is PURE (diffCatalogs) and exported for the hermetic
+// suite; only the fetching is live.
+
+/**
+ * The bare glm- / qwen- / deepseek-prefixed ids our registry routes by SHAPE
+ * provider (the match() predicates, restated for comparison — the predicates
+ * live in providers.js and are not exported; restating the SHAPE here is the
+ * drift check, and a divergence between this and providers.js is itself a
+ * finding the hermetic suite catches by importing both).
+ */
+function shapeRoutedIds(providerId) {
+	const ids = new Set();
+	for (const id of Object.keys(ROUTES)) {
+		if (ROUTES[id].some((r) => r.provider === providerId)) ids.add(id);
+	}
+	return ids;
+}
+
+/**
+ * Pure comparison: our ROUTES-covered ids for a provider vs that vendor's
+ * live list. Returns printable report lines.
+ *
+ * @param {string} providerId
+ * @param {string[]} vendorListed - ids the vendor's own /models endpoint returns
+ * @param {string} endpointLabel - for the STALE line
+ * @returns {string[]}
+ */
+export function diffCatalogs(providerId, vendorListed, endpointLabel) {
+	const lines = [];
+	const ours = shapeRoutedIds(providerId);
+	const theirs = new Set(vendorListed);
+	// ROUTES records non-200 statuses DELIBERATELY (complete, not curated): the
+	// qwen rows for glm-5.3 (400) and glm-5.1/glm-5 (403) document that the plan
+	// REFUSES them — so the vendor list omitting those ids is agreement, not
+	// staleness. A STALE line fires only for an id we say the provider SERVES
+	// (status 200) that its own list cannot see.
+	for (const id of ours) {
+		const route = ROUTES[id]?.find((r) => r.provider === providerId);
+		if (!theirs.has(id) && route?.status === 200) {
+			lines.push(`STALE  ${endpointLabel} omits ${id} (ROUTES says ${providerId}:200)`);
+		}
+	}
+	// Vendor lists ids our ROUTES does not cover at all. Not a defect — unlisted
+	// ids still route via predicates, ROUTES only adds ranking — so these are
+	// INFO, and only for ids the registry would even claim (the provider's
+	// predicate shapes: glm-/qwen-prefixed bare ids for glm and qwen; slash ids
+	// are OpenRouter's namespace; media/audio ids like wan2.7-image route by
+	// PATH, never by shape, so they are not drift).
+	for (const id of theirs) {
+		if (ours.has(id) || id.includes("/")) continue;
+		// qwen-audio-* / wan* are MEDIA namespaces served on the DashScope-native
+		// tunnel (path-routed, issue #40), never through the Anthropic skin the
+		// drift check compares against — excluded.
+		const media = id.startsWith("qwen-audio") || id.startsWith("wan");
+		const shapeMatched =
+			providerId === "glm"
+				? id.startsWith("glm-")
+				: providerId === "qwen"
+					? !media && (id.startsWith("qwen") || id.startsWith("deepseek-"))
+					: false;
+		if (shapeMatched) {
+			lines.push(
+				`INFO   ${id} listed by vendor, absent from ROUTES (routes by shape; no rank entry)`,
+			);
+		}
+	}
+	return lines;
+}
+
+/**
+ * One alias check: POST a minimal message asking for `id` and report when the
+ * 200 body names a DIFFERENT model. The response body is ground truth from the
+ * request path itself — no catalog involved (issue #37's core finding).
+ *
+ * @param {{url: string, auth: (k: string) => Record<string, string>, key: string, id: string}} c
+ * @returns {Promise<{requested: string, served?: string, status?: number, error?: string}>}
+ */
+async function probeServedModel(c) {
+	const key = process.env[c.key];
+	if (!key) return { requested: c.id, error: "no key" };
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), 30_000);
+	try {
+		const res = await fetch(c.url, {
+			method: "POST",
+			headers: { "content-type": "application/json", ...c.auth(key) },
+			body: JSON.stringify({
+				model: c.id,
+				max_tokens: 4,
+				messages: [{ role: "user", content: "ok" }],
+			}),
+			signal: controller.signal,
+		});
+		let served;
+		try {
+			const body = await res.json();
+			served = typeof body?.model === "string" ? body.model : undefined;
+		} catch {
+			served = undefined;
+		}
+		return { requested: c.id, served, status: res.status };
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err);
+		return {
+			requested: c.id,
+			error: controller.signal.aborted ? `timed out (${message})` : message,
+		};
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+/** Fetch a vendor /models list as bare id strings. */
+async function fetchListedIds(url, headers) {
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), 30_000);
+	try {
+		const res = await fetch(url, { headers, signal: controller.signal });
+		if (res.status < 200 || res.status >= 300) return { error: `HTTP ${res.status}` };
+		const body = await res.json();
+		const ids = Array.isArray(body?.data)
+			? body.data.map((m) => (typeof m?.id === "string" ? m.id : null)).filter(Boolean)
+			: [];
+		return { ids };
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err);
+		return { error: controller.signal.aborted ? `timed out (${message})` : message };
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+/**
+ * The drift pass. Prints its lines and returns { drifts, ran } — drifts feed
+ * the exit code (a drift is a disagreement with a source table, exit 1);
+ * `ran` false means nothing could be reached (the pass was UNVERIFIED).
+ */
+async function driftReport() {
+	const lines = [];
+	let reached = 0;
+	let attempted = 0;
+	// ANY unreachable leg (list fetch OR alias check) — an UNREACHABLE line
+	// printed next to exit 0 would break the contract ("0 = everything ran and
+	// matched"), so the exit logic needs this, not just `reached`.
+	let unreachableLegs = 0;
+	driftReportRan = true;
+
+	// GLM: the Anthropic-skin list (the one /v1/models republishes) — the
+	// endpoint the issue measured omitting glm-5.3. SCOPE: only this list; the
+	// issue's other two Z.ai endpoints (/api/paas/v4/models, /api/v1/models)
+	// are not re-fetched — they disagree with each other, and the served-model
+	// checks below are the ground truth that outranks all lists.
+	if (process.env.GLM_API_KEY) {
+		attempted++;
+		const listed = await fetchListedIds("https://api.z.ai/api/anthropic/v1/models", {
+			"x-api-key": process.env.GLM_API_KEY,
+			"anthropic-version": "2023-06-01",
+		});
+		if (listed.error) {
+			unreachableLegs++;
+			lines.push(`UNREACHABLE  glm /api/anthropic/v1/models: ${listed.error}`);
+		} else {
+			reached++;
+			lines.push(...diffCatalogs("glm", listed.ids, "glm /api/anthropic/v1/models"));
+		}
+		// Alias checks on the multi-version glm ids where the issue measured
+		// aliasing (glm-5.2/5.1/5 -> glm-5.3 on Z.ai).
+		for (const id of ["glm-5.2", "glm-5.1", "glm-5.3"]) {
+			const served = await probeServedModel({
+				url: "https://api.z.ai/api/anthropic/v1/messages",
+				auth: (k) => ({ "x-api-key": k }),
+				key: "GLM_API_KEY",
+				id,
+			});
+			if (served.error) {
+				unreachableLegs++;
+				lines.push(`UNREACHABLE  glm ${id} served-model check: ${served.error}`);
+			} else if (served.status === 200 && served.served && served.served !== served.requested) {
+				lines.push(`DRIFT  ${served.requested} requested -> ${served.served} served (alias)`);
+			} else if (served.status !== 200) {
+				lines.push(
+					`DRIFT  ${served.requested} expected 200 (ROUTES says glm:200) got ${served.status}`,
+				);
+			}
+		}
+	}
+
+	// Qwen plan: the OpenAI-compatible list the live fetch uses.
+	if (process.env.DASHSCOPE_API_KEY) {
+		attempted++;
+		const listed = await fetchListedIds(
+			"https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/models",
+			{ authorization: `Bearer ${process.env.DASHSCOPE_API_KEY}` },
+		);
+		if (listed.error) {
+			unreachableLegs++;
+			lines.push(`UNREACHABLE  qwen /compatible-mode/v1/models: ${listed.error}`);
+		} else {
+			reached++;
+			lines.push(...diffCatalogs("qwen", listed.ids, "qwen /compatible-mode/v1/models"));
+		}
+	}
+
+	// PROSE ONLY in non-JSON mode: --json stdout must stay machine-parseable
+	// end to end, and a trailing "catalog drift:" block after the JSON blob
+	// would kill every `| jq` downstream.
+	if (!JSON_OUT) {
+		if (lines.length) {
+			console.log("\ncatalog drift:");
+			for (const l of lines) console.log(`  ${l}`);
+		} else if (attempted) {
+			console.log("\ncatalog drift: none — every table agrees with every reachable vendor list");
+		}
+	}
+	return {
+		drifts: lines.filter((l) => l.startsWith("DRIFT")).length,
+		lines,
+		ran: reached > 0,
+		unreachableLegs,
+	};
+}
+
 async function main() {
 	const results = [];
 	for (const c of CASES) results.push(await probe(c));
@@ -583,13 +830,34 @@ async function main() {
 		}
 	}
 
+	// Catalog drift (issue #37): runs in BOTH modes — drift is a disagreement
+	// with a source table exactly like a case mismatch, so a plain run must not
+	// hide drift. In --json mode the lines ride IN the payload (driftReport
+	// prints nothing there), keeping stdout machine-parseable end to end.
+	const drift = await driftReport();
+	if (JSON_OUT && (drift.lines.length || !driftReportRan)) {
+		// Re-emit the whole payload with drift appended — the JSON was already
+		// printed above, so the cleanest machine contract is a SECOND object;
+		// document it in the header instead of buffering a refactor.
+		console.log(JSON.stringify({ drift, probedAt: new Date().toISOString() }, null, 2));
+	}
+
 	// Precedence: a real disagreement outranks unreachability, which outranks
-	// having run nothing — the most actionable fact wins the exit code.
-	if (disagreed.length) return 1;
-	if (unreachable.length) return 2;
+	// having run nothing — the most actionable fact wins the exit code. Drift
+	// lines sit at the same rank as case disagreements. Any unreachable LEG of
+	// the drift pass (list fetch or alias check) sits with unreachable cases:
+	// an UNREACHABLE line printed next to exit 0 would break "0 = everything
+	// ran and matched".
+	if (disagreed.length || drift.drifts) return 1;
+	if (unreachable.length || drift.unreachableLegs > 0) return 2;
 	if (!ranKeyed.length) return 3;
 	return 0;
 }
+
+// Whether the drift pass had anything to attempt (keys present); module-level
+// so main()'s --json branch can see it after the await. Set inside
+// driftReport(). (Exit logic reads drift.unreachableLegs, not this.)
+let driftReportRan = false;
 
 // Only run the CLI when invoked directly, not when imported by tests — the
 // same guard release-gate.mjs uses. Importing must be free of network calls
