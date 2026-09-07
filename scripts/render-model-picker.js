@@ -130,9 +130,9 @@ export function contextPin(settings) {
  * a fake HOME or a spawned process — this is the ONLY place the flags, the two
  * refusals, the env-drop wiring and the three report lines exist, and each was
  * measured to survive the suite while `main()` was unreachable: swapping
- * `dropped.settings` for `settings` leaves the superseded env beside the new
- * rows so the model renders twice, and neutering the empty-rows refusal deletes
- * a keyless user's picker outright (issue #30).
+ * `dropped.settings` for `settings` leaves the superseded env in place, which
+ * CC resolves in the ENV's favour and drops our row for that id, and neutering
+ * the empty-rows refusal deletes a keyless user's picker outright (issue #30).
  *
  * Returns the process exit code rather than setting `process.exitCode`, so the
  * refusals are assertable.
@@ -175,17 +175,22 @@ export function run(opts = {}) {
 	try {
 		settings = readSettings(file);
 	} catch (e) {
+		// "could not be read" covers both halves: readSettings rethrows any
+		// non-ENOENT fs error (EACCES on an unreadable file, EISDIR on a path that
+		// is a directory) as well as a parse failure, and reporting an EACCES as
+		// "not valid JSON" sends the user to edit a file that is fine.
 		err(
-			`cc-proxy: ${file} could not be read as JSON (${/** @type {Error} */ (e).message}). Fix it by hand and re-run; nothing was written.\n`,
+			`cc-proxy: ${file} could not be read (${/** @type {Error} */ (e).message}). Fix it by hand and re-run; nothing was written.\n`,
 		);
 		return 1;
 	}
 
 	const pin = contextPin(settings);
 	const dropped = dropSupersededEnv(settings);
-	// dropped.settings, NEVER the original: with replaceBuiltInOptions:false the
-	// one-slot ANTHROPIC_CUSTOM_MODEL_OPTION renders ALONGSIDE the generated rows,
-	// so keeping it shows that model twice.
+	// dropped.settings, NEVER the original: CC dedupes the picker by model id and
+	// the one-slot ANTHROPIC_CUSTOM_MODEL_OPTION WINS, so keeping it replaces our
+	// row for that id with a bare one — no behavesAs, so the catalog warning comes
+	// back, and "Custom model" where the window should be (measured).
 	const merged = mergePicker(dropped.settings, rows);
 
 	if (dryRun) {
@@ -198,7 +203,7 @@ export function run(opts = {}) {
 	out(`cc-proxy: wrote ${rows.length} modelPicker rows to ${file}\n`);
 	if (dropped.removed.length > 0) {
 		out(
-			`cc-proxy: removed superseded env ${dropped.removed.join(", ")} — the generated rows include that model, and both would render.\n`,
+			`cc-proxy: removed superseded env ${dropped.removed.join(", ")} — the generated rows cover that model, and the env would have overridden ours.\n`,
 		);
 	}
 	if (pin !== undefined) {

@@ -69,9 +69,9 @@ function pickerLine() {
 		// debug-log-only for a SessionStart hook (measured, #55), so this costs
 		// the user nothing and leaves a maintainer something to grep.
 		//
-		// Reachable despite every helper in picker-staleness.js self-catching:
-		// readPickerRows and hasLegacyCustomModelOption call os.homedir() in
-		// DEFAULT-PARAMETER position, which is evaluated before their own try.
+		// No specific reachable throw is known — every helper in
+		// picker-staleness.js self-catches its I/O. This is the belt for a defect
+		// in the logic BETWEEN them, which is exactly the class no test predicts.
 		process.stderr.write(
 			`cc-proxy: picker-staleness check failed: ${/** @type {Error} */ (err).message}\n`,
 		);

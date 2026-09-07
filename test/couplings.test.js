@@ -758,8 +758,36 @@ describe("cross-file couplings", () => {
 	// and silently reintroduces the truncate window. bench-grades.js is included
 	// because it is where this pattern was established and the two must not
 	// diverge: whichever a future author copies from should be correct.
+	// COUPLING: the staleness hook decides whether a modelPicker row is OURS by
+	// looking for a marker in the row's description — it deliberately does not
+	// import src/ (a hook must start from a tree whose src/ is mid-update), so
+	// the two sides are joined by a string and nothing else. Change buildRows()'s
+	// description format without this and every generated row reads as foreign:
+	// the staleness notice goes silent forever, and users on the legacy config
+	// get told to re-run setup they already ran.
+	it("every generated row carries the marker the staleness hook looks for", async () => {
+		const { buildRows } = await import("../src/model-picker.js");
+		const { GENERATED_MARKER, isOurRow } = await import("../hooks/picker-staleness.js");
+		const rows = buildRows({
+			GLM_API_KEY: "g",
+			DEEPSEEK_API_KEY: "d",
+			DASHSCOPE_API_KEY: "q",
+		});
+		assert.ok(rows.length > 0, "no rows to check — the assertion below is vacuous");
+		for (const row of rows) {
+			assert.ok(
+				isOurRow(row),
+				`buildRows() emitted ${row.model} with description "${row.description}", which does not contain "${GENERATED_MARKER}" — hooks/picker-staleness.js would read it as a row the USER wrote and never notify about it`,
+			);
+		}
+	});
+
 	it("no writer of a user-visible file writes straight to its target", () => {
-		for (const f of ["scripts/render-model-picker.js", "scripts/bench-grades.js"]) {
+		for (const f of [
+			"scripts/render-model-picker.js",
+			"scripts/bench-grades.js",
+			"hooks/picker-staleness.js",
+		]) {
 			const src = read(f);
 			const writes = [...src.matchAll(/fs\.writeFileSync\(\s*(\w+)/g)].map((m) => m[1]);
 			assert.ok(writes.length > 0, `${f} has no writeFileSync — did this test's pattern rot?`);

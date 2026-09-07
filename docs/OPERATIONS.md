@@ -55,6 +55,17 @@ With `MAX_CONTEXT_TOKENS` neutralized, bare `glm-4.6` = 200K with *and* without 
 
 **Known limitation.** A per-row window *below* 200K is inexpressible, so `glm-4.5` / `glm-4.5-air` (128K) are budgeted at 200K. The only sub-200K channel is the global `CLAUDE_CODE_MAX_CONTEXT_TOKENS`, which `behavesAs` disables on every row — and setting it globally would break the nine 1M ids. Left as-is deliberately: over-budgeting a 128K model means the vendor truncates first, while under-budgeting the 1M ids costs 800K of context every session.
 
+**What the picker actually renders** (measured 2026-09-07 against CC 2.1.263, driving `claude --settings <file>` on a pty and reconstructing the screen — the earlier measurements read `/context` and stderr, never the picker itself):
+
+| `replaceBuiltInOptions` | rows | what you get |
+| --- | --- | --- |
+| `false` (what setup writes) | 22 | all six built-ins (Default, Opus, Fable, Sonnet, Sonnet 1M, Haiku) **kept**, the 16 generated rows appended after them |
+| `true` | 18 | Default + the 16 generated rows + the active model. Fable, Sonnet and Haiku are **gone** |
+
+So `false` is the setting that keeps Claude reachable from the picker, and it is what `render-model-picker.js` writes when the key is absent.
+
+**The one-slot env loses you a row, it does not duplicate one.** With `ANTHROPIC_CUSTOM_MODEL_OPTION=glm-5.3[1m]` still set alongside the generated rows, the picker showed 22 rows — `glm-5.3[1m] — Custom model (glm-5.3[1m])` at position 7 and **no** `GLM-5.3 (1M)` in the generated block. Clearing the env gave 22 again with `GLM-5.3 (1M)` restored at 15. CC dedupes by model id and the env wins, so leaving it in place trades a row carrying `behavesAs` and a real window for a bare one that warns. That is why `render-model-picker.js` removes the three `ANTHROPIC_CUSTOM_MODEL_OPTION*` keys.
+
 **`behavesAs` is one constant for all rows** (`claude-sonnet-5`). Five targets were probed — `claude-sonnet-4-5`, `-4-6`, `claude-sonnet-5`, `claude-opus-5`, `claude-haiku-4-5` — and all five gave the same 200K window and the same suppression. Whether the target changes anything beyond the warning (CC says it also supplies "prompt profile, capability and effort defaults") is **unmeasured**; a per-id table would be inventing precision.
 
 ## Model assignment

@@ -462,7 +462,9 @@ describe("render-model-picker run() (issue #62)", () => {
 		fs.writeFileSync(file, "{ not json");
 		const { code, err } = await invoke({ argv: [], file, env: GLM });
 		assert.equal(code, 1);
-		assert.match(err, /could not be read as JSON/);
+		// "could not be read", not "as JSON": readSettings rethrows EACCES/EISDIR
+		// too, and calling those a JSON problem sends the user to edit a fine file.
+		assert.match(err, /could not be read \(/);
 		assert.equal(fs.readFileSync(file, "utf8"), "{ not json", "a malformed file was overwritten");
 	});
 

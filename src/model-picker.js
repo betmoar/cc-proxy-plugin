@@ -367,9 +367,14 @@ function bare(model) {
  * reason for each. Exported so the skill and the script cannot disagree about
  * the list.
  *
- * ANTHROPIC_CUSTOM_MODEL_OPTION* — with `replaceBuiltInOptions: false` BOTH
- * render, so keeping it duplicates whichever id it names (today `glm-5.3[1m]`,
- * which is now row one of the generated set).
+ * ANTHROPIC_CUSTOM_MODEL_OPTION* — it names an id the generated set now also
+ * names, and CC dedupes by model id with THE ENV WINNING. Measured in the live
+ * picker (CC 2.1.263, 2026-09-07): with the env set, row 7 rendered
+ * `glm-5.3[1m] — Custom model (glm-5.3[1m])` and `GLM-5.3 (1M)` was ABSENT from
+ * the generated block; clearing the env brought it back. So the env does not
+ * duplicate the model, it REPLACES our row with a worse one — no `behavesAs`,
+ * so the catalog warning returns for that id, and the description says "Custom
+ * model" instead of the window. Removing it is what lets our row exist at all.
  *
  * CLAUDE_CODE_MAX_CONTEXT_TOKENS is NOT in this list. It is offered for removal
  * interactively instead, never stripped: with rows in place the pin only

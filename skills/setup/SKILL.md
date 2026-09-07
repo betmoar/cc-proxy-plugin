@@ -80,8 +80,10 @@ Read the current file, then merge the following into the `env` object (create `e
 Write the file back with 2-space indentation, matching the existing formatting.
 
 Do **not** write `ANTHROPIC_CUSTOM_MODEL_OPTION` here — step 3b replaces it with
-a full row set, and both would render (the model would appear twice in the
-picker).
+a full row set. Claude Code dedupes the picker by model id and that env WINS, so
+leaving it in place replaces the generated row for that model with a bare one —
+losing its `behavesAs` (the catalog warning returns for that id) and showing
+"Custom model" instead of its context window.
 
 **PROXY_AUTH_TOKEN — only if the user says the proxy must be reachable off this
 machine** (e.g. another device on the LAN, `PROXY_HOST=0.0.0.0`). Ask:
