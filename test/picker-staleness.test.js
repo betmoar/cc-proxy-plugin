@@ -1,11 +1,12 @@
 import { strict as assert } from "node:assert";
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import {
 	hasLegacyCustomModelOption,
 	noticeFor,
@@ -168,11 +169,78 @@ describe("picker staleness I/O (issue #62)", () => {
 });
 
 describe("session-start emits one payload (issue #62)", () => {
+	/**
+	 * A plugin tree holding ONLY the three hook files and a package.json —
+	 * deliberately NO `bin/`.
+	 *
+	 * THIS IS A SAFETY PROPERTY, NOT A CONVENIENCE. `resolveProxyPath()` prefers
+	 * the tree's own `bin/cc-proxy.js` and only falls back to env `PROXY_PATH`,
+	 * so running the REPO's hook from a test means any code path that decides to
+	 * spawn starts a REAL, DETACHED, unref'd proxy on the runner. That is
+	 * unkillable by the test and it does not merely leak: a CI step never
+	 * finishes while an orphaned child of it is alive, so the job hangs with no
+	 * log and no failing test name (measured — 6+ minutes in `pnpm test` against
+	 * ~10 s locally, twice, before `--test-timeout` turned it into a nameable
+	 * failure). With no `bin/` and `PROXY_PATH=""` the spawn is unreachable by
+	 * construction rather than by argument.
+	 *
+	 * The package.json is load-bearing too: both hooks read their own tree's
+	 * version, and without one `treeVersion()` is undefined, `pickerNoticeState`
+	 * returns null, and a test asserting the picker line would pass while
+	 * measuring only the proxy line.
+	 *
+	 * @param {string} dir  the fake HOME
+	 * @returns {string} path to the tree's session-start.js
+	 */
+	function isolatedHook(dir) {
+		const hooks = path.join(dir, "tree", "hooks");
+		fs.mkdirSync(hooks, { recursive: true });
+		for (const f of ["session-start.js", "proxy-lifecycle.js", "picker-staleness.js"]) {
+			fs.copyFileSync(path.join(root, "hooks", f), path.join(hooks, f));
+		}
+		fs.writeFileSync(
+			path.join(dir, "tree", "package.json"),
+			JSON.stringify({ name: "cc-proxy", version: "0.9.9", type: "module" }),
+		);
+		return path.join(hooks, "session-start.js");
+	}
+
+	/**
+	 * Run the isolated hook and resolve its stdout.
+	 *
+	 * ASYNC ON PURPOSE. `execFileSync` blocks this process's event loop, so an
+	 * in-process http server CANNOT answer the hook's `/_status` probe while it
+	 * runs — the "already-up" test then passed only because that probe timed out
+	 * and the listener read as foreign. That is a pass for the wrong reason, and
+	 * a timing-dependent one: it is decided by whether a 1 s probe expires before
+	 * a 20 s exec, which is exactly the kind of margin that behaves differently
+	 * on a loaded CI runner. Awaiting instead lets the server actually serve.
+	 *
+	 * @param {string} dir @param {Record<string,string>} env
+	 * @returns {Promise<string>}
+	 */
+	async function runHook(dir, env) {
+		const { stdout } = await promisify(execFile)(process.execPath, [isolatedHook(dir)], {
+			env: {
+				...process.env,
+				HOME: dir,
+				USERPROFILE: dir,
+				PROXY_PATH: "",
+				PROXY_READY_TIMEOUT_MS: "300",
+				PROXY_LOG: path.join(dir, "log"),
+				...env,
+			},
+			encoding: "utf8",
+			timeout: 20000,
+		});
+		return stdout;
+	}
+
 	// The hook may have TWO things to say (proxy down, picker stale) and exactly
 	// one additionalContext field to say them in. A second process.stdout.write
 	// would emit two JSON objects on one stream, which is not parseable as a
 	// hook result — the proxy notice would be lost.
-	it("merges both notices into a single valid JSON object", () => {
+	it("merges both notices into a single valid JSON object", async () => {
 		const dir = tmp();
 		// The hook resolves settings from ~/.claude/settings.json, so the fake HOME
 		// must carry that directory — writing to $HOME/settings.json silently
@@ -183,38 +251,9 @@ describe("session-start emits one payload (issue #62)", () => {
 			path.join(dir, ".claude", "settings.json"),
 			JSON.stringify({ env: { ANTHROPIC_CUSTOM_MODEL_OPTION: "glm-5.3[1m]" } }),
 		);
-		// BOTH lines must apply, so the proxy has to fail to start. PROXY_PATH
-		// cannot arrange that: resolveProxyPath() prefers the plugin tree's OWN
-		// bin/cc-proxy.js and only falls back to the env var, so a bogus
-		// PROXY_PATH spawns a REAL proxy on the test port (measured — it left one
-		// listening on :59998). The hook is copied into a directory with no
-		// sibling bin/ instead, which is the "missing-path" state as the tree
-		// actually reaches it.
-		const isolated = path.join(dir, "tree", "hooks");
-		fs.mkdirSync(isolated, { recursive: true });
-		for (const f of ["session-start.js", "proxy-lifecycle.js", "picker-staleness.js"]) {
-			fs.copyFileSync(path.join(root, "hooks", f), path.join(isolated, f));
-		}
-		// Both hooks read their own tree's package.json for the version — without
-		// one, treeVersion() is undefined and pickerNoticeState returns null, so
-		// this test would silently assert only half of what it claims to.
-		fs.writeFileSync(
-			path.join(dir, "tree", "package.json"),
-			JSON.stringify({ name: "cc-proxy", version: "0.9.9", type: "module" }),
-		);
-		const out = execFileSync(process.execPath, [path.join(isolated, "session-start.js")], {
-			env: {
-				...process.env,
-				HOME: dir,
-				USERPROFILE: dir,
-				PROXY_PORT: "59999",
-				PROXY_PATH: "",
-				PROXY_READY_TIMEOUT_MS: "300",
-				PROXY_LOG: path.join(dir, "log"),
-			},
-			encoding: "utf8",
-			timeout: 20000,
-		});
+		// Nothing on the port and no bin anywhere -> "missing-path", so BOTH lines
+		// apply. 1 is always free of a cc-proxy (it is privileged and never ours).
+		const out = await runHook(dir, { PROXY_PORT: "1" });
 		const parsed = JSON.parse(out);
 		assert.equal(parsed.hookSpecificOutput.hookEventName, "SessionStart");
 		const text = parsed.hookSpecificOutput.additionalContext;
@@ -224,41 +263,23 @@ describe("session-start emits one payload (issue #62)", () => {
 
 	// Silence must stay byte-exact silence: a hook that prints "{}" on a healthy
 	// session adds an empty context entry to every session forever.
-	//
-	// The listener is an IN-PROCESS http server on an ephemeral port, closed in
-	// `finally`. The first version spawned a DETACHED, unref'd node process on a
-	// hard-coded 59998 and killed it with a bare `process.kill` that nothing
-	// awaited — which leaked a listener on every run and hung CI: the runner will
-	// not finish a step while an orphaned child of it is still alive (measured —
-	// the step sat in `pnpm test` for 6+ minutes against 10 s locally, while the
-	// same commit passed in 9.4 s from a clean clone). A test that needs a
-	// process outliving it is nearly always a test that can own the resource
-	// instead.
 	it("prints nothing at all when there is nothing to say", async () => {
 		const dir = tmp();
-		// No settings.json and no legacy env -> no picker notice. Something
-		// listening that does not speak /_status -> ensureProxyRunning treats it as
-		// a foreign listener and returns "already-up", the healthy path.
+		// The healthy path is "already-up": something already speaks the /_status
+		// contract AT THE TREE'S OWN VERSION. Reporting a DIFFERENT version (or
+		// none — `probeProxyVersion` resolves null for a JSON body without one)
+		// makes the listener read as STALE, which sends the hook down the
+		// shutdown-and-respawn branch. Matching 0.9.9 keeps this test on the
+		// branch it means to test.
 		const srv = http.createServer((_req, res) => {
 			res.writeHead(200, { "content-type": "application/json" });
-			res.end("{}");
+			res.end(JSON.stringify({ version: "0.9.9", providers: [] }));
 		});
 		await new Promise((resolve) => srv.listen(0, "127.0.0.1", resolve));
 		const port = srv.address().port;
 		try {
-			const out = execFileSync(process.execPath, [path.join(root, "hooks", "session-start.js")], {
-				env: {
-					...process.env,
-					HOME: dir,
-					USERPROFILE: dir,
-					PROXY_PORT: String(port),
-					PROXY_READY_TIMEOUT_MS: "300",
-					PROXY_LOG: path.join(dir, "log"),
-				},
-				encoding: "utf8",
-				timeout: 20000,
-			});
-			assert.equal(out, "");
+			// No settings.json and no legacy env in this HOME -> no picker notice.
+			assert.equal(await runHook(dir, { PROXY_PORT: String(port) }), "");
 		} finally {
 			srv.closeAllConnections();
 			srv.close();
