@@ -61,7 +61,20 @@ function emit(lines) {
 function pickerLine() {
 	try {
 		return pickerNotice() ?? "";
-	} catch {
+	} catch (err) {
+		// Written, not discarded. The sibling .catch() below still emits a
+		// "crashed" line; a bare `catch {}` here would make a defect in this path
+		// invisible to EVERY channel, which is this repo's own "a script that
+		// prints nothing may never have run" trap one level down. stderr is
+		// debug-log-only for a SessionStart hook (measured, #55), so this costs
+		// the user nothing and leaves a maintainer something to grep.
+		//
+		// Reachable despite every helper in picker-staleness.js self-catching:
+		// readPickerRows and hasLegacyCustomModelOption call os.homedir() in
+		// DEFAULT-PARAMETER position, which is evaluated before their own try.
+		process.stderr.write(
+			`cc-proxy: picker-staleness check failed: ${/** @type {Error} */ (err).message}\n`,
+		);
 		return "";
 	}
 }

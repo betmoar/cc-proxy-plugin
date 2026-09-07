@@ -69,11 +69,27 @@ export function readSettings(file) {
 }
 
 /**
- * Write settings.json, keeping a one-generation backup.
+ * Write settings.json ATOMICALLY, keeping a one-generation backup.
+ *
+ * Same tmp-then-rename shape as bench-grades.js writeGradesFile(), and for a
+ * strictly bigger reason: a plain `writeFileSync` opens with `'w'`, which
+ * TRUNCATES before writing, so a kill in that window (Ctrl-C, OOM, power loss)
+ * leaves ~/.claude/settings.json zero-length or half-written — taking the user's
+ * ANTHROPIC_BASE_URL, permissions and hooks with it. A rename within one
+ * directory is a single filesystem operation, so every reader sees either the
+ * complete old file or the complete new one. Load-bearing map #7 ranks
+ * corrupting this file as the worst outcome in this tree; grades.json, which
+ * matters far less, already had the stronger guarantee.
  *
  * The backup is the rollback this script's own docs promise. It is written
  * BEFORE the new content and only when the file already existed, so a first run
  * on a fresh machine leaves no stray .bak.
+ *
+ * The tmp file is a SIBLING (same directory), not in os.tmpdir(): rename is only
+ * atomic within a filesystem, and ~ and /tmp are routinely different mounts —
+ * across them rename() throws EXDEV, or a fallback copy reintroduces the very
+ * torn write this exists to prevent. It carries the pid so two concurrent runs
+ * cannot write each other's temp file.
  *
  * Two-space indent + trailing newline matches what Claude Code itself writes,
  * so a user's diff shows only the rows that changed.
@@ -84,7 +100,9 @@ export function readSettings(file) {
 export function writeSettings(file, settings) {
 	fs.mkdirSync(path.dirname(file), { recursive: true });
 	if (fs.existsSync(file)) fs.copyFileSync(file, `${file}.bak`);
-	fs.writeFileSync(file, `${JSON.stringify(settings, null, 2)}\n`);
+	const tmp = `${file}.tmp-${process.pid}`;
+	fs.writeFileSync(tmp, `${JSON.stringify(settings, null, 2)}\n`);
+	fs.renameSync(tmp, file);
 }
 
 /**
@@ -107,15 +125,38 @@ export function contextPin(settings) {
 	return v == null || v === "" ? undefined : String(v);
 }
 
-async function main() {
-	const argv = process.argv.slice(2);
+/**
+ * The whole command. Every effect is a parameter so a test can drive it without
+ * a fake HOME or a spawned process — this is the ONLY place the flags, the two
+ * refusals, the env-drop wiring and the three report lines exist, and each was
+ * measured to survive the suite while `main()` was unreachable: swapping
+ * `dropped.settings` for `settings` leaves the superseded env beside the new
+ * rows so the model renders twice, and neutering the empty-rows refusal deletes
+ * a keyless user's picker outright (issue #30).
+ *
+ * Returns the process exit code rather than setting `process.exitCode`, so the
+ * refusals are assertable.
+ *
+ * @param {object} [opts]
+ * @param {string[]} [opts.argv]                  flags, without argv[0..1]
+ * @param {string} [opts.file]                    settings.json to merge into
+ * @param {(s: string) => void} [opts.stdout]
+ * @param {(s: string) => void} [opts.stderr]
+ * @param {NodeJS.ProcessEnv} [opts.env]          gates which rows are reachable
+ * @returns {number} 0 on success, 1 on a refusal
+ */
+export function run(opts = {}) {
+	const argv = opts.argv ?? process.argv.slice(2);
+	const file = opts.file ?? settingsPath();
+	const out = opts.stdout ?? ((s) => process.stdout.write(s));
+	const err = opts.stderr ?? ((s) => process.stderr.write(s));
 	const dryRun = argv.includes("--dry-run");
 	const printOnly = argv.includes("--print");
 
-	const rows = buildRows();
+	const rows = buildRows(opts.env);
 	if (printOnly) {
-		process.stdout.write(`${JSON.stringify(rows, null, 2)}\n`);
-		return;
+		out(`${JSON.stringify(rows, null, 2)}\n`);
+		return 0;
 	}
 
 	if (rows.length === 0) {
@@ -123,55 +164,58 @@ async function main() {
 		// route (issue #30, sixteen times over). Refuse rather than write an empty
 		// picker — and say which file to fix, since the usual cause is keys that
 		// never made it into ~/.env.
-		process.stderr.write(
+		err(
 			"cc-proxy: no provider keys are registered, so there are no models to publish. Add a key to ~/.env (GLM_API_KEY, DEEPSEEK_API_KEY, DASHSCOPE_API_KEY, …) or re-run /cc-proxy:setup.\n",
 		);
-		process.exitCode = 1;
-		return;
+		return 1;
 	}
 
-	const file = settingsPath();
 	/** @type {Record<string, unknown>} */
 	let settings;
 	try {
 		settings = readSettings(file);
-	} catch (err) {
-		process.stderr.write(
-			`cc-proxy: ${file} could not be read as JSON (${/** @type {Error} */ (err).message}). Fix it by hand and re-run; nothing was written.\n`,
+	} catch (e) {
+		err(
+			`cc-proxy: ${file} could not be read as JSON (${/** @type {Error} */ (e).message}). Fix it by hand and re-run; nothing was written.\n`,
 		);
-		process.exitCode = 1;
-		return;
+		return 1;
 	}
 
 	const pin = contextPin(settings);
 	const dropped = dropSupersededEnv(settings);
+	// dropped.settings, NEVER the original: with replaceBuiltInOptions:false the
+	// one-slot ANTHROPIC_CUSTOM_MODEL_OPTION renders ALONGSIDE the generated rows,
+	// so keeping it shows that model twice.
 	const merged = mergePicker(dropped.settings, rows);
 
 	if (dryRun) {
-		process.stdout.write(`${JSON.stringify(merged, null, 2)}\n`);
-		return;
+		out(`${JSON.stringify(merged, null, 2)}\n`);
+		return 0;
 	}
 
 	writeSettings(file, merged);
 
-	process.stdout.write(`cc-proxy: wrote ${rows.length} modelPicker rows to ${file}\n`);
+	out(`cc-proxy: wrote ${rows.length} modelPicker rows to ${file}\n`);
 	if (dropped.removed.length > 0) {
-		process.stdout.write(
+		out(
 			`cc-proxy: removed superseded env ${dropped.removed.join(", ")} — the generated rows include that model, and both would render.\n`,
 		);
 	}
 	if (pin !== undefined) {
-		process.stdout.write(
+		out(
 			`cc-proxy: NOTE — env.CLAUDE_CODE_MAX_CONTEXT_TOKENS is still set (${pin}). It no longer affects any model with a row above; it now only applies to ids with NO row (typos, pinned subagent models, OpenRouter slash-ids), where a large value over-budgets them. Left in place — remove it by hand if you no longer want it.\n`,
 		);
 	}
+	return 0;
 }
 
 if (isDirectRun(import.meta.url)) {
-	main().catch((err) => {
-		process.stderr.write(`cc-proxy: unexpected error: ${err.message}\n`);
-		process.exit(1);
-	});
+	try {
+		process.exitCode = run();
+	} catch (err) {
+		process.stderr.write(`cc-proxy: unexpected error: ${/** @type {Error} */ (err).message}\n`);
+		process.exitCode = 1;
+	}
 }
 
 export { SUPERSEDED_ENV_KEYS };

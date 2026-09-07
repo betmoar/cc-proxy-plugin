@@ -750,4 +750,39 @@ describe("cross-file couplings", () => {
 			);
 		}
 	});
+
+	// COUPLING: every writer of a file in ~/.claude must go tmp-then-rename. The
+	// behavioural test for this (inode changes) lives in model-picker.test.js and
+	// is the real lock; this one denies the SPELLING, because the regression is a
+	// "simplification" — one writeFileSync straight to the target reads cleaner
+	// and silently reintroduces the truncate window. bench-grades.js is included
+	// because it is where this pattern was established and the two must not
+	// diverge: whichever a future author copies from should be correct.
+	it("no writer of a user-visible file writes straight to its target", () => {
+		for (const f of ["scripts/render-model-picker.js", "scripts/bench-grades.js"]) {
+			const src = read(f);
+			const writes = [...src.matchAll(/fs\.writeFileSync\(\s*(\w+)/g)].map((m) => m[1]);
+			assert.ok(writes.length > 0, `${f} has no writeFileSync — did this test's pattern rot?`);
+			for (const target of writes) {
+				// The variable's ASSIGNMENT, not its name: `const tmp = file` keeps a
+				// reassuring name while restoring the truncate (measured — the
+				// name-only version of this test passed against exactly that).
+				const decl = new RegExp(`(?:const|let)\\s+${target}\\s*=\\s*([^;\\n]+)`).exec(src);
+				assert.ok(
+					decl,
+					`${f} writes to \`${target}\`, which this test cannot trace to a declaration`,
+				);
+				assert.match(
+					decl[1],
+					/\.tmp/,
+					`${f} writes to \`${target}\`, declared as \`${decl[1].trim()}\` — that is the target itself, and writeFileSync TRUNCATES, so a kill mid-write leaves the user's file half-written. Stage a sibling \`.tmp-\` path and renameSync it over the target`,
+				);
+			}
+			assert.match(
+				src,
+				/fs\.renameSync\(/,
+				`${f} stages a temp file but never renames it into place`,
+			);
+		}
+	});
 });

@@ -110,7 +110,9 @@ wins outright — so a hand-written block silently discards any rows the user
 added themselves, with no diagnostic anywhere. The script merges: it replaces
 only the rows cc-proxy previously generated, keeps foreign rows in their exact
 positions, backs the file up to `settings.json.bak` first, and removes the
-superseded `ANTHROPIC_CUSTOM_MODEL_OPTION*` keys.
+superseded `ANTHROPIC_CUSTOM_MODEL_OPTION*` keys. The write is atomic (temp file
+renamed over the target), so an interrupted run cannot leave a half-written
+settings.json.
 
 **Why this exists.** Claude Code assumes a **200K** context window for any model
 id its built-in catalog does not describe — which is every id cc-proxy routes —

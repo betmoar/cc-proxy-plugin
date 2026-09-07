@@ -276,8 +276,9 @@ export function isGeneratedRow(row) {
  *     position is a user-visible ordering choice; appending would reshuffle the
  *     picker on every update);
  *   - foreign rows keep their exact positions and contents;
- *   - new generated rows land after the last previously-generated row, or at
- *     the end when there were none;
+ *   - new generated rows land after the last previously-generated row, or FIRST
+ *     when there were none — the generated set leads the picker, and a user's
+ *     own rows keep the tail they were presumably put in;
  *   - `replaceBuiltInOptions` is set to false only when absent, so a user who
  *     chose `true` keeps it.
  *

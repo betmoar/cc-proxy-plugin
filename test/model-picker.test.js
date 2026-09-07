@@ -140,6 +140,22 @@ describe("settings merge (issue #62)", () => {
 		assert.ok(models.slice(1, -1).every((m) => m.startsWith("glm-")));
 	});
 
+	// The docstring said "at the end" and the code puts them FIRST — a comment
+	// nothing could execute, in a repo whose first trap is that a comment
+	// asserting behaviour rots louder than untested code. Front is the right
+	// behaviour (the generated set leads the picker); the prose was what was
+	// wrong, and this is what stops either side drifting again.
+	it("puts fresh rows FIRST when the user has only foreign rows", () => {
+		const before = {
+			modelPicker: { options: [{ model: "my-gateway/a" }, { model: "my-gateway/b" }] },
+		};
+		const models = mergePicker(before, buildRows({ GLM_API_KEY: "g" })).modelPicker.options.map(
+			(r) => r.model,
+		);
+		assert.ok(models[0].startsWith("glm-"), "the generated rows did not lead");
+		assert.deepEqual(models.slice(-2), ["my-gateway/a", "my-gateway/b"], "a foreign row moved");
+	});
+
 	it("replaces a previously-generated row in place rather than duplicating it", () => {
 		const rows = buildRows({ GLM_API_KEY: "g" });
 		const once = mergePicker({}, rows);
@@ -321,5 +337,178 @@ describe("render-model-picker.js I/O", () => {
 		assert.equal(contextPin({ env: { CLAUDE_CODE_MAX_CONTEXT_TOKENS: "" } }), undefined);
 		assert.equal(contextPin({ env: {} }), undefined);
 		assert.equal(contextPin({}), undefined);
+	});
+
+	// settings.json holds the user's base URL, permissions and hooks, and a plain
+	// writeFileSync opens with 'w' — TRUNCATE — so a kill in that window leaves
+	// the file zero-length or half-written. tmp + rename means every reader sees
+	// either the complete old file or the complete new one.
+	//
+	// The INODE is the assertion because it is the one observable that separates
+	// the two spellings: a truncating write reuses the target's inode, a rename
+	// installs the temp file's. Asserting "no .tmp survives" would NOT — the
+	// pre-fix spelling leaves no temp file either, and that version of this test
+	// passed against a reverted writeSettings (measured).
+	it("replaces settings.json by rename, never by truncating it in place", async () => {
+		const { writeSettings } = await import("../scripts/render-model-picker.js");
+		const dir = tmp();
+		const file = path.join(dir, "settings.json");
+		fs.writeFileSync(file, JSON.stringify({ env: { A: "1" } }));
+		const before = fs.statSync(file).ino;
+		writeSettings(file, { env: { A: "2" } });
+		assert.notEqual(
+			fs.statSync(file).ino,
+			before,
+			"the target was written in place — a kill mid-write would leave it truncated",
+		);
+		assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")), { env: { A: "2" } });
+		assert.deepEqual(
+			fs.readdirSync(dir).filter((f) => f.includes(".tmp-")),
+			[],
+			"a temp file survived a successful write",
+		);
+	});
+
+	// The temp file must be a SIBLING of the target: rename() is atomic only
+	// WITHIN a filesystem, and $HOME and /tmp are routinely separate mounts,
+	// where a cross-device rename throws EXDEV outright. Asserting it lands in a
+	// directory this call had to create pins that the temp path is derived from
+	// the target rather than from os.tmpdir().
+	it("stages its temp file beside the target, not in the system tmpdir", async () => {
+		const { writeSettings } = await import("../scripts/render-model-picker.js");
+		const nested = path.join(tmp(), "deep", "settings.json");
+		writeSettings(nested, { ok: true });
+		assert.deepEqual(JSON.parse(fs.readFileSync(nested, "utf8")), { ok: true });
+	});
+});
+
+// main() was unreachable from the suite until it became run(): every helper was
+// tested in isolation and the ORCHESTRATION was not, so two mutations passed the
+// whole suite — swapping `dropped.settings` for `settings` (the superseded env
+// survives beside the new rows, and the model renders twice), and neutering the
+// empty-rows refusal (a keyless user's picker is deleted outright, issue #30).
+describe("render-model-picker run() (issue #62)", () => {
+	const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "cc-run-"));
+	const GLM = { GLM_API_KEY: "g" };
+
+	/** run() with stdout/stderr captured. */
+	async function invoke(opts) {
+		const { run } = await import("../scripts/render-model-picker.js");
+		let out = "";
+		let err = "";
+		const code = run({
+			stdout: (s) => {
+				out += s;
+			},
+			stderr: (s) => {
+				err += s;
+			},
+			...opts,
+		});
+		return { code, out, err };
+	}
+
+	it("writes the rows, backs up, and reports the count", async () => {
+		const file = path.join(tmp(), "settings.json");
+		fs.writeFileSync(
+			file,
+			JSON.stringify({ env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:4000" } }),
+		);
+		const { code, out } = await invoke({ argv: [], file, env: GLM });
+		assert.equal(code, 0);
+		const written = JSON.parse(fs.readFileSync(file, "utf8"));
+		assert.equal(written.modelPicker.options.length, 9, "the GLM rows did not land");
+		assert.equal(
+			written.env.ANTHROPIC_BASE_URL,
+			"http://127.0.0.1:4000",
+			"a foreign env key was lost",
+		);
+		assert.match(out, /wrote 9 modelPicker rows/);
+	});
+
+	// THE MUTATION THAT SURVIVED. With replaceBuiltInOptions:false the one-slot
+	// env renders ALONGSIDE the rows, so leaving it shows the model twice.
+	it("drops the superseded one-slot env from the file it writes", async () => {
+		const file = path.join(tmp(), "settings.json");
+		fs.writeFileSync(
+			file,
+			JSON.stringify({ env: { ANTHROPIC_CUSTOM_MODEL_OPTION: "glm-5.3[1m]", KEEP: "1" } }),
+		);
+		const { out } = await invoke({ argv: [], file, env: GLM });
+		const written = JSON.parse(fs.readFileSync(file, "utf8"));
+		assert.ok(
+			!("ANTHROPIC_CUSTOM_MODEL_OPTION" in written.env),
+			"the superseded env survived next to the generated rows — the model now renders twice",
+		);
+		assert.equal(written.env.KEEP, "1", "an unrelated env key was dropped");
+		assert.match(out, /removed superseded env/);
+	});
+
+	// THE OTHER MUTATION THAT SURVIVED. Refusing is the whole protection: a
+	// merge with zero rows strips the modelPicker key, so a keyless run would
+	// silently delete rows the user still wants.
+	it("refuses and writes NOTHING when no provider key is registered", async () => {
+		const file = path.join(tmp(), "settings.json");
+		const before = JSON.stringify({ modelPicker: { options: [{ model: "glm-5.3[1m]" }] } });
+		fs.writeFileSync(file, before);
+		const { code, err } = await invoke({ argv: [], file, env: {} });
+		assert.equal(code, 1, "a run with nothing to publish must not report success");
+		assert.match(err, /no provider keys are registered/);
+		assert.equal(fs.readFileSync(file, "utf8"), before, "the file was touched despite the refusal");
+	});
+
+	it("refuses and writes NOTHING when settings.json does not parse", async () => {
+		const file = path.join(tmp(), "settings.json");
+		fs.writeFileSync(file, "{ not json");
+		const { code, err } = await invoke({ argv: [], file, env: GLM });
+		assert.equal(code, 1);
+		assert.match(err, /could not be read as JSON/);
+		assert.equal(fs.readFileSync(file, "utf8"), "{ not json", "a malformed file was overwritten");
+	});
+
+	it("--dry-run prints the merged file and writes nothing", async () => {
+		const file = path.join(tmp(), "settings.json");
+		fs.writeFileSync(file, "{}");
+		const { code, out } = await invoke({ argv: ["--dry-run"], file, env: GLM });
+		assert.equal(code, 0);
+		assert.equal(
+			JSON.parse(out).modelPicker.options.length,
+			9,
+			"--dry-run did not print the merge",
+		);
+		assert.equal(fs.readFileSync(file, "utf8"), "{}", "--dry-run wrote the file");
+	});
+
+	// --print must not read settings at all: it is the flag a user reaches for
+	// when their settings.json is the thing that is broken.
+	it("--print prints only the rows, touching no file", async () => {
+		const file = path.join(tmp(), "settings.json");
+		fs.writeFileSync(file, "{ not json");
+		const { code, out } = await invoke({ argv: ["--print"], file, env: GLM });
+		assert.equal(code, 0);
+		const rows = JSON.parse(out);
+		assert.ok(Array.isArray(rows) && rows.length === 9);
+		assert.ok(
+			rows.every((r) => r.behavesAs),
+			"a printed row is missing behavesAs",
+		);
+		assert.equal(fs.readFileSync(file, "utf8"), "{ not json");
+	});
+
+	// Reported, never removed — it still governs every id with NO row.
+	it("reports a surviving context pin and leaves it in the file", async () => {
+		const file = path.join(tmp(), "settings.json");
+		fs.writeFileSync(file, JSON.stringify({ env: { CLAUDE_CODE_MAX_CONTEXT_TOKENS: "1048576" } }));
+		const { out } = await invoke({ argv: [], file, env: GLM });
+		assert.match(out, /CLAUDE_CODE_MAX_CONTEXT_TOKENS is still set \(1048576\)/);
+		const written = JSON.parse(fs.readFileSync(file, "utf8"));
+		assert.equal(written.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, "1048576", "the pin was stripped");
+	});
+
+	it("says nothing about a pin that is not set", async () => {
+		const file = path.join(tmp(), "settings.json");
+		fs.writeFileSync(file, "{}");
+		const { out } = await invoke({ argv: [], file, env: GLM });
+		assert.doesNotMatch(out, /CLAUDE_CODE_MAX_CONTEXT_TOKENS/);
 	});
 });
