@@ -163,7 +163,19 @@ describe("picker staleness I/O (issue #62)", () => {
 		fs.writeFileSync(odd, JSON.stringify({ modelPicker: { options: "glm" } }));
 		assert.equal(readPickerRows(odd), undefined);
 		// An unwritable stamp path must not throw either.
-		assert.doesNotThrow(() => writeStamp("0.9.9", "/proc/nope/stamp.json"));
+		//
+		// The unwritable path is made by putting a FILE where a directory has to
+		// go, which is ENOTDIR on every platform. The first version used
+		// "/proc/nope/stamp.json", which is only reliably unwritable on macOS,
+		// where /proc does not exist and mkdirSync fails instantly with ENOENT. On
+		// Linux /proc is a live kernel filesystem, so that same call does
+		// something else entirely — and this file then timed out on CI at 60s
+		// having reported NO subtest, since the failure happens while the suite is
+		// still being constructed. A path that behaves differently per platform is
+		// not a test of "unwritable"; it is a test of the developer's OS.
+		const blocked = path.join(dir, "blocked");
+		fs.writeFileSync(blocked, "not a directory");
+		assert.doesNotThrow(() => writeStamp("0.9.9", path.join(blocked, "stamp.json")));
 	});
 });
 
