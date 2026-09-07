@@ -44,6 +44,10 @@ const CALLABLE = {};
 	CALLABLE.parseModelSelector = router.parseModelSelector;
 	CALLABLE.rankRoutes = routes.rankRoutes;
 	CALLABLE.tierOf = routes.tierOf;
+	const picker = await import("../src/model-picker.js");
+	CALLABLE.labelFor = picker.labelFor;
+	CALLABLE.formatWindow = picker.formatWindow;
+	CALLABLE.isGeneratedRow = picker.isGeneratedRow;
 	// Not from src/: the release-tag guard is a script, and its flag-parsing rule
 	// is exactly the kind of claim that must execute — `--no-git-tag-version=false`
 	// RE-ENABLES tagging, so a bare substring test allows the one spelling that tags.
@@ -189,8 +193,8 @@ describe("documented examples actually hold", () => {
 	it("executes exactly the examples the source carries", () => {
 		assert.equal(
 			doctests.length,
-			47,
-			`expected 47 @doctest examples, found ${doctests.length}. Adding some? Bump this number in the same commit. Removing some? Say why in the commit message — dropping an example is dropping a guarantee.`,
+			61,
+			`expected 61 @doctest examples, found ${doctests.length}. Adding some? Bump this number in the same commit. Removing some? Say why in the commit message — dropping an example is dropping a guarantee.`,
 		);
 	});
 

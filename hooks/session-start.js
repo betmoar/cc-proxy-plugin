@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // @ts-check
+import { pickerNotice } from "./picker-staleness.js";
 import { DEFAULT_LOG_PATH, ensureProxyRunning } from "./proxy-lifecycle.js";
 
 /**
@@ -29,6 +30,42 @@ function noticeFor(state) {
 	return `cc-proxy: the proxy did not start (state: ${state}) — requests from this session will fail with ECONNREFUSED until it is running. Tell the user if they hit errors. Log: ${DEFAULT_LOG_PATH}`;
 }
 
+/**
+ * Emit the hook's one JSON payload. At most ONE additionalContext field exists
+ * per hook result, so when both a proxy failure and a picker notice apply they
+ * share the line — a proxy that will not start is the more urgent of the two
+ * and goes first.
+ *
+ * @param {string[]} lines
+ */
+function emit(lines) {
+	const text = lines.filter(Boolean).join(" ");
+	if (!text) return;
+	process.stdout.write(
+		JSON.stringify({
+			hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: text },
+		}),
+	);
+}
+
+/**
+ * The picker-staleness line (issue #62), or "" when there is nothing to say.
+ *
+ * Wrapped: this check reads two JSON files and writes a stamp, and an
+ * unhandled throw here would take out the proxy-start notice that shares the
+ * payload. Every helper in picker-staleness.js already swallows its own I/O
+ * errors; this is the belt for a defect in the logic between them.
+ *
+ * @returns {string}
+ */
+function pickerLine() {
+	try {
+		return pickerNotice() ?? "";
+	} catch {
+		return "";
+	}
+}
+
 ensureProxyRunning()
 	.then((state) => {
 		// "already-up" (healthy), "started" and "restarted" (this hook did its
@@ -42,29 +79,14 @@ ensureProxyRunning()
 		// return value alone — a known blind spot, recorded in issue #55; the
 		// version probe means the stale one is at least FUNCTIONAL while it
 		// lives, so a user hitting it sees stale behavior, not errors.
-		if (state === "missing-path" || state === "unreachable") {
-			process.stdout.write(
-				JSON.stringify({
-					hookSpecificOutput: {
-						hookEventName: "SessionStart",
-						additionalContext: noticeFor(state),
-					},
-				}),
-			);
-		}
+		const failed = state === "missing-path" || state === "unreachable";
+		emit([failed ? noticeFor(state) : "", pickerLine()]);
 	})
 	.catch(() => {
 		// ensureProxyRunning resolves every documented path; a rejection here is
 		// a bug in it (or an undocumented throw). The pre-#55 shape swallowed
 		// this silently — now it gets the same one line, with a state that says
 		// "crashed" rather than a name from the enum.
-		process.stdout.write(
-			JSON.stringify({
-				hookSpecificOutput: {
-					hookEventName: "SessionStart",
-					additionalContext: noticeFor("crashed"),
-				},
-			}),
-		);
+		emit([noticeFor("crashed"), pickerLine()]);
 	})
 	.finally(() => process.exit(0));

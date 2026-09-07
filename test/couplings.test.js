@@ -695,4 +695,59 @@ describe("cross-file couplings", () => {
 			`.env.example's DEFAULT_BACKEND comment does not mention ${missing.join(", ")} — every PROVIDER_IDS entry is a legal DEFAULT_BACKEND value`,
 		);
 	});
+
+	// COUPLING: every id in CONTEXT_WINDOW becomes a modelPicker row in the
+	// user's settings.json (issue #62), and CC budgets that model against the
+	// row's spelling. Adding an id here is therefore a change to a file OUTSIDE
+	// this repo, applied on the user's next /cc-proxy:setup — and the only thing
+	// that tells them to re-run it is the version-stamped SessionStart notice.
+	// This test is the tripwire: it fails when the curated set changes, so the
+	// author has to decide consciously whether the docs and the notice still
+	// describe reality. Update the count when you add a model.
+	it("the curated window set matches what the picker publishes", async () => {
+		const { CONTEXT_WINDOW } = await import("../src/models.js");
+		const { buildRows } = await import("../src/model-picker.js");
+		const rows = buildRows({
+			GLM_API_KEY: "g",
+			OPENROUTER_API_KEY: "o",
+			DEEPSEEK_API_KEY: "d",
+			DASHSCOPE_API_KEY: "q",
+			LMSTUDIO_BASE_URL: "http://x:1234",
+		});
+		assert.equal(
+			rows.length,
+			Object.keys(CONTEXT_WINDOW).length,
+			"a curated window has no picker row (or vice versa) — every curated id must be reachable by some provider, else the row names a model that cannot route (issue #30)",
+		);
+		assert.equal(
+			rows.length,
+			16,
+			"CONTEXT_WINDOW changed size: re-read docs/OPERATIONS.md's picker section and CLAUDE.md's coupling row, then update this count. Users must re-run /cc-proxy:setup to receive the new row — that is what the SessionStart staleness notice is for",
+		);
+	});
+
+	// COUPLING: the picker's [1m] suffix is only safe because the proxy strips it
+	// before the wire (invariant 1, third body strip) — both Z.ai and the Qwen
+	// plan 400 on a suffixed id. If that strip is ever narrowed, every 1M row
+	// this feature generates starts failing at the vendor instead of routing.
+	// Locked here because the two live in different files and neither imports
+	// the other.
+	it("every generated [1m] row strips back to a routable id", async () => {
+		const { buildRows } = await import("../src/model-picker.js");
+		const { stripVariantSuffix } = await import("../src/router.js");
+		const { CONTEXT_WINDOW } = await import("../src/models.js");
+		const suffixed = buildRows({
+			GLM_API_KEY: "g",
+			DEEPSEEK_API_KEY: "d",
+			DASHSCOPE_API_KEY: "q",
+		}).filter((r) => r.model.endsWith("[1m]"));
+		assert.ok(suffixed.length > 0, "no suffixed rows to check — the assertion below is vacuous");
+		for (const row of suffixed) {
+			const stripped = stripVariantSuffix(row.model);
+			assert.ok(
+				Object.hasOwn(CONTEXT_WINDOW, stripped),
+				`${row.model} does not strip back to a curated id (got "${stripped}") — the vendor would receive the suffixed spelling and 400`,
+			);
+		}
+	});
 });

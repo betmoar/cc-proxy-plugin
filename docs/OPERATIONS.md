@@ -22,10 +22,40 @@ Runtime facts, known traps, and debugging. For design rationale, see [`ARCHITECT
 ## Claude Code request internals
 
 - **`ANTHROPIC_BASE_URL` re-applies to running sessions immediately.** The moment `/cc-proxy:setup` writes settings.json, every open session retargets to the proxy. Setup's final step runs `scripts/start-proxy.js` to bring the proxy up before it returns, so a *fresh* session connects cleanly. An *already-open* session that retargeted in the gap before the proxy was up returns `ECONNREFUSED` until you `/exit` + `/resume` it (re-triggering SessionStart). `start-proxy.js` is idempotent — TCP-probes the port first, no-ops if already up — and reads settings.json's `env` block to feed the spawn's plumbing (the proxy reads `GLM_API_KEY` from `~/.env` at startup, while `PROXY_PATH`/`PROXY_PORT`/`PROXY_LOG` stay in settings.json `env` for the hook).
-- **`ANTHROPIC_CUSTOM_MODEL_OPTION`** — exactly one slot; the id passes verbatim into `model` with validation skipped.
+- **`ANTHROPIC_CUSTOM_MODEL_OPTION`** — exactly one slot; the id passes verbatim into `model` with validation skipped. There is no `_2`: `modelPicker` (below) is the multi-row mechanism, and `/cc-proxy:setup` removes this key when it writes picker rows, because with `replaceBuiltInOptions: false` both render and the model appears twice.
 - **`"model": "glm-..."` default without `ANTHROPIC_BASE_URL`** makes CC hit `api.anthropic.com` directly; its retry path then corrupts the model string to >256 chars (`400 String should have at most 256 characters`). Pick the model with `/model`, or keep the proxy running.
 - **`ANTHROPIC_DEFAULT_HAIKU_MODEL`** sets the id for internal ops (titles/summaries); leaving it on Claude keeps that traffic off paid quotas.
 - **Gateway model discovery (`CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY`)** — measured against CC 2.1.250 (2026-08-28, full gate logic decoded from the CC bundle; see issue #44 for the raw evidence). With the flag set, CC fetches `GET {base}/v1/models?limit=1000` at startup and feeds the `/model` picker from it — **but only ids matching `/claude|anthropic/i`**: GLM/Qwen/DeepSeek/LM Studio ids are filtered out, and zero matches aborts discovery entirely. Enabling it also **requires `ANTHROPIC_AUTH_TOKEN`** (discovery skips with "no credential" otherwise), and that token demotes the claude.ai OAuth login (connectors disabled). Net: the picker gains at most the OpenRouter `~anthropic/*` and curated `claude-*` ids it mostly already has, at the cost of OAuth precedence. cc-proxy's side needs zero changes — the publishing contract already satisfies CC's `{data:[{id, display_name?}]}` validation. Documented opt-in, not a setup default.
+
+## The `/model` picker and context windows (issue #62)
+
+**Claude Code assumes a 200K context window for every model id its built-in catalog does not describe — which is every id cc-proxy routes — and auto-compacts there regardless of what the backend serves.** Nine of the sixteen ids in `CONTEXT_WINDOW` are ≥1M and were being budgeted at a fifth of their real window; all sixteen printed `"<id>" isn't described by this version's model catalog` at session start. `modelPicker` is the channel that fixes both.
+
+Schema (read from the CC binary's own validator, 2.1.263). Honored from **managed, `--settings`/SDK, and user settings only** — not a project checkout — and **the highest-precedence source that defines it wins outright, with no merging**:
+
+```json
+{ "modelPicker": {
+    "replaceBuiltInOptions": false,
+    "options": [ { "model": "…", "label": "…", "description": "…", "behavesAs": "…" } ] } }
+```
+
+Measured 2026-09-07 against CC 2.1.263, probing `claude --settings <json> --model <id> -p /context` against a stub Anthropic backend and counting `[claude-code:unrecognized_model]` on stderr. **The two levers are orthogonal:**
+
+| lever | window | catalog warning |
+| --- | --- | --- |
+| `[1m]` in the row's `model` | **1M** (else 200K) | unchanged |
+| `behavesAs` on the row | unchanged | **suppressed** |
+| `CLAUDE_CODE_MAX_CONTEXT_TOKENS` | applies **only while CC calls the id unknown** | unchanged |
+
+With `MAX_CONTEXT_TOKENS` neutralized, bare `glm-4.6` = 200K with *and* without `behavesAs`; `glm-5.3[1m]` = 1M with *and* without. The warning is suppressed only by `behavesAs` — a row alone does not suppress it, and `[1m]` alone does not.
+
+**The trap.** `behavesAs` makes the id *known*, which is exactly what disables `CLAUDE_CODE_MAX_CONTEXT_TOKENS` (the binary's gate wants a non-`claude-` id that is not catalog-resolvable). Adding `behavesAs` to a config that relied on the global pin silently drops 1M → 200K: `glm-5.3` + `behavesAs` + `MAX_CONTEXT_TOKENS=1048576` measured **200k**. `[1m]` is the only window channel that survives `behavesAs`, and the two compose — `model: "glm-5.3[1m]"` + `behavesAs: "claude-sonnet-5"` gives 1M with no warning. A suffix on the *target* (`behavesAs: "claude-sonnet-4-5[1m]"`) does nothing.
+
+**Generate, never hand-write.** `pnpm models:picker` (`scripts/render-model-picker.js`) builds one row per curated id whose provider is registered, suffixes those ≥1M, and merges into `~/.claude/settings.json` preserving every foreign row in place — the no-merging rule above means a naive write silently discards a user's own rows. `--dry-run` prints the merged file; `--print` prints just the rows. A `.bak` is written before any overwrite. The rows are a **snapshot**: when `CONTEXT_WINDOW` changes, the SessionStart hook emits a one-line staleness notice (once per plugin version, stamped in `~/.claude/cc-proxy/picker-stamp.json`) telling the user to re-run it.
+
+**Known limitation.** A per-row window *below* 200K is inexpressible, so `glm-4.5` / `glm-4.5-air` (128K) are budgeted at 200K. The only sub-200K channel is the global `CLAUDE_CODE_MAX_CONTEXT_TOKENS`, which `behavesAs` disables on every row — and setting it globally would break the nine 1M ids. Left as-is deliberately: over-budgeting a 128K model means the vendor truncates first, while under-budgeting the 1M ids costs 800K of context every session.
+
+**`behavesAs` is one constant for all rows** (`claude-sonnet-5`). Five targets were probed — `claude-sonnet-4-5`, `-4-6`, `claude-sonnet-5`, `claude-opus-5`, `claude-haiku-4-5` — and all five gave the same 200K window and the same suppression. Whether the target changes anything beyond the warning (CC says it also supplies "prompt profile, capability and effort defaults") is **unmeasured**; a per-id table would be inventing precision.
 
 ## Model assignment
 
@@ -108,6 +138,7 @@ hook or by an explicitly-invoked command — never on a request path.
 | `speed.jsonl` | `/cc-proxy:bench speed` | append-only route timings, one JSON object per line |
 | `*_cache.json` | statusline | 60 s quota/credit caches + the 1 s proxy-liveness probe. Past the TTL the value is still SERVED (marked `!`) and refreshed in the background — the render path never makes a network call |
 | `refresh.lock` | statusline | single-flight guard for that background refresh. Held for one refresh (~2 s); a lock older than 10 s is treated as abandoned and reclaimed. Safe to delete |
+| `picker-stamp.json` | SessionStart hook | the plugin version whose `modelPicker` staleness notice has already been shown, so it fires once per update instead of every session. Delete it to see the notice again |
 
 Nothing here is required: delete any of it and the proxy still starts and
 routes. `grades.json` and `speed.jsonl` are written only when you run the

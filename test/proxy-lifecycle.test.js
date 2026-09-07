@@ -605,14 +605,17 @@ describe("session-start failure notice (issue #55)", () => {
 		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ccproxy-hook-"));
 		fs.mkdirSync(path.join(dir, "hooks"), { recursive: true });
 		fs.mkdirSync(path.join(dir, "bin"), { recursive: true });
-		fs.copyFileSync(
-			path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../hooks/proxy-lifecycle.js"),
-			path.join(dir, "hooks", "proxy-lifecycle.js"),
-		);
-		fs.copyFileSync(
-			path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../hooks/session-start.js"),
-			path.join(dir, "hooks", "session-start.js"),
-		);
+		// EVERY hook the entry point imports, not just the two this test reasons
+		// about: a missing sibling is an import-time crash, so the hook exits
+		// non-zero with no JSON and the assertions below read as a behaviour
+		// change rather than a broken fixture (measured when picker-staleness.js
+		// was added — exit 1, empty stdout, three tests red).
+		for (const f of ["proxy-lifecycle.js", "session-start.js", "picker-staleness.js"]) {
+			fs.copyFileSync(
+				path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../hooks", f),
+				path.join(dir, "hooks", f),
+			);
+		}
 		fs.writeFileSync(
 			path.join(dir, "package.json"),
 			JSON.stringify({ name: "t", version: "9.9.9", type: "module" }),
@@ -674,14 +677,17 @@ describe("session-start failure notice (issue #55)", () => {
 		// A tree with NO bin and no PROXY_PATH fallback.
 		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ccproxy-hook-"));
 		fs.mkdirSync(path.join(dir, "hooks"), { recursive: true });
-		fs.copyFileSync(
-			path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../hooks/proxy-lifecycle.js"),
-			path.join(dir, "hooks", "proxy-lifecycle.js"),
-		);
-		fs.copyFileSync(
-			path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../hooks/session-start.js"),
-			path.join(dir, "hooks", "session-start.js"),
-		);
+		// EVERY hook the entry point imports, not just the two this test reasons
+		// about: a missing sibling is an import-time crash, so the hook exits
+		// non-zero with no JSON and the assertions below read as a behaviour
+		// change rather than a broken fixture (measured when picker-staleness.js
+		// was added — exit 1, empty stdout, three tests red).
+		for (const f of ["proxy-lifecycle.js", "session-start.js", "picker-staleness.js"]) {
+			fs.copyFileSync(
+				path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../hooks", f),
+				path.join(dir, "hooks", f),
+			);
+		}
 		fs.writeFileSync(
 			path.join(dir, "package.json"),
 			JSON.stringify({ name: "t", version: "9.9.9", type: "module" }),
