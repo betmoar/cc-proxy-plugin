@@ -605,14 +605,17 @@ describe("session-start failure notice (issue #55)", () => {
 		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ccproxy-hook-"));
 		fs.mkdirSync(path.join(dir, "hooks"), { recursive: true });
 		fs.mkdirSync(path.join(dir, "bin"), { recursive: true });
-		fs.copyFileSync(
-			path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../hooks/proxy-lifecycle.js"),
-			path.join(dir, "hooks", "proxy-lifecycle.js"),
-		);
-		fs.copyFileSync(
-			path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../hooks/session-start.js"),
-			path.join(dir, "hooks", "session-start.js"),
-		);
+		// EVERY hook the entry point imports, not just the two this test reasons
+		// about: a missing sibling is an import-time crash, so the hook exits
+		// non-zero with no JSON and the assertions below read as a behaviour
+		// change rather than a broken fixture (measured when picker-staleness.js
+		// was added — exit 1, empty stdout, three tests red).
+		for (const f of ["proxy-lifecycle.js", "session-start.js", "picker-staleness.js"]) {
+			fs.copyFileSync(
+				path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../hooks", f),
+				path.join(dir, "hooks", f),
+			);
+		}
 		fs.writeFileSync(
 			path.join(dir, "package.json"),
 			JSON.stringify({ name: "t", version: "9.9.9", type: "module" }),
@@ -621,11 +624,21 @@ describe("session-start failure notice (issue #55)", () => {
 		return dir;
 	}
 
-	/** Run the hook; resolves { code, stdout }. */
+	/**
+	 * Run the hook; resolves { code, stdout }.
+	 *
+	 * HOME is redirected INTO the fake tree, which is not cosmetic: session-start
+	 * now also runs the picker-staleness check, and that check WRITES a stamp to
+	 * $HOME/.claude/cc-proxy/picker-stamp.json. Without this the suite clobbered
+	 * the developer's real stamp with the fixture's version (measured: ran one
+	 * test with the file moved aside, it came back holding 9.9.9), silently
+	 * changing whether their next real session sees the staleness notice. A test
+	 * must not write outside its own tmpdir.
+	 */
 	function runHook(tree, env) {
 		return new Promise((resolve) => {
 			const child = spawn(process.execPath, [path.join(tree, "hooks", "session-start.js")], {
-				env: { ...process.env, ...env },
+				env: { ...process.env, HOME: tree, USERPROFILE: tree, ...env },
 				stdio: ["ignore", "pipe", "inherit"],
 			});
 			let out = "";
@@ -646,6 +659,43 @@ describe("session-start failure notice (issue #55)", () => {
 			});
 		});
 	}
+
+	// This suite spawns the REAL session-start hook, which now also runs the
+	// picker-staleness check — and that check WRITES a stamp under $HOME. Without
+	// the HOME redirect in runHook() the suite silently overwrote the developer's
+	// own ~/.claude/cc-proxy/picker-stamp.json with the fixture's version
+	// (measured: moved the file aside, ran one test, it came back holding 9.9.9),
+	// changing whether their next real session sees the staleness notice. A test
+	// that writes outside its tmpdir is a defect regardless of what it asserts,
+	// and nothing else here would ever notice.
+	it("writes nothing outside the fake tree", async () => {
+		const tree = fakeTree();
+		const port = await freePort();
+		await runHook(tree, {
+			PROXY_PORT: String(port),
+			PROXY_READY_TIMEOUT_MS: "700",
+			PROXY_LOG: path.join(tree, "proxy.log"),
+		});
+		// The hook only stamps when it has a notice to emit, and "unreachable"
+		// plus no rows and no legacy env is silence on the picker side — so give
+		// it the legacy config, which is the state that DOES stamp.
+		const home = path.join(tree, ".claude");
+		fs.mkdirSync(home, { recursive: true });
+		fs.writeFileSync(
+			path.join(home, "settings.json"),
+			JSON.stringify({ env: { ANTHROPIC_CUSTOM_MODEL_OPTION: "glm-5.3[1m]" } }),
+		);
+		await runHook(tree, {
+			PROXY_PORT: String(port),
+			PROXY_READY_TIMEOUT_MS: "700",
+			PROXY_LOG: path.join(tree, "proxy.log"),
+		});
+		assert.ok(
+			fs.existsSync(path.join(tree, ".claude", "cc-proxy", "picker-stamp.json")),
+			"the stamp did not land in the fake HOME — it went to the real one",
+		);
+		fs.rmSync(tree, { recursive: true, force: true });
+	});
 
 	it("unreachable: emits ONE JSON additionalContext line and exits 0", async () => {
 		const tree = fakeTree();
@@ -674,14 +724,17 @@ describe("session-start failure notice (issue #55)", () => {
 		// A tree with NO bin and no PROXY_PATH fallback.
 		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ccproxy-hook-"));
 		fs.mkdirSync(path.join(dir, "hooks"), { recursive: true });
-		fs.copyFileSync(
-			path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../hooks/proxy-lifecycle.js"),
-			path.join(dir, "hooks", "proxy-lifecycle.js"),
-		);
-		fs.copyFileSync(
-			path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../hooks/session-start.js"),
-			path.join(dir, "hooks", "session-start.js"),
-		);
+		// EVERY hook the entry point imports, not just the two this test reasons
+		// about: a missing sibling is an import-time crash, so the hook exits
+		// non-zero with no JSON and the assertions below read as a behaviour
+		// change rather than a broken fixture (measured when picker-staleness.js
+		// was added — exit 1, empty stdout, three tests red).
+		for (const f of ["proxy-lifecycle.js", "session-start.js", "picker-staleness.js"]) {
+			fs.copyFileSync(
+				path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../hooks", f),
+				path.join(dir, "hooks", f),
+			);
+		}
 		fs.writeFileSync(
 			path.join(dir, "package.json"),
 			JSON.stringify({ name: "t", version: "9.9.9", type: "module" }),

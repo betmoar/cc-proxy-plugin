@@ -695,4 +695,122 @@ describe("cross-file couplings", () => {
 			`.env.example's DEFAULT_BACKEND comment does not mention ${missing.join(", ")} — every PROVIDER_IDS entry is a legal DEFAULT_BACKEND value`,
 		);
 	});
+
+	// COUPLING: every id in CONTEXT_WINDOW becomes a modelPicker row in the
+	// user's settings.json (issue #62), and CC budgets that model against the
+	// row's spelling. Adding an id here is therefore a change to a file OUTSIDE
+	// this repo, applied on the user's next /cc-proxy:setup — and the only thing
+	// that tells them to re-run it is the version-stamped SessionStart notice.
+	// This test is the tripwire: it fails when the curated set changes, so the
+	// author has to decide consciously whether the docs and the notice still
+	// describe reality. Update the count when you add a model.
+	it("the curated window set matches what the picker publishes", async () => {
+		const { CONTEXT_WINDOW } = await import("../src/models.js");
+		const { buildRows } = await import("../src/model-picker.js");
+		const rows = buildRows({
+			GLM_API_KEY: "g",
+			OPENROUTER_API_KEY: "o",
+			DEEPSEEK_API_KEY: "d",
+			DASHSCOPE_API_KEY: "q",
+			LMSTUDIO_BASE_URL: "http://x:1234",
+		});
+		assert.equal(
+			rows.length,
+			Object.keys(CONTEXT_WINDOW).length,
+			"a curated window has no picker row (or vice versa) — every curated id must be reachable by some provider, else the row names a model that cannot route (issue #30)",
+		);
+		assert.equal(
+			rows.length,
+			16,
+			"CONTEXT_WINDOW changed size: re-read docs/OPERATIONS.md's picker section and CLAUDE.md's coupling row, then update this count. Users must re-run /cc-proxy:setup to receive the new row — that is what the SessionStart staleness notice is for",
+		);
+	});
+
+	// COUPLING: the picker's [1m] suffix is only safe because the proxy strips it
+	// before the wire (invariant 1, third body strip) — both Z.ai and the Qwen
+	// plan 400 on a suffixed id. If that strip is ever narrowed, every 1M row
+	// this feature generates starts failing at the vendor instead of routing.
+	// Locked here because the two live in different files and neither imports
+	// the other.
+	it("every generated [1m] row strips back to a routable id", async () => {
+		const { buildRows } = await import("../src/model-picker.js");
+		const { stripVariantSuffix } = await import("../src/router.js");
+		const { CONTEXT_WINDOW } = await import("../src/models.js");
+		const suffixed = buildRows({
+			GLM_API_KEY: "g",
+			DEEPSEEK_API_KEY: "d",
+			DASHSCOPE_API_KEY: "q",
+		}).filter((r) => r.model.endsWith("[1m]"));
+		assert.ok(suffixed.length > 0, "no suffixed rows to check — the assertion below is vacuous");
+		for (const row of suffixed) {
+			const stripped = stripVariantSuffix(row.model);
+			assert.ok(
+				Object.hasOwn(CONTEXT_WINDOW, stripped),
+				`${row.model} does not strip back to a curated id (got "${stripped}") — the vendor would receive the suffixed spelling and 400`,
+			);
+		}
+	});
+
+	// COUPLING: every writer of a file in ~/.claude must go tmp-then-rename. The
+	// behavioural test for this (inode changes) lives in model-picker.test.js and
+	// is the real lock; this one denies the SPELLING, because the regression is a
+	// "simplification" — one writeFileSync straight to the target reads cleaner
+	// and silently reintroduces the truncate window. bench-grades.js is included
+	// because it is where this pattern was established and the two must not
+	// diverge: whichever a future author copies from should be correct.
+	// COUPLING: the staleness hook decides whether a modelPicker row is OURS by
+	// looking for a marker in the row's description — it deliberately does not
+	// import src/ (a hook must start from a tree whose src/ is mid-update), so
+	// the two sides are joined by a string and nothing else. Change buildRows()'s
+	// description format without this and every generated row reads as foreign:
+	// the staleness notice goes silent forever, and users on the legacy config
+	// get told to re-run setup they already ran.
+	it("every generated row carries the marker the staleness hook looks for", async () => {
+		const { buildRows } = await import("../src/model-picker.js");
+		const { GENERATED_MARKER, isOurRow } = await import("../hooks/picker-staleness.js");
+		const rows = buildRows({
+			GLM_API_KEY: "g",
+			DEEPSEEK_API_KEY: "d",
+			DASHSCOPE_API_KEY: "q",
+		});
+		assert.ok(rows.length > 0, "no rows to check — the assertion below is vacuous");
+		for (const row of rows) {
+			assert.ok(
+				isOurRow(row),
+				`buildRows() emitted ${row.model} with description "${row.description}", which does not contain "${GENERATED_MARKER}" — hooks/picker-staleness.js would read it as a row the USER wrote and never notify about it`,
+			);
+		}
+	});
+
+	it("no writer of a user-visible file writes straight to its target", () => {
+		for (const f of [
+			"scripts/render-model-picker.js",
+			"scripts/bench-grades.js",
+			"hooks/picker-staleness.js",
+		]) {
+			const src = read(f);
+			const writes = [...src.matchAll(/fs\.writeFileSync\(\s*(\w+)/g)].map((m) => m[1]);
+			assert.ok(writes.length > 0, `${f} has no writeFileSync — did this test's pattern rot?`);
+			for (const target of writes) {
+				// The variable's ASSIGNMENT, not its name: `const tmp = file` keeps a
+				// reassuring name while restoring the truncate (measured — the
+				// name-only version of this test passed against exactly that).
+				const decl = new RegExp(`(?:const|let)\\s+${target}\\s*=\\s*([^;\\n]+)`).exec(src);
+				assert.ok(
+					decl,
+					`${f} writes to \`${target}\`, which this test cannot trace to a declaration`,
+				);
+				assert.match(
+					decl[1],
+					/\.tmp/,
+					`${f} writes to \`${target}\`, declared as \`${decl[1].trim()}\` — that is the target itself, and writeFileSync TRUNCATES, so a kill mid-write leaves the user's file half-written. Stage a sibling \`.tmp-\` path and renameSync it over the target`,
+				);
+			}
+			assert.match(
+				src,
+				/fs\.renameSync\(/,
+				`${f} stages a temp file but never renames it into place`,
+			);
+		}
+	});
 });

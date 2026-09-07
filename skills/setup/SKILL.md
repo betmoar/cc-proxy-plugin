@@ -1,6 +1,6 @@
 ---
 name: setup
-description: One-time setup for the cc-proxy plugin. Writes API keys (all optional — GLM_API_KEY, OPENROUTER_API_KEY, DEEPSEEK_API_KEY, DASHSCOPE_API_KEY, LMSTUDIO_BASE_URL, LMSTUDIO_API_KEY) to ~/.env, and configures ANTHROPIC_BASE_URL and the glm-5.3[1m] custom model option in ~/.claude/settings.json so the SessionStart hook can auto-start the proxy and /model can route to GLM. Invoke via /cc-proxy:setup.
+description: One-time setup for the cc-proxy plugin. Writes API keys (all optional — GLM_API_KEY, OPENROUTER_API_KEY, DEEPSEEK_API_KEY, DASHSCOPE_API_KEY, LMSTUDIO_BASE_URL, LMSTUDIO_API_KEY) to ~/.env, and configures ANTHROPIC_BASE_URL plus a /model picker row per routable model (each carrying its real context window) in ~/.claude/settings.json, so the SessionStart hook can auto-start the proxy and /model can route to every configured backend. Invoke via /cc-proxy:setup.
 ---
 
 # cc-proxy setup
@@ -28,14 +28,14 @@ API keys live in `~/.env` — the single source of truth the proxy reads at star
 
 Read `~/.env` first (create the file if absent). For each key, reuse a value already present rather than re-asking.
 
-**Z.ai / GLM — optional, but the one this plugin is built around.** It is the model wired into the `/model` picker, so without it that picker entry routes nowhere useful. If `GLM_API_KEY` is missing or empty in `~/.env`, **ask explicitly**:
+**Z.ai / GLM — optional, but the one this plugin is built around.** Its nine models are the bulk of what step 3b publishes to the `/model` picker; without the key none of them appear there. If `GLM_API_KEY` is missing or empty in `~/.env`, **ask explicitly**:
 
 > "Enter your Z.ai API key (https://z.ai → Dashboard → API Keys), or press Enter to skip. It will be stored in ~/.env:"
 
 If the user skips, continue setup — do not stop and do not re-ask. The proxy
 starts without it and routes to Claude; a backend with no key is simply not
-registered. Say once that `glm-5.3[1m]` will appear in `/model` but won't route
-until a key is added, then move on.
+registered. Say once that no GLM models will appear in `/model` until a key is
+added, then move on.
 
 **OpenRouter — optional.** Ask the user whether they also want OpenRouter routing. If yes and `OPENROUTER_API_KEY` is missing or empty in `~/.env`, ask:
 
@@ -61,7 +61,7 @@ If the user's server has "Require Authentication" enabled and `LMSTUDIO_API_KEY`
 
 Write each collected key to `~/.env` as a `KEY=value` line, one per line (e.g. `GLM_API_KEY=<value>`). If `~/.env` already exists, **merge** — update only the key lines you collected and preserve every other line unchanged. If it does not exist, create it with just the key line(s).
 
-The proxy only registers OpenRouter when `OPENROUTER_API_KEY` is set, and routes any model id containing a slash to it (e.g. `z-ai/glm-4.7`, `deepseek/deepseek-v4-pro` — never an `anthropic/…` id: that routes Claude traffic through a metered reseller, which invariants 3 and 4 exist to prevent, and discovery deliberately omits those ids). It only registers DeepSeek when `DEEPSEEK_API_KEY` is set, and routes any bare `deepseek-*` id to it (e.g. `deepseek-v4-pro`, `deepseek-v4-flash`). It only registers Qwen when `DASHSCOPE_API_KEY` is set, and routes any bare `qwen`-prefixed id to it (e.g. `qwen3.7-max`, `qwen3.6-flash`). It only registers LM Studio when `LMSTUDIO_BASE_URL` is set, and routes **only** explicit `lmstudio:<model-id>` selectors to it — no bare id routes there by shape (local model names would collide with the GLM/Qwen/OpenRouter predicates above); `DEFAULT_BACKEND=lmstudio` additionally makes it the unmatched-id fallback, which is an explicit user choice like `=openrouter`. **Tell the user this constraint:** Claude Code allows only **one** custom `/model` picker entry, and GLM uses it — so OpenRouter, DeepSeek, Qwen, and LM Studio models do **not** appear in the `/model` picker. They are reached only by (a) setting `DEFAULT_BACKEND=openrouter` (or `deepseek`, `qwen`, `lmstudio`) so unmatched requests fall through to it, (b) a subagent/slash-command whose frontmatter pins the model id (which the proxy then routes verbatim), or — for LM Studio only — (c) any `/model lmstudio:<model-id>`-style selector, since bare local ids cannot route by shape anyway.
+The proxy only registers OpenRouter when `OPENROUTER_API_KEY` is set, and routes any model id containing a slash to it (e.g. `z-ai/glm-4.7`, `deepseek/deepseek-v4-pro` — never an `anthropic/…` id: that routes Claude traffic through a metered reseller, which invariants 3 and 4 exist to prevent, and discovery deliberately omits those ids). It only registers DeepSeek when `DEEPSEEK_API_KEY` is set, and routes any bare `deepseek-*` id to it (e.g. `deepseek-v4-pro`, `deepseek-v4-flash`). It only registers Qwen when `DASHSCOPE_API_KEY` is set, and routes any bare `qwen`-prefixed id to it (e.g. `qwen3.7-max`, `qwen3.6-flash`). It only registers LM Studio when `LMSTUDIO_BASE_URL` is set, and routes **only** explicit `lmstudio:<model-id>` selectors to it — no bare id routes there by shape (local model names would collide with the GLM/Qwen/OpenRouter predicates above); `DEFAULT_BACKEND=lmstudio` additionally makes it the unmatched-id fallback, which is an explicit user choice like `=openrouter`. **Tell the user what does and does not reach the `/model` picker:** step 3b publishes a picker row for every model with a curated context window whose provider has a key — GLM, DeepSeek and Qwen ids all appear. Two kinds do **not**: OpenRouter's `vendor/model` ids (~400 of them, no curated window each) and LM Studio's, whose names are per-machine and arbitrary. Those are reached by (a) `DEFAULT_BACKEND=openrouter` (or `lmstudio`) so unmatched requests fall through, (b) a subagent/slash-command whose frontmatter pins the id verbatim, or — for LM Studio — (c) a `/model lmstudio:<model-id>` selector, since bare local ids cannot route by shape anyway.
 
 **Migrate existing keys (one source of truth).** Read `~/.claude/settings.json`. If its `env` block contains `GLM_API_KEY`, `OPENROUTER_API_KEY`, `DEEPSEEK_API_KEY`, `DASHSCOPE_API_KEY`, `LMSTUDIO_BASE_URL`, or `LMSTUDIO_API_KEY` (legacy setups), move them to `~/.env`: if `~/.env` already has the key, keep the `~/.env` value and just drop the settings.json copy; otherwise copy the value over then **remove** the key from settings.json `env`. After setup, keys must exist **only** in `~/.env`.
 
@@ -77,32 +77,13 @@ Read the current file, then merge the following into the `env` object (create `e
 }
 ```
 
-**Then, ONLY if a `GLM_API_KEY` was collected in step 2**, also merge the picker
-entry:
-
-```json
-{
-  "env": {
-    "ANTHROPIC_CUSTOM_MODEL_OPTION": "glm-5.3[1m]",
-    "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME": "GLM-5.3 (1M)",
-    "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION": "Z.ai GLM-5.3 1M-context (routed via cc-proxy)"
-  }
-}
-```
-
-This registers `glm-5.3[1m]` in the `/model` picker (Claude Code allows exactly
-one custom model option). If `ANTHROPIC_CUSTOM_MODEL_OPTION` is already set to a
-different value, ask the user before overwriting it.
-
-**Why the condition.** The GLM key is skippable (issue #20), and the picker slot
-holds exactly one entry. Writing `glm-5.3[1m]` for a user who skipped it puts a
-model in their picker that cannot route — it resolves to the default backend
-instead, and the only warning was spoken once during setup and never persisted,
-so weeks later the entry fails with nothing on disk explaining why. If the user
-skipped GLM, say plainly that the picker entry was skipped too, and that adding
-`GLM_API_KEY` to `~/.env` and re-running `/cc-proxy:setup` will add it.
-
 Write the file back with 2-space indentation, matching the existing formatting.
+
+Do **not** write `ANTHROPIC_CUSTOM_MODEL_OPTION` here — step 3b replaces it with
+a full row set. Claude Code dedupes the picker by model id and that env WINS, so
+leaving it in place replaces the generated row for that model with a bare one —
+losing its `behavesAs` (the catalog warning returns for that id) and showing
+"Custom model" instead of its context window.
 
 **PROXY_AUTH_TOKEN — only if the user says the proxy must be reachable off this
 machine** (e.g. another device on the LAN, `PROXY_HOST=0.0.0.0`). Ask:
@@ -116,6 +97,56 @@ token in place, Claude Code's single credential slot is the proxy token, so
 `claude-*` model requests no longer carry OAuth — this mode is for GLM/OpenRouter/
 DeepSeek/Qwen/LM Studio routing. If the user did not ask for off-host access, do
 NOT configure any of this; the loopback default needs no token.
+
+### 3b. Publish the `/model` picker rows
+
+Run, verbatim:
+
+```
+node "$CLAUDE_PLUGIN_ROOT/scripts/render-model-picker.js"
+```
+
+**Do not write the `modelPicker` block yourself.** Claude Code does no merging
+across settings sources — the highest-precedence file that defines `modelPicker`
+wins outright — so a hand-written block silently discards any rows the user
+added themselves, with no diagnostic anywhere. The script merges: it replaces
+only the rows cc-proxy previously generated, keeps foreign rows in their exact
+positions, backs the file up to `settings.json.bak` first, and removes the
+superseded `ANTHROPIC_CUSTOM_MODEL_OPTION*` keys. The write is atomic (temp file
+renamed over the target), so an interrupted run cannot leave a half-written
+settings.json.
+
+**Why this exists.** Claude Code assumes a **200K** context window for any model
+id its built-in catalog does not describe — which is every id cc-proxy routes —
+and auto-compacts there no matter what the backend actually serves. The rows
+carry each model's real window (via a `[1m]` suffix on the ids that have one) and
+a `behavesAs` mapping that stops the "isn't described by this version's model
+catalog" warning.
+
+Interpret the script's output:
+
+- `wrote N modelPicker rows to …` → success. It also prints which env keys it
+  removed. Continue.
+- `no provider keys are registered` → the user skipped every key in step 2, so
+  there is nothing to publish and nothing was written. Say so plainly: the
+  `/model` picker keeps only Claude's built-in entries, and re-running
+  `/cc-proxy:setup` after adding a key to `~/.env` will add the rows.
+- `could not be read as JSON` → their settings.json is malformed. Nothing was
+  written. Tell them the parse error and stop; do not attempt a repair.
+
+**If the script reports `CLAUDE_CODE_MAX_CONTEXT_TOKENS is still set`, ask the
+user** — do not remove it yourself:
+
+> "Your settings pin `CLAUDE_CODE_MAX_CONTEXT_TOKENS` to `<value>` globally. Each model now carries its own window, so that pin no longer affects them — it only applies to ids with **no** row (a typo, a model pinned in a subagent's frontmatter, an OpenRouter `vendor/model` id), where a large value tells Claude Code not to compact until far past what those models actually accept. Remove it?"
+
+If they say yes, delete just that key from settings.json `env` and leave
+everything else untouched. If they say no or don't answer, leave it — it is
+harmless for every model that has a row.
+
+**Tell the user this limitation once:** models whose real window is *below* 200K
+(`glm-4.5`, `glm-4.5-air` at 128K) are still budgeted at 200K. Claude Code has no
+per-model channel below 200K, and the global one is disabled for any model
+carrying `behavesAs`.
 
 ### 4. Optional: enable the statusline
 

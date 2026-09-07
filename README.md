@@ -224,7 +224,15 @@ pnpm install
 pnpm proxy             # standalone on PROXY_PORT (default 4000)
 pnpm test && pnpm lint
 pnpm probe:vendors     # MANUAL: re-measure vendor claims + report catalog drift (issue #37)
+pnpm models:picker     # write /model picker rows into ~/.claude/settings.json (--dry-run to preview)
 ```
+
+`models:picker` publishes one `/model` picker row per routable model, each
+carrying its real context window — without it Claude Code assumes 200K for every
+id cc-proxy routes and auto-compacts there, even for the 1M ones. It writes your
+`~/.claude/settings.json` (backing it up first) and preserves any rows you wrote
+yourself. `/cc-proxy:setup` runs it for you; see docs/OPERATIONS.md
+"The `/model` picker and context windows" for the measurement behind it.
 
 `probe:vendors` is deliberately outside `pnpm check` — it spends real quota
 against real keys. It re-issues the requests behind claims like "this vendor
