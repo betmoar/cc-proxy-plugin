@@ -2,6 +2,11 @@
 
 All notable changes to cc-proxy are recorded here. Versions follow [semver](https://semver.org/); `package.json` is the single source of truth and propagates to `.claude-plugin/plugin.json` via `scripts/sync-version.mjs`.
 
+## [0.10.1] — 2026-09-08
+
+### Added
+- **`glm-5.3-flash` joins the curated set** — window, route and grade. It had none of the three despite being routed heavily in practice, so it got no picker row and fell back to CC's 200K. The window was **measured, not read off a list**: Z.ai publishes no window for this id on any of its list endpoints, so the boundary was bisected against the live Anthropic skin (2026-09-08) — 1,032,887 input tokens accepted, ~1.05M refused with `[1261][prompt is too long]`. That brackets **1048576** and refutes the 1310720 OpenRouter advertises for its resold `z-ai/glm-5.3-flash`; a reseller's number is evidence about the reseller's route. Routing probed the same day through the proxy (so the auth shape is the real one): Z.ai answers 200 and echoes `"model":"glm-5.3-flash"` — no aliasing, unlike `glm-5.2`/`5.1`/`5` which all come back as `glm-5.3` — while the Qwen plan 400s it. Graded `Specialist` (this table's sense: NARROW), deliberately not inheriting `glm-5.3`'s `Flagship` because no capability assessment has been made. Adding it tripped three separate couplings — the `CONTEXT_WINDOW` size tripwire, `MODEL_TIERS` parity, and `ROUTES` parity — which is the tripwire working as designed.
+
 ## [0.10.0] — 2026-09-07
 
 ### Added

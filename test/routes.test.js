@@ -141,6 +141,25 @@ describe("routes", () => {
 			}
 		});
 
+		// A slash id NEVER belongs in this table: the openrouter provider claims it
+		// by shape in match(), so rankRoutes() legitimately returns [] and adding a
+		// key here would be dead weight that reads like a routing decision. Pinned
+		// because a comment asserting it was the only record, and a reviewer read
+		// that comment as claiming the opposite (PR #65).
+		it("holds no slash id — those route by provider match(), not by this table", () => {
+			const slash = Object.keys(ROUTES).filter((id) => id.includes("/"));
+			assert.deepEqual(
+				slash,
+				[],
+				`ROUTES must not key on a vendor/model id (${slash.join(", ")}) — openrouter's match() owns those`,
+			);
+			assert.deepEqual(
+				rankRoutes("z-ai/glm-5.3-flash"),
+				[],
+				"a slash id resolved through ROUTES — the table has grown a key it must not have",
+			);
+		});
+
 		it("lists no duplicate backend for one id", () => {
 			for (const [id, routes] of Object.entries(ROUTES)) {
 				const seen = routes.map((r) => r.provider);
