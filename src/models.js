@@ -69,6 +69,13 @@ export const MODEL_GRADES = {
 	// everyone else. Position is stable; what is behind an alias this week is
 	// not. See scripts/probe-vendors.mjs for the standing measurement.
 	"glm-5.3": "Flagship",
+	// The flagship's speed variant: same 1048576 window (measured), a narrower
+	// remit. `Specialist` in this table's sense — NARROW, the residual assessed
+	// bucket — not a cheapness claim, which is what `tier` is for. Deliberately
+	// not Strong: no capability assessment has been made, and inheriting the
+	// flagship's grade because the ids share a stem would publish a claim nobody
+	// measured. If someone benchmarks it, this is the line to revisit.
+	"glm-5.3-flash": "Specialist",
 	"glm-5.2": "Strong",
 	"glm-5.1": "Strong",
 	"glm-5": "Strong",
@@ -305,6 +312,13 @@ export const CONTEXT_WINDOW = {
 	// 1048576 exactly, per Z.ai's own /api/v1/models — the only one of its three
 	// list endpoints that knows glm-5.3 exists.
 	"glm-5.3": 1048576,
+	// MEASURED, not read off a list: Z.ai publishes no window for this id on any
+	// of its list endpoints, so the boundary was bisected against the live
+	// Anthropic skin (2026-09-08). 1032887 input tokens accepted at 200;
+	// ~1.05M refused with `[1261][prompt is too long]`. That brackets 1048576 and
+	// REFUTES the 1310720 OpenRouter advertises for its resold `z-ai/glm-5.3-flash`
+	// — a reseller's number is evidence about the reseller's route, not this one.
+	"glm-5.3-flash": 1048576,
 	// DeepSeek (api-docs.deepseek.com/quick_start/pricing)
 	"deepseek-v4-pro": 1000000,
 	"deepseek-v4-flash": 1000000,
