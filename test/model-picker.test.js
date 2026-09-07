@@ -49,8 +49,8 @@ describe("modelPicker row generation (issue #62)", () => {
 			);
 		}
 		// Guard against the assertion above passing vacuously on an empty set.
-		assert.equal(rows.filter((r) => r.model.endsWith("[1m]")).length, 9);
-		assert.equal(rows.length, 16);
+		assert.equal(rows.filter((r) => r.model.endsWith("[1m]")).length, 10);
+		assert.equal(rows.length, 17);
 	});
 
 	// behavesAs is what makes CC stop calling the id unknown, which is what
@@ -76,7 +76,7 @@ describe("modelPicker row generation (issue #62)", () => {
 		assert.deepEqual(buildRows({}), []);
 		const glmOnly = reachableIds({ GLM_API_KEY: "g" });
 		assert.ok(glmOnly.every((id) => id.startsWith("glm-")));
-		assert.equal(glmOnly.length, 9);
+		assert.equal(glmOnly.length, 10);
 		// Qwen alone reaches its own ids AND the two foreign ones the plan serves.
 		const qwenOnly = reachableIds({ DASHSCOPE_API_KEY: "q" });
 		assert.ok(qwenOnly.includes("deepseek-v4-flash-0731"), "the plan serves this dated build");
@@ -176,7 +176,9 @@ describe("settings merge (issue #62)", () => {
 		const after = mergePicker(before, buildRows({ GLM_API_KEY: "g" }));
 		const models = after.modelPicker.options.map((r) => r.model);
 		assert.ok(!models.includes("glm-5.3"), "the pre-suffix spelling survived as a duplicate");
-		assert.equal(models.filter((m) => m.startsWith("glm-5.3")).length, 1);
+		// EXACT, not startsWith: `glm-5.3` is a prefix of `glm-5.3-flash`, so a
+		// prefix count answers a different question and reads as a merge bug.
+		assert.equal(models.filter((m) => m === "glm-5.3[1m]").length, 1);
 	});
 
 	// Row ORDER is a user-visible choice (it is the order of the /model picker),
@@ -417,13 +419,13 @@ describe("render-model-picker run() (issue #62)", () => {
 		const { code, out } = await invoke({ argv: [], file, env: GLM });
 		assert.equal(code, 0);
 		const written = JSON.parse(fs.readFileSync(file, "utf8"));
-		assert.equal(written.modelPicker.options.length, 9, "the GLM rows did not land");
+		assert.equal(written.modelPicker.options.length, 10, "the GLM rows did not land");
 		assert.equal(
 			written.env.ANTHROPIC_BASE_URL,
 			"http://127.0.0.1:4000",
 			"a foreign env key was lost",
 		);
-		assert.match(out, /wrote 9 modelPicker rows/);
+		assert.match(out, /wrote 10 modelPicker rows/);
 	});
 
 	// THE MUTATION THAT SURVIVED. With replaceBuiltInOptions:false the one-slot
@@ -475,7 +477,7 @@ describe("render-model-picker run() (issue #62)", () => {
 		assert.equal(code, 0);
 		assert.equal(
 			JSON.parse(out).modelPicker.options.length,
-			9,
+			10,
 			"--dry-run did not print the merge",
 		);
 		assert.equal(fs.readFileSync(file, "utf8"), "{}", "--dry-run wrote the file");
@@ -489,7 +491,7 @@ describe("render-model-picker run() (issue #62)", () => {
 		const { code, out } = await invoke({ argv: ["--print"], file, env: GLM });
 		assert.equal(code, 0);
 		const rows = JSON.parse(out);
-		assert.ok(Array.isArray(rows) && rows.length === 9);
+		assert.ok(Array.isArray(rows) && rows.length === 10);
 		assert.ok(
 			rows.every((r) => r.behavesAs),
 			"a printed row is missing behavesAs",

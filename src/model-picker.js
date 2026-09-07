@@ -6,10 +6,13 @@
  * THE PROBLEM. Claude Code assumes a 200K context window for any id its
  * built-in catalog does not describe, and auto-compacts there — regardless of
  * what the backend actually serves. Every id cc-proxy routes is such an id.
- * Nine of the sixteen in CONTEXT_WINDOW are >=1M and were being budgeted at a
- * fifth of their real window; all sixteen printed a catalog warning at session
- * start. The plugin already knew the right answer per id and had no channel to
- * say so. `modelPicker` is that channel.
+ * At the time this shipped, nine of the sixteen ids in CONTEXT_WINDOW were >=1M
+ * and being budgeted at a fifth of their real window; all sixteen printed a
+ * catalog warning at session start. (The set grows — couplings.test.js pins its
+ * size deliberately so adding one is a decision, not a diff. Those two numbers
+ * are the ORIGINAL measurement, not a running count.) The plugin already knew
+ * the right answer per id and had no channel to say so. `modelPicker` is that
+ * channel.
  *
  * THE MEASUREMENT (CC 2.1.263, 2026-09-07; probed with
  * `claude --settings <json> --model <id> -p /context` against a stub Anthropic
@@ -94,9 +97,9 @@ const ONE_M = 1000000;
 
 /**
  * Curated display names, indexed by bare id, from the static catalogs that have
- * one. Only NINE of the sixteen curated windows are covered — every GLM id but
- * `glm-5.2` reaches the user through GLM's LIVE catalog and has no static entry
- * to read a name from — so a derivation is needed for the rest. This map is
+ * one. Most curated windows are NOT covered — every GLM id but `glm-5.2`
+ * reaches the user through GLM's LIVE catalog and has no static entry to read a
+ * name from — so a derivation is needed for the rest. This map is
  * consulted FIRST so the picker cannot spell a model differently from
  * `/v1/models` and docs/models.html: without it, `deepseek-v4-flash-0731`
  * renders "DeepSeek V4 Flash 0731" here and "DeepSeek V4 Flash (0731)" there.
@@ -166,8 +169,8 @@ export function labelFor(id) {
  * WHY GATED ON REGISTRATION. Issue #30: setup once wrote an
  * ANTHROPIC_CUSTOM_MODEL_OPTION for a user who had skipped the GLM key, putting
  * a model in their picker that cannot route — warned about once in speech and
- * never on disk, failing weeks later with nothing to explain why. Sixteen rows
- * is sixteen chances to repeat that.
+ * never on disk, failing weeks later with nothing to explain why. A row per
+ * curated id is that many chances to repeat it.
  *
  * @param {NodeJS.ProcessEnv} [env]
  * @returns {string[]} curated ids, in CONTEXT_WINDOW's declaration order

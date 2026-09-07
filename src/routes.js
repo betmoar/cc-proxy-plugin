@@ -135,6 +135,16 @@ export const ROUTES = {
 		{ provider: "glm", status: 200 },
 		{ provider: "qwen", status: 400 },
 	],
+	// Same shape as glm-5.3, and measured the same way (2026-09-08, through the
+	// proxy so the auth shape is the real one): Z.ai answers 200 and echoes
+	// `"model":"glm-5.3-flash"` — NO aliasing, unlike glm-5.2/5.1/5 which all come
+	// back as glm-5.3. The Qwen plan 400s it. OpenRouter lists it only under its
+	// own `z-ai/glm-5.3-flash` id, which is a separate ROUTES key by design, so
+	// there is no second route to rank for the bare spelling.
+	"glm-5.3-flash": [
+		{ provider: "glm", status: 200 },
+		{ provider: "qwen", status: 400 },
+	],
 	// Two PLAN routes. Tie broken toward native (glm) — swapping one prepaid
 	// pool for another buys nothing and costs +6 injected tokens.
 	//

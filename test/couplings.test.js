@@ -721,7 +721,7 @@ describe("cross-file couplings", () => {
 		);
 		assert.equal(
 			rows.length,
-			16,
+			17,
 			"CONTEXT_WINDOW changed size: re-read docs/OPERATIONS.md's picker section and CLAUDE.md's coupling row, then update this count. Users must re-run /cc-proxy:setup to receive the new row — that is what the SessionStart staleness notice is for",
 		);
 	});
