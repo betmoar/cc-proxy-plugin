@@ -72,8 +72,8 @@ export const MODEL_GRADES = {
 	// The flagship's speed variant: same 1048576 window (measured), a narrower
 	// remit. `Specialist` in this table's sense — NARROW, the residual assessed
 	// bucket — not a cheapness claim, which is what `tier` is for. Deliberately
-	// not Strong: no capability assessment has been made, and inheriting the
-	// flagship's grade because the ids share a stem would publish a claim nobody
+	// not Flagship: no capability assessment has been made, and inheriting
+	// glm-5.3's grade because the ids share a stem would publish a claim nobody
 	// measured. If someone benchmarks it, this is the line to revisit.
 	"glm-5.3-flash": "Specialist",
 	"glm-5.2": "Strong",
