@@ -1,6 +1,7 @@
 import { strict as assert } from "node:assert";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
@@ -223,31 +224,34 @@ describe("session-start emits one payload (issue #62)", () => {
 
 	// Silence must stay byte-exact silence: a hook that prints "{}" on a healthy
 	// session adds an empty context entry to every session forever.
-	it("prints nothing at all when there is nothing to say", () => {
+	//
+	// The listener is an IN-PROCESS http server on an ephemeral port, closed in
+	// `finally`. The first version spawned a DETACHED, unref'd node process on a
+	// hard-coded 59998 and killed it with a bare `process.kill` that nothing
+	// awaited — which leaked a listener on every run and hung CI: the runner will
+	// not finish a step while an orphaned child of it is still alive (measured —
+	// the step sat in `pnpm test` for 6+ minutes against 10 s locally, while the
+	// same commit passed in 9.4 s from a clean clone). A test that needs a
+	// process outliving it is nearly always a test that can own the resource
+	// instead.
+	it("prints nothing at all when there is nothing to say", async () => {
 		const dir = tmp();
-		// No settings.json and no legacy env -> no picker notice. A listening port
-		// with a foreign server -> ensureProxyRunning returns "already-up".
-		const server = fs.mkdtempSync(path.join(os.tmpdir(), "cc-port-"));
-		const script = path.join(server, "listen.js");
-		fs.writeFileSync(
-			script,
-			'require("node:http").createServer((q,s)=>{s.writeHead(200);s.end("{}")}).listen(59998,"127.0.0.1")',
-		);
-		const child = execFileSync(
-			process.execPath,
-			[
-				"-e",
-				`const {spawn}=require("node:child_process");const c=spawn(process.execPath,[${JSON.stringify(script)}],{detached:true,stdio:"ignore"});c.unref();setTimeout(()=>process.stdout.write(String(c.pid)),400)`,
-			],
-			{ encoding: "utf8", timeout: 10000 },
-		);
+		// No settings.json and no legacy env -> no picker notice. Something
+		// listening that does not speak /_status -> ensureProxyRunning treats it as
+		// a foreign listener and returns "already-up", the healthy path.
+		const srv = http.createServer((_req, res) => {
+			res.writeHead(200, { "content-type": "application/json" });
+			res.end("{}");
+		});
+		await new Promise((resolve) => srv.listen(0, "127.0.0.1", resolve));
+		const port = srv.address().port;
 		try {
 			const out = execFileSync(process.execPath, [path.join(root, "hooks", "session-start.js")], {
 				env: {
 					...process.env,
 					HOME: dir,
 					USERPROFILE: dir,
-					PROXY_PORT: "59998",
+					PROXY_PORT: String(port),
 					PROXY_READY_TIMEOUT_MS: "300",
 					PROXY_LOG: path.join(dir, "log"),
 				},
@@ -256,11 +260,8 @@ describe("session-start emits one payload (issue #62)", () => {
 			});
 			assert.equal(out, "");
 		} finally {
-			try {
-				process.kill(Number(child));
-			} catch {
-				// already gone
-			}
+			srv.closeAllConnections();
+			srv.close();
 		}
 	});
 });
