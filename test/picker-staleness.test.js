@@ -1,12 +1,11 @@
 import { strict as assert } from "node:assert";
-import { execFile } from "node:child_process";
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
-import { promisify } from "node:util";
 import {
 	hasLegacyCustomModelOption,
 	noticeFor,
@@ -208,19 +207,28 @@ describe("session-start emits one payload (issue #62)", () => {
 	/**
 	 * Run the isolated hook and resolve its stdout.
 	 *
-	 * ASYNC ON PURPOSE. `execFileSync` blocks this process's event loop, so an
-	 * in-process http server CANNOT answer the hook's `/_status` probe while it
-	 * runs — the "already-up" test then passed only because that probe timed out
-	 * and the listener read as foreign. That is a pass for the wrong reason, and
-	 * a timing-dependent one: it is decided by whether a 1 s probe expires before
-	 * a 20 s exec, which is exactly the kind of margin that behaves differently
-	 * on a loaded CI runner. Awaiting instead lets the server actually serve.
+	 * `spawn` + resolve on `exit`, which is the shape proxy-lifecycle.test.js
+	 * already uses for this hook and is proven on CI. Two earlier spellings were
+	 * not:
+	 *
+	 * - `execFileSync` BLOCKS this process's event loop, so an in-process
+	 *   /_status server cannot answer while the hook runs. The "already-up" test
+	 *   then passed only because that 1 s probe expired inside the exec — a pass
+	 *   for the wrong reason, decided by a margin that shifts under CI load.
+	 * - `execFile` resolves when the child's STDIO CLOSES, not when it exits, so
+	 *   anything still holding the pipe keeps the promise pending forever. On the
+	 *   runner the whole FILE timed out at 60 s having reported no subtest at all
+	 *   — the least actionable failure shape there is.
+	 *
+	 * `exit` fires when the process ends regardless of who else holds a
+	 * descriptor, and stderr goes to the parent so a crash in the child is
+	 * visible rather than swallowed.
 	 *
 	 * @param {string} dir @param {Record<string,string>} env
 	 * @returns {Promise<string>}
 	 */
-	async function runHook(dir, env) {
-		const { stdout } = await promisify(execFile)(process.execPath, [isolatedHook(dir)], {
+	function runHook(dir, env) {
+		const child = spawn(process.execPath, [isolatedHook(dir)], {
 			env: {
 				...process.env,
 				HOME: dir,
@@ -230,10 +238,16 @@ describe("session-start emits one payload (issue #62)", () => {
 				PROXY_LOG: path.join(dir, "log"),
 				...env,
 			},
-			encoding: "utf8",
-			timeout: 20000,
+			stdio: ["ignore", "pipe", "inherit"],
 		});
-		return stdout;
+		return new Promise((resolve, reject) => {
+			let out = "";
+			child.stdout.on("data", (c) => {
+				out += c;
+			});
+			child.on("error", reject);
+			child.on("exit", () => resolve(out));
+		});
 	}
 
 	// The hook may have TWO things to say (proxy down, picker stale) and exactly
