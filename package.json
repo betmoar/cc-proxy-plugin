@@ -16,7 +16,7 @@
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
     "format": "biome format --write .",
-    "test": "node --test test/*.test.js",
+    "test": "node --test --test-timeout=60000 test/*.test.js",
     "check": "pnpm lint && pnpm test",
     "proxy": "node bin/cc-proxy.js",
     "models:html": "node scripts/render-html.mjs",

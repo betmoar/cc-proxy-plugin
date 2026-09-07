@@ -20,7 +20,7 @@ For the installed plugin, API keys live in `~/.env` (not the repo `.env`, which 
 Gates (both must pass):
 
 ```bash
-pnpm test   # node --test
+pnpm test   # node --test --test-timeout=60000
 pnpm lint   # biome check .
 ```
 
