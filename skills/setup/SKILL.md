@@ -28,7 +28,7 @@ API keys live in `~/.env` — the single source of truth the proxy reads at star
 
 Read `~/.env` first (create the file if absent). For each key, reuse a value already present rather than re-asking.
 
-**Z.ai / GLM — optional, but the one this plugin is built around.** Its nine models are the bulk of what step 3b publishes to the `/model` picker; without the key none of them appear there. If `GLM_API_KEY` is missing or empty in `~/.env`, **ask explicitly**:
+**Z.ai / GLM — optional, but the one this plugin is built around.** Its models are the bulk of what step 3b publishes to the `/model` picker; without the key none of them appear there. If `GLM_API_KEY` is missing or empty in `~/.env`, **ask explicitly**:
 
 > "Enter your Z.ai API key (https://z.ai → Dashboard → API Keys), or press Enter to skip. It will be stored in ~/.env:"
 
@@ -103,7 +103,7 @@ NOT configure any of this; the loopback default needs no token.
 Run, verbatim:
 
 ```
-node "$CLAUDE_PLUGIN_ROOT/scripts/render-model-picker.js"
+node "${CLAUDE_PLUGIN_ROOT}/scripts/render-model-picker.js"
 ```
 
 **Do not write the `modelPicker` block yourself.** Claude Code does no merging
@@ -131,8 +131,9 @@ Interpret the script's output:
   there is nothing to publish and nothing was written. Say so plainly: the
   `/model` picker keeps only Claude's built-in entries, and re-running
   `/cc-proxy:setup` after adding a key to `~/.env` will add the rows.
-- `could not be read as JSON` → their settings.json is malformed. Nothing was
-  written. Tell them the parse error and stop; do not attempt a repair.
+- `could not be read (…)` → their settings.json could not be read or parsed;
+  the parenthetical says which (a JSON error, EACCES, EISDIR). Nothing was
+  written. Relay the reason and stop; do not attempt a repair.
 
 **If the script reports `CLAUDE_CODE_MAX_CONTEXT_TOKENS is still set`, ask the
 user** — do not remove it yourself:
@@ -170,7 +171,7 @@ If yes, merge this **top-level** key into `~/.claude/settings.json` (it is *not*
 Spawn the proxy so it is already up when `ANTHROPIC_BASE_URL` takes effect, eliminating the first-run `ECONNREFUSED`. Run, verbatim:
 
 ```
-node "$CLAUDE_PLUGIN_ROOT/scripts/start-proxy.js"
+node "${CLAUDE_PLUGIN_ROOT}/scripts/start-proxy.js"
 ```
 
 `scripts/start-proxy.js` reuses the SessionStart hook's `ensureProxyRunning()`: it probes `PROXY_PORT` first (idempotent — a same-version proxy is left running; a stale-version one is gracefully replaced), then spawns its own tree's `bin/cc-proxy.js` detached + `unref`'d so it survives this turn. It reads the `env` block you just wrote to `~/.claude/settings.json` and passes it to the spawn, because the proxy reads config from env (not settings.json) and nothing has injected those vars into this process yet on a first-run setup.

@@ -64,6 +64,16 @@ export function deepseekBalanceUrl() {
 }
 
 /**
+ * Same seam for OpenRouter — a test stub is the only way to exercise the
+ * shaping in fetchOpenRouterCredits() without a key. Read at call time, like
+ * deepseekBalanceUrl(). Not a user knob.
+ * @returns {string}
+ */
+export function openrouterCreditsUrl() {
+	return process.env.OPENROUTER_CREDITS_URL || OPENROUTER_CREDITS_URL;
+}
+
+/**
  * Clock-skew threshold (backlog item 11). Every reset countdown assumes the
  * local clock agrees with the vendor's; when it doesn't, the gauge is wrong by
  * exactly that offset and nothing says so.
@@ -139,13 +149,19 @@ export async function fetchGlmQuota(apiKey) {
 /**
  * OpenRouter credits. Remaining = total_credits - total_usage.
  * @param {string} apiKey
- * @returns {Promise<{ remaining: number, usedPct: number }>} throws on failure
+ * @returns {Promise<{ remaining: number|null, usedPct: number }>} throws on failure;
+ *   `remaining` is null when the response carries no usable total
  */
 export async function fetchOpenRouterCredits(apiKey) {
-	const json = await fetchJson(OPENROUTER_CREDITS_URL, {
+	const json = await fetchJson(openrouterCreditsUrl(), {
 		Authorization: `Bearer ${apiKey}`,
 	});
-	const total = Number(json?.data?.total_credits) || 0;
+	// A 200 whose body lacks `data.total_credits` (schema drift) is UNKNOWN, not
+	// zero: `Number(undefined) || 0` rendered a confident `or:$0` — "you are out
+	// of credits" — for a shape nobody had seen (measured). `null` is the
+	// unknown-balance carrier the DeepSeek fetcher already uses; it renders `--`.
+	const total = json?.data?.total_credits;
+	if (typeof total !== "number" || !Number.isFinite(total)) return { remaining: null, usedPct: 0 };
 	const used = Number(json?.data?.total_usage) || 0;
 	return { remaining: total - used, usedPct: total > 0 ? Math.round((used / total) * 100) : 0 };
 }

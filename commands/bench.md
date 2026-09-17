@@ -45,16 +45,27 @@ EOF
 #      sub-command entirely.
 #
 # So parse $ARGUMENTS — the whole argument string, the only token that carries
-# every word — with `set --` word-splitting it into a real argv. The unquoted
-# expansion is deliberate: these are shell-word arguments (`speed --report`),
-# and the values are the user's own command line.
-#
+# every word. It is spliced in as SOURCE TEXT, not expanded as a variable, so a
+# bare `set -- $ARGUMENTS` hands the user's words to the parser as syntax:
+# measured, `speed --report | cat` ran `set --` in a subshell and fell through
+# to `grades` (a billed network run plus a grades.json rewrite, from a
+# read-only report), `speed > x` created/truncated x, `speed 'a` was a syntax
+# error, and `$(…)` executed. A QUOTED heredoc is the one place the shell
+# never parses its contents, so the spliced text becomes data in `$args`, and
+# only THEN is it word-split into a real argv. (Only a line that is exactly
+# the terminator could end it early, which a one-line slash argument cannot
+# contain.) Locked by test/commands.test.js, which runs this block with each
+# of those arguments spliced in.
+args=$(cat <<'CC_PROXY_ARGS'
+$ARGUMENTS
+CC_PROXY_ARGS
+)
 # `set -f` first, because unquoted word-splitting also GLOBS: measured in a
 # directory holding two files, `bench speed *` split to three words
 # (`speed aaa.txt bbb.txt`) instead of two. Splitting is what we want; pathname
 # expansion is not, and the argv it builds is passed straight to a script.
 set -f
-set -- $ARGUMENTS
+set -- $args
 set +f
 sub="${1:-grades}"
 shift 2>/dev/null || true
@@ -84,6 +95,8 @@ Two things to keep straight if the user asks about the output:
   proxy binary changed mid-series and those numbers are not comparable.
 
 `grades` needs network (benchlm.ai + OpenRouter) and writes
-`~/.claude/cc-proxy/grades.json`. `speed` needs the proxy running and appends to
-`~/.claude/cc-proxy/speed.jsonl`. On failure both say so and write nothing —
-a stale file is useful, a silently-empty one is a lie.
+`~/.claude/cc-proxy/grades.json`; on any failure it says so and writes nothing —
+a stale file is useful, a silently-empty one is a lie. `speed` needs the proxy
+running and appends to `~/.claude/cc-proxy/speed.jsonl` one row per route,
+**FAIL rows included** (a route that stopped answering is the finding); it
+writes nothing only when the proxy itself is down.

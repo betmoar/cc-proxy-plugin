@@ -51,7 +51,7 @@ export function parseRoutingLines(logText, limit = 8) {
 /**
  * Render the assembled status into a plain-text report.
  * @param {object} data
- * @param {{ up: boolean, port?: number, version?: string, defaultBackend?: string, providers?: string[] }} data.status
+ * @param {{ up: boolean, foreign?: boolean, detail?: string, port?: number, version?: string, defaultBackend?: string, providers?: string[] }} data.status
  * @param {{ level?: string, pct?: number, resetMs?: number, skewMs?: number, stale?: boolean } | null} [data.glm]
  * @param {{ remaining?: number, usedPct?: number, stale?: boolean } | null} [data.openrouter]
  * @param {string[]} [data.routing]
@@ -62,6 +62,21 @@ export function formatStatusReport(data) {
 	const lines = [];
 
 	if (!status.up) {
+		if (status.foreign) {
+			// Something ANSWERED on the port, just not as cc-proxy — another dev
+			// server, a proxy returning garbage. The "new session" advice below
+			// cannot fix that: the SessionStart hook treats a foreign listener as
+			// "already up" and never spawns over it, so the two cases need
+			// different advice (measured: an HTML listener was reported DOWN with
+			// a restart tip that loops forever).
+			lines.push(`proxy:        port ${PORT} is answering but not as cc-proxy (${status.detail})`);
+			lines.push(`port:         ${PORT}`);
+			lines.push("");
+			lines.push(`Something else may hold the port: lsof -nP -iTCP:${PORT} -sTCP:LISTEN`);
+			lines.push("The SessionStart hook will not start a proxy over a foreign listener —");
+			lines.push("free the port or set PROXY_PORT to another one.");
+			return lines.join("\n");
+		}
 		lines.push("proxy:        DOWN (no response on /_status)");
 		lines.push(`port:         ${PORT}`);
 		lines.push("");
@@ -125,9 +140,22 @@ async function fetchJson(url, headers) {
 	return res.json();
 }
 
-async function probeStatus() {
+/**
+ * GET /_status and classify the answer. Three outcomes, because two different
+ * pieces of advice hang off them: `up`; `down` (nothing accepted the
+ * connection — a new session restarts it); and `foreign` (something answered,
+ * but not with cc-proxy's /_status shape — an HTML dev server, a proxy
+ * returning garbage, a listener that accepts and hangs). The same split
+ * list-models.js makes; a bare catch collapsed all three into DOWN.
+ * @param {number} [port]
+ * @returns {Promise<{ up: boolean, foreign?: boolean, detail?: string, port?: number, version?: string, defaultBackend?: string, providers?: string[] }>}
+ */
+export async function probeStatus(port = PORT) {
 	try {
-		const json = await fetchJson(`http://127.0.0.1:${PORT}/_status`);
+		const json = await fetchJson(`http://127.0.0.1:${port}/_status`);
+		if (!json || typeof json !== "object" || !Array.isArray(json.providers)) {
+			return { up: false, foreign: true, detail: "answered without cc-proxy's /_status shape" };
+		}
 		return {
 			up: true,
 			port: json.port,
@@ -135,8 +163,10 @@ async function probeStatus() {
 			defaultBackend: json.defaultBackend,
 			providers: json.providers,
 		};
-	} catch {
-		return { up: false };
+	} catch (err) {
+		const message = /** @type {Error} */ (err)?.message || String(err);
+		const down = err instanceof TypeError || /ECONNREFUSED|ENOTFOUND|fetch failed/i.test(message);
+		return down ? { up: false } : { up: false, foreign: true, detail: message };
 	}
 }
 

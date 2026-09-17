@@ -8,16 +8,16 @@
 // The proxy reads config from process.env, augmented at startup by ~/.env
 // (and repo .env in dev) — see src/env.js. API keys live in ~/.env now, not
 // settings.json's `env`. The settings.json `env` block still carries the
-// *plumbing* the hook needs (PROXY_PATH/PROXY_PORT/PROXY_LOG), and on a
-// first-run setup nothing has injected it into *this* process yet — so we read
-// it ourselves and merge it over process.env to derive ensureProxyRunning's
-// own opts (wrong port or missing-path otherwise). The child then loads its
-// own ~/.env for keys. Already-up is a no-op; missing-path/unreachable print
-// guidance.
+// *plumbing* the hook needs (PROXY_PORT/PROXY_LOG; PROXY_PATH only as a legacy
+// pin the setup skill removes), and on a first-run setup nothing has injected
+// it into *this* process yet — so we read it ourselves and merge it over
+// process.env to derive ensureProxyRunning's own opts (wrong port or
+// missing-path otherwise). The child then loads its own ~/.env for keys.
+// Already-up is a no-op; missing-path/unreachable print guidance.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { ensureProxyRunning, resolveProxyPath } from "../hooks/proxy-lifecycle.js";
+import { ensureProxyRunning, loadHomeEnv, resolveProxyPath } from "../hooks/proxy-lifecycle.js";
 
 /** @returns {Record<string, string>} */
 function settingsEnv() {
@@ -39,6 +39,12 @@ function settingsEnv() {
 }
 
 async function main() {
+	// ~/.env first: PROXY_AUTH_TOKEN lives there (the setup skill writes it
+	// there), and the stale-proxy handshake inside ensureProxyRunning must
+	// present it or an older token-gated proxy answers 401 and is never
+	// replaced — this script then printed "already up — no action" while the
+	// stale binary kept serving (measured). Never overrides process.env.
+	loadHomeEnv();
 	const env = { ...process.env, ...settingsEnv() };
 
 	// ensureProxyRunning reads port/logPath/readyTimeout from process.env by
@@ -74,7 +80,7 @@ async function main() {
 	}
 	if (state === "missing-path") {
 		process.stderr.write(
-			"cc-proxy not started: PROXY_PATH is unset. Re-run /cc-proxy:setup (it sets PROXY_PATH in settings.json), or /exit and /resume this session so the SessionStart hook starts it.\n",
+			"cc-proxy not started: PROXY_PATH is unset and this plugin tree has no bin/cc-proxy.js. Reinstall the plugin (claude plugin update cc-proxy@betmoar), or /exit and /resume this session so the SessionStart hook retries.\n",
 		);
 		process.exitCode = 1;
 		return;

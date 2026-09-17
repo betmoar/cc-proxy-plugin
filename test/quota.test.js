@@ -133,3 +133,45 @@ async function fetchGlmQuotaAt(url, apiKey) {
 		globalThis.fetch = original;
 	}
 }
+
+// A 200 whose body lacks `data.total_credits` rendered a confident `or:$0`
+// ("you are out of credits") because `Number(undefined) || 0` is zero. Unknown
+// is `null` — the carrier the DeepSeek fetcher already uses, which the
+// statusline renders as `--`.
+describe("fetchOpenRouterCredits shaping", () => {
+	async function withStub(body, fn) {
+		const http = await import("node:http");
+		const { fetchOpenRouterCredits } = await import("../scripts/quota.js");
+		const server = http.createServer((_req, res) => {
+			res.setHeader("content-type", "application/json");
+			res.end(JSON.stringify(body));
+		});
+		await new Promise((r) => server.listen(0, "127.0.0.1", r));
+		const prev = process.env.OPENROUTER_CREDITS_URL;
+		process.env.OPENROUTER_CREDITS_URL = `http://127.0.0.1:${server.address().port}/credits`;
+		try {
+			return await fn(() => fetchOpenRouterCredits("k"));
+		} finally {
+			if (prev === undefined) {
+				// biome-ignore lint/performance/noDelete: one-time test env restore
+				delete process.env.OPENROUTER_CREDITS_URL;
+			} else process.env.OPENROUTER_CREDITS_URL = prev;
+			await new Promise((r) => server.close(r));
+		}
+	}
+
+	it("computes remaining and usedPct from a well-formed body", async () => {
+		await withStub({ data: { total_credits: 10, total_usage: 4 } }, async (fetch) => {
+			assert.deepEqual(await fetch(), { remaining: 6, usedPct: 40 });
+		});
+	});
+
+	it("reports null, never $0, when the body carries no total_credits", async () => {
+		for (const body of [{}, { data: {} }, { data: { total_credits: "10" } }, { credits: 5 }]) {
+			await withStub(body, async (fetch) => {
+				const out = await fetch();
+				assert.equal(out.remaining, null, `body ${JSON.stringify(body)}`);
+			});
+		}
+	});
+});

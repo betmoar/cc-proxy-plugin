@@ -21,6 +21,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Backstop for every way a tag can be created off main that the local
+      # guard cannot see — `git tag` by hand, `pnpm version --ignore-scripts`
+      # (neither lifecycle script runs), a repeated flag resolved last-wins.
+      # A release pointing at a commit the squash-merge discarded is the #41
+      # failure, and this is the one place every path converges.
+      - name: Gate — the tag's commit is on main (issue #41 backstop)
+        run: |
+          git fetch --no-tags origin main
+          commit=$(git rev-parse "$GITHUB_REF_NAME^{commit}")
+          if ! git merge-base --is-ancestor "$commit" origin/main; then
+            echo "::error::$GITHUB_REF_NAME points at $commit, which is not on main — the tag was created on a branch before the squash (issue #41). Delete it and re-tag on main."
+            exit 1
+          fi
+
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:

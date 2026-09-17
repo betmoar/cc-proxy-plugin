@@ -58,14 +58,34 @@ describe("cross-file couplings", () => {
 		const dirs = ["src", "scripts", "hooks", "bin"];
 		/** @type {{file: string, value: string}[]} */
 		const defaults = [];
+		/** @type {string[]} */
+		const unrecognized = [];
 		for (const dir of dirs) {
 			for (const name of fs.readdirSync(path.join(root, dir))) {
 				if (!/\.(js|mjs)$/.test(name)) continue;
 				const rel = `${dir}/${name}`;
-				const m = /process\.env\.PROXY_PORT \|\| (\d+)/.exec(read(rel));
+				const src = read(rel);
+				const m = /process\.env\.PROXY_PORT \|\| (\d+)/.exec(src);
 				if (m) defaults.push({ file: rel, value: m[1] });
+				// Self-check: a reader spelled differently (`?? 4001`, `parseInt(…) ||
+				// 4001`) would be invisible to the capture above and probe its own
+				// port forever while this test stayed green on the others. Any line
+				// pairing PROXY_PORT with a port-sized literal must be one the capture
+				// understands.
+				for (const line of src.split("\n")) {
+					const readsWithDefault =
+						/process\.env\.PROXY_PORT/.test(line) && /(\|\||\?\?)\s*\d{4,5}\b/.test(line);
+					if (readsWithDefault && !/process\.env\.PROXY_PORT \|\| \d+/.test(line)) {
+						unrecognized.push(`${rel}: ${line.trim()}`);
+					}
+				}
 			}
 		}
+		assert.deepEqual(
+			unrecognized,
+			[],
+			`PROXY_PORT default spelled in a form this lock cannot read — use \`process.env.PROXY_PORT || <port>\`:\n  ${unrecognized.join("\n  ")}`,
+		);
 		// A floor, not a count: it fails if the walk silently matches nothing (a
 		// renamed env var, a changed spelling) rather than passing vacuously.
 		assert.ok(
@@ -102,23 +122,25 @@ describe("cross-file couplings", () => {
 		);
 	});
 
-	// COUPLING: hooks.json kills the SessionStart hook at `timeout` seconds; the
-	// readiness poll inside it defaults to PROXY_READY_TIMEOUT_MS. A ready
-	// timeout at or past the hook kill silently never completes — raise both
-	// together, keeping at least 1s of spawn/probe headroom.
-	it("hook timeout exceeds the default readiness poll with headroom", () => {
+	// COUPLING: hooks.json kills the SessionStart hook at `timeout` seconds. The
+	// longest path through ensureProxyRunning() is the STALE-PROXY RESTART:
+	// checkPort + probeProxyVersion + requestShutdown + waitGone + waitReady, and
+	// the readiness deadline (PROXY_READY_TIMEOUT_MS) is spent TWICE on it. The
+	// previous lock compared the hook timeout to ONE deadline plus 1 s of
+	// headroom, which passed at any default up to 9000 while the restart path
+	// already overran 10 s from ~3900 — the arithmetic is done from the exported
+	// constants now, so the bound moves with the code rather than with prose.
+	it("the stale-proxy restart path fits inside the hooks.json timeout", async () => {
+		const { DEFAULT_READY_TIMEOUT_MS, HANDSHAKE_TIMEOUT_MS, PROBE_TIMEOUT_MS } = await import(
+			"../hooks/proxy-lifecycle.js"
+		);
 		const hooks = JSON.parse(read("hooks/hooks.json"));
 		const hookTimeoutMs = hooks.hooks.SessionStart[0].hooks[0].timeout * 1000;
-		const m = /envTimeout > 0 \? envTimeout : (\d+)/.exec(read("hooks/proxy-lifecycle.js"));
+		const restartPathMs =
+			PROBE_TIMEOUT_MS + 2 * HANDSHAKE_TIMEOUT_MS + 2 * DEFAULT_READY_TIMEOUT_MS;
 		assert.ok(
-			m,
-			"could not locate the ready-timeout default in proxy-lifecycle.js — update this test",
-		);
-		const readyDefaultMs = Number(m[1]);
-		assert.ok(
-			readyDefaultMs + 1000 <= hookTimeoutMs,
-			`PROXY_READY_TIMEOUT_MS default (${readyDefaultMs}ms) needs ≥1000ms headroom under the ` +
-				`hooks.json timeout (${hookTimeoutMs}ms) — raise both together`,
+			restartPathMs + 1000 <= hookTimeoutMs,
+			`restart path worst case ${restartPathMs}ms (probe ${PROBE_TIMEOUT_MS} + 2×handshake ${HANDSHAKE_TIMEOUT_MS} + 2×ready ${DEFAULT_READY_TIMEOUT_MS}) needs ≥1000ms headroom under the hooks.json timeout (${hookTimeoutMs}ms) — raise both together`,
 		);
 	});
 
@@ -198,9 +220,18 @@ describe("cross-file couplings", () => {
 	// functions (see deepseekBalanceUrl).
 	it("scripts/quota.js reads process.env only inside functions, never at module level", () => {
 		const src = read("scripts/quota.js");
-		const offenders = [...src.matchAll(/^(?:export\s+)?const\s+\w+\s*=[^;]*process\.env/gm)].map(
-			(m) => m[0].split("\n")[0],
-		);
+		// Any COLUMN-0 line that is not a comment and mentions process.env. The
+		// earlier `const <ident> = … process.env` pattern missed `const { X } =
+		// process.env`, `let x = …` and a bare top-level call — biome indents every
+		// function body, so column 0 is the module level by construction.
+		const topLevel = String.raw`^(?![\t ]|\/\/|\/\*|\*)[^\n]*process\.env`;
+		for (const sample of ["const { A } = process.env;\n", "let a = process.env.A;\n"]) {
+			assert.ok(
+				new RegExp(topLevel, "m").test(sample),
+				`the module-level pattern no longer matches ${JSON.stringify(sample)}, a form it exists to catch`,
+			);
+		}
+		const offenders = [...src.matchAll(new RegExp(topLevel, "gm"))].map((m) => m[0].split("\n")[0]);
 		assert.deepEqual(
 			offenders,
 			[],
@@ -387,16 +418,23 @@ describe("cross-file couplings", () => {
 	// them here would be documentation theatre.
 	it("every human-facing pnpm script is documented", () => {
 		const scripts = Object.keys(JSON.parse(read("package.json")).scripts);
-		const internal = new Set(["version", "sync-version", "lint:fix", "format"]);
+		const internal = new Set(["preversion", "version", "sync-version", "lint:fix", "format"]);
 		const humanFacing = scripts.filter((s) => !internal.has(s));
 		assert.ok(
 			humanFacing.length >= 5,
 			`expected several human-facing scripts, found ${humanFacing.length}`,
 		);
 
-		// One of these three is where a contributor actually looks first.
-		const docs = ["README.md", "CONTRIBUTING.md", "docs/OPERATIONS.md"].map(read).join("\n");
-		const undocumented = humanFacing.filter((s) => !docs.includes(s));
+		// One of these three is where a contributor actually looks first. The
+		// match is `pnpm <name>` (or `pnpm run <name>`), not a bare substring —
+		// `docs.includes("test")` is true of any README, so the substring form
+		// was vacuous for every script named with an English word.
+		const docs = ["README.md", "CONTRIBUTING.md", "docs/OPERATIONS.md", "docs/RELEASING.md"]
+			.map(read)
+			.join("\n");
+		const mentioned = (s) =>
+			new RegExp(`pnpm (run )?${s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`).test(docs);
+		const undocumented = humanFacing.filter((s) => !mentioned(s));
 		assert.deepEqual(
 			undocumented,
 			[],
@@ -450,7 +488,7 @@ describe("cross-file couplings", () => {
 	// comes, scope the search to the model-discovery section rather than
 	// weakening the name. A section-parsing lock today would be brittler than
 	// the drift it guards (three hand-written docs, three heading styles).
-	it("every published /v1/models field is named in README, OPERATIONS, and ARCHITECTURE", () => {
+	it("every published /v1/models field is named in DISCOVERY and ARCHITECTURE", () => {
 		const typedef = /@typedef \{\{([^}]*)\}\} ModelEntry/.exec(read("src/models.js"));
 		assert.ok(
 			typedef,
@@ -462,27 +500,46 @@ describe("cross-file couplings", () => {
 			`expected several optional ModelEntry fields, parsed: ${optionalFields.join(", ")}`,
 		);
 		const tokens = [...optionalFields, "dedup"];
-		for (const doc of ["README.md", "docs/OPERATIONS.md", "docs/ARCHITECTURE.md"]) {
+		for (const doc of ["docs/DISCOVERY.md", "docs/ARCHITECTURE.md"]) {
 			const text = read(doc);
 			for (const token of tokens) {
 				assert.ok(
 					new RegExp(`\\b${token}\\b`).test(text),
-					`${doc} does not mention "${token}" — the /v1/models wire shape is a publishing contract documented in all three docs (CLAUDE.md coupling row)`,
+					`${doc} does not mention "${token}" — the /v1/models wire shape is a publishing contract: DISCOVERY.md is the contract, ARCHITECTURE.md the rationale (CLAUDE.md coupling row)`,
 				);
 			}
 		}
 	});
 
-	// COUPLING: every env var offered in .env.example must be documented in the
-	// README env table and in docs/OPERATIONS.md (new knobs go in all three).
-	it("every .env.example key is documented in README.md and docs/OPERATIONS.md", () => {
+	// COUPLING: docs/CONFIGURATION.md's first table is THE reference for every
+	// knob, and .env.example is the copy a user edits. Checked in both
+	// directions and by parsing the table's first column, not `includes`: the
+	// earlier substring form passed while OPERATIONS' table lacked PROXY_PORT
+	// and every backend key, because the names appeared elsewhere in the file.
+	it("every .env.example key is a row in docs/CONFIGURATION.md's table, and vice versa", () => {
 		const keys = [...read(".env.example").matchAll(/^([A-Z][A-Z0-9_]*)=/gm)].map((m) => m[1]);
 		assert.ok(keys.length >= 5, `expected .env.example to define keys, parsed: ${keys.join(", ")}`);
-		const readme = read("README.md");
-		const ops = read("docs/OPERATIONS.md");
+		const config = read("docs/CONFIGURATION.md");
+		const proxySide = config.split("Claude Code side")[0];
+		const rows = [...proxySide.matchAll(/^\| `([A-Z][A-Z0-9_]*)` \|/gm)].map((m) => m[1]);
+		assert.ok(
+			rows.length >= 10,
+			`expected the CONFIGURATION table to have rows, parsed: ${rows.join(", ")}`,
+		);
 		for (const key of keys) {
-			assert.ok(readme.includes(key), `${key} is in .env.example but missing from README.md`);
-			assert.ok(ops.includes(key), `${key} is in .env.example but missing from docs/OPERATIONS.md`);
+			assert.ok(
+				rows.includes(key),
+				`${key} is in .env.example but has no row in docs/CONFIGURATION.md`,
+			);
+		}
+		// Legacy knobs are documented but deliberately not offered in the example.
+		const notOffered = new Set(["PROXY_PATH"]);
+		for (const row of rows) {
+			if (notOffered.has(row)) continue;
+			assert.ok(
+				keys.includes(row),
+				`${row} has a row in docs/CONFIGURATION.md but no line in .env.example`,
+			);
 		}
 	});
 	// COUPLING: every scripts/*.js entry point runs its main() behind a guard,
@@ -655,9 +712,12 @@ describe("cross-file couplings", () => {
 			"README.md",
 			".env.example",
 			"skills/setup/SKILL.md",
-			"docs/OPERATIONS.md",
-			"docs/ARCHITECTURE.md",
 			"CONTRIBUTING.md",
+			"CLAUDE.md",
+			...fs
+				.readdirSync(path.join(root, "docs"))
+				.filter((f) => f.endsWith(".md"))
+				.map((f) => `docs/${f}`),
 		];
 		for (const doc of docs) {
 			const hits = read(doc)
@@ -722,7 +782,7 @@ describe("cross-file couplings", () => {
 		assert.equal(
 			rows.length,
 			17,
-			"CONTEXT_WINDOW changed size: re-read docs/OPERATIONS.md's picker section and CLAUDE.md's coupling row, then update this count. Users must re-run /cc-proxy:setup to receive the new row — that is what the SessionStart staleness notice is for",
+			"CONTEXT_WINDOW changed size: re-read docs/CONFIGURATION.md's picker section and CLAUDE.md's coupling row, regenerate docs/models.html, then update this count. Users must re-run /cc-proxy:setup to receive the new row — that is what the SessionStart staleness notice is for",
 		);
 	});
 
@@ -787,6 +847,10 @@ describe("cross-file couplings", () => {
 			"scripts/render-model-picker.js",
 			"scripts/bench-grades.js",
 			"hooks/picker-staleness.js",
+			// The statusline caches under ~/.claude/cc-proxy too; a truncate
+			// window there empties a gauge for a frame instead of serving the
+			// stale value the refresher promises (audit 0.10.2).
+			"scripts/statusline.js",
 		]) {
 			const src = read(f);
 			const writes = [...src.matchAll(/fs\.writeFileSync\(\s*(\w+)/g)].map((m) => m[1]);

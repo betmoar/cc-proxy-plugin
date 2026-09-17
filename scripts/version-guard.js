@@ -26,6 +26,17 @@
 //   --no-git-tag-version           no tag    no tag
 //   --no-git-tag-version=true      no tag    no tag
 //   --no-git-tag-version=false     TAGS      TAGS   ← reads like a no-tag flag
+//   --no-git-tag-version --git-tag-version
+//                                  TAGS      TAGS   ← LAST flag wins (npm config
+//                                                     semantics; measured)
+//   --ignore-scripts (any spelling) TAGS     TAGS   ← neither lifecycle script
+//                                                     RUNS, so this guard never
+//                                                     sees the invocation at all
+//
+// The last two rows are why release.yml carries its own backstop: a tag build
+// refuses a tag whose commit is not on main, whatever created it. This guard
+// closes the `pnpm version` seat; it cannot close `git tag` or a skipped
+// lifecycle.
 //
 // Two consequences, each a hole the first cut had:
 //   * `.npmrc` is NOT a seatbelt for npm — a CLI flag or an
@@ -84,8 +95,16 @@ function invokingCommandLine() {
 // @doctest disablesTagging("pnpm version patch --git-tag-version=false") -> true
 // @doctest disablesTagging("pnpm version patch --git-tag-version") -> false
 // @doctest disablesTagging("pnpm version patch") -> false
+// @doctest disablesTagging("pnpm version patch --no-git-tag-version --git-tag-version") -> false
+// @doctest disablesTagging("pnpm version patch --git-tag-version --no-git-tag-version") -> true
 export function disablesTagging(command) {
-	const m = /--(no-)?git-tag-version(?:=(\S*))?/.exec(command ?? "");
+	// LAST occurrence, not first: npm resolves a repeated config flag last-wins
+	// (measured: `npm --no-git-tag-version --git-tag-version config get
+	// git-tag-version` → true, reversed → false), and pnpm delegates `version`
+	// to npm. A first-match read allowed `--no-git-tag-version --git-tag-version`
+	// and npm then tagged on the branch — the #41 outcome, from a shell alias
+	// that pre-bakes the safe flag plus one re-enabling flag.
+	const m = [...(command ?? "").matchAll(/--(no-)?git-tag-version(?:=(\S*))?/g)].at(-1);
 	if (!m) return false;
 	const negated = Boolean(m[1]);
 	// A bare flag means true; an explicit value speaks for itself.

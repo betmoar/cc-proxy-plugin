@@ -1,5 +1,5 @@
 import { strict as assert } from "node:assert";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
@@ -106,5 +106,24 @@ describe("release-gate", () => {
 		const body = extractSection(CHANGELOG, "0.3.3");
 		assert.match(body, /Hardening release/);
 		assert.doesNotMatch(body, /Statusline reads/);
+	});
+});
+
+// The gate ran only on tag push — AFTER the squash was on main. A PR that bumps
+// package.json without its `## [x.y.z]` section (or with an empty one, or with
+// plugin.json out of step) was green through `pnpm check` and failed only at
+// the tag, one merge too late (recovery: a second PR and a re-tag). Running
+// the same gate() against the REAL tree makes the bumping PR the one that
+// fails. It reuses gate(), so its rules cannot drift from release.yml's.
+describe("release gate against this checkout", () => {
+	it("the current package.json version would pass the tag-time gate today", () => {
+		const root = join(import.meta.dirname, "..");
+		const { version } = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+		const { problems } = gate(root, `v${version}`);
+		assert.deepEqual(
+			problems,
+			[],
+			`a tag v${version} would fail release.yml — fix now, on the PR, not after the squash:\n  ${problems.join("\n  ")}`,
+		);
 	});
 });

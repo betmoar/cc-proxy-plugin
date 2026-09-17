@@ -191,6 +191,51 @@ describe("docs/models.html artifact", () => {
 		}
 	});
 
+	// v0.10.1 shipped a stale artifact with a green suite: glm-5.3-flash was
+	// curated (window, route, grade) in the tagged commit and regenerated only
+	// in the NEXT commit, because the lock above pins Claude ids alone. Two
+	// more locks, both against the curated tables the page is rendered from:
+	// every id with a curated window is on the page, and every graded row shows
+	// the table's grade. A curated-but-unrendered id now fails the PR that
+	// curates it, not the reader after the tag.
+	it("renders every id in CONTEXT_WINDOW, under its own name or a <provider>: lens", async () => {
+		const { CONTEXT_WINDOW: windows } = await import("../src/models.js");
+		const names = [...html.matchAll(/<span class="mname">([^<]*)<\/span>/g)].map((m) =>
+			m[1].replace(/<wbr>/g, ""),
+		);
+		const bare = (n) => (n.includes(":") ? n.slice(n.indexOf(":") + 1) : n);
+		const rendered = new Set(names.map(bare));
+		const missing = Object.keys(windows).filter((id) => !rendered.has(id));
+		assert.deepEqual(
+			missing,
+			[],
+			`docs/models.html lacks curated ids ${missing.join(", ")} — regenerate with \`pnpm models:html\` against a proxy running this tree, then commit the page`,
+		);
+	});
+
+	it("shows the repo's MODEL_GRADES grade on every graded row", async () => {
+		const { MODEL_GRADES } = await import("../src/models.js");
+		const rows = [
+			...html.matchAll(
+				/<span class="mname">([^<]*)<\/span>(?:(?!<div class="mrow">).)*?<span class="tname">([^<]*)<\/span>/gs,
+			),
+		];
+		assert.ok(rows.length > 10, `parsed only ${rows.length} graded rows — has the markup changed?`);
+		const wrong = [];
+		for (const [, rawName, tname] of rows) {
+			const name = rawName.replace(/<wbr>/g, "");
+			const id = name.includes(":") ? name.slice(name.indexOf(":") + 1) : name;
+			if (Object.hasOwn(MODEL_GRADES, id) && MODEL_GRADES[id] !== tname) {
+				wrong.push(`${name}: page says ${tname}, MODEL_GRADES says ${MODEL_GRADES[id]}`);
+			}
+		}
+		assert.deepEqual(
+			wrong,
+			[],
+			`docs/models.html grades disagree with src/models.js MODEL_GRADES — regenerate with \`pnpm models:html\` (render-html.mjs isolates grades.json so the repo table is what renders):\n  ${wrong.join("\n  ")}`,
+		);
+	});
+
 	it("an uncapped card renders its whole leg — the cap is the only thing that hides a row", () => {
 		// Replaces the coverage the narrowed test above gave up. A card with no
 		// "N of M" header is claiming completeness, so its drawn rows must equal

@@ -67,8 +67,10 @@ function handlePing(res) {
 
 // Graceful self-shutdown, used by the SessionStart hook to replace a stale
 // (version-mismatched) proxy. Loopback-only by construction in the default
-// config (invariant 7); like /_status it carries no auth because anyone who
-// can reach the port can already spend the injected keys. In-flight responses
+// config (invariant 7), where anyone who can reach the port can already spend
+// the injected keys, so it needs no auth of its own there. Under
+// PROXY_AUTH_TOKEN (#45) the dispatcher gates it with everything else BEFORE
+// this runs — the hook presents the token (requestShutdown). In-flight responses
 // finish (close() waits for active sockets); only idle keep-alive connections
 // are severed. process.exit is NOT called — the process ends when the last
 // socket drains and the event loop empties.
@@ -131,8 +133,10 @@ async function handleModels(res, config, dedup) {
 			result = await collectModels(config);
 		} catch (err) {
 			// Log the real bug rather than returning a generic 200 with an empty list
-			// and no trace — collectModels only throws via the test seam, so a hit
-			// here is a genuine regression worth surfacing in the proxy log.
+			// and no trace. collectModels throws via the test seam and on any bug in
+			// its leg loop (a vendor row with a non-string id did, before coerceEntry
+			// dropped such rows), so a hit here is a genuine regression worth
+			// surfacing in the proxy log.
 			console.error(`[models] collectModels threw: ${err?.message || err}`);
 			result = { data: [], _errors: [{ provider: "proxy", message: "internal error" }] };
 		}
@@ -380,9 +384,26 @@ function dedupParam(url) {
 	return v === null ? undefined : v;
 }
 
+/**
+ * The inbound body as an OBJECT, or `{}`.
+ *
+ * "Parses" is not "usable": a body of `null` is valid JSON, and `handleProxy`
+ * then does `body.model` on it — a TypeError thrown inside the request's
+ * 'end' listener, which is an uncaught exception, which ENDS THE PROCESS for
+ * every session on the machine (measured: a POST with the four bytes `null`
+ * → exit 1, no response written). Malformed JSON already fell to `{}`; a
+ * well-formed non-object (`null`, `1`, `"x"`, `true`) now does too, so the
+ * request routes as `unknown -> <default>` like any other body without a
+ * `model`, and the vendor's own 400 is the answer. Arrays are objects and pass
+ * through as before — `[].model` is merely undefined.
+ *
+ * @param {Buffer} buffer
+ * @returns {Record<string, any>}
+ */
 function parseJsonOrEmpty(buffer) {
 	try {
-		return JSON.parse(buffer.toString());
+		const parsed = JSON.parse(buffer.toString());
+		return parsed !== null && typeof parsed === "object" ? parsed : {};
 	} catch {
 		return {};
 	}
@@ -629,35 +650,62 @@ export function createServer(config) {
 		}
 
 		req.on("data", (c) => chunks.push(c));
+		// THE WHOLE BODY IS INSIDE A try, same rule as handleModels: this listener
+		// runs on the event loop with no caller above it, so a throw here is an
+		// uncaught exception and Node's default disposition for that is to
+		// TERMINATE THE PROCESS — every session on the machine, not one request
+		// (measured with a `null` body before parseJsonOrEmpty guarded it: exit 1).
+		// No `uncaughtException` handler exists, deliberately; containment lives
+		// at each dispatch point instead so the log names the request.
 		req.on("end", () => {
-			const bodyBuffer = Buffer.concat(chunks);
-			// Exact match, deliberately unlike the probes above: shutdown is
-			// destructive, so it stays as narrow as possible.
-			if (req.url === "/_shutdown") {
-				// POST only: a stray GET (browser, curl without -X, link prefetch)
-				// must never take the proxy down.
-				if (req.method === "POST") handleShutdown(server, res);
-				else sendJson(res, 405, { error: { message: "POST required" } });
-				return;
+			try {
+				dispatch(req, res, Buffer.concat(chunks), config, reqId, server);
+			} catch (err) {
+				console.error(`[dispatch] {${reqId}} handler threw: ${err?.stack || err}`);
+				if (!res.headersSent) sendJson(res, 500, { error: { message: "internal error" } });
+				else res.destroy();
 			}
-			// GET /v1/models — synthesized, exact path only. (/v1/models/<id>
-			// retrieve falls through to forwarding.) The query string is parsed for
-			// `dedup` and ignored otherwise, so an unrelated `?t=…` still matches.
-			if (pathname === "/v1/models") {
-				if (req.method === "GET") handleModels(res, config, dedupParam(req.url));
-				else sendJson(res, 405, { error: { message: "GET required" } });
-				return;
-			}
-			// POST <MEDIA_GENERATION_PATH> — the plan's image tunnel. Ahead of
-			// handleProxy because routing is body-driven everywhere else and this
-			// path's ids match no predicate; see handleMediaGeneration.
-			if (pathname === MEDIA_GENERATION_PATH) {
-				if (req.method === "POST") handleMediaGeneration(req, res, bodyBuffer, config, reqId);
-				else sendJson(res, 405, { error: { message: "POST required" } });
-				return;
-			}
-			handleProxy(req, res, parseJsonOrEmpty(bodyBuffer), bodyBuffer, config, reqId);
 		});
 	});
 	return server;
+}
+
+/**
+ * Everything that runs once the inbound body is fully buffered. Split out of
+ * createServer() only so the containing try above stays one screen long.
+ * @param {http.IncomingMessage} req
+ * @param {http.ServerResponse} res
+ * @param {Buffer} bodyBuffer
+ * @param {import("./config.js").Config} config
+ * @param {string} reqId
+ * @param {http.Server} server
+ */
+function dispatch(req, res, bodyBuffer, config, reqId, server) {
+	const pathname = req.url.split("?")[0];
+	// Exact match, deliberately unlike the probes above: shutdown is
+	// destructive, so it stays as narrow as possible.
+	if (req.url === "/_shutdown") {
+		// POST only: a stray GET (browser, curl without -X, link prefetch)
+		// must never take the proxy down.
+		if (req.method === "POST") handleShutdown(server, res);
+		else sendJson(res, 405, { error: { message: "POST required" } });
+		return;
+	}
+	// GET /v1/models — synthesized, exact path only. (/v1/models/<id>
+	// retrieve falls through to forwarding.) The query string is parsed for
+	// `dedup` and ignored otherwise, so an unrelated `?t=…` still matches.
+	if (pathname === "/v1/models") {
+		if (req.method === "GET") handleModels(res, config, dedupParam(req.url));
+		else sendJson(res, 405, { error: { message: "GET required" } });
+		return;
+	}
+	// POST <MEDIA_GENERATION_PATH> — the plan's image tunnel. Ahead of
+	// handleProxy because routing is body-driven everywhere else and this
+	// path's ids match no predicate; see handleMediaGeneration.
+	if (pathname === MEDIA_GENERATION_PATH) {
+		if (req.method === "POST") handleMediaGeneration(req, res, bodyBuffer, config, reqId);
+		else sendJson(res, 405, { error: { message: "POST required" } });
+		return;
+	}
+	handleProxy(req, res, parseJsonOrEmpty(bodyBuffer), bodyBuffer, config, reqId);
 }

@@ -359,6 +359,36 @@ describe("statusline.js", () => {
 		assert.ok(!plain(off.stdout).includes("qw:"), `Expected no qw section, got: ${off.stdout}`);
 	});
 
+	// The GLM cache holds the vendor's RAW `data`, so a schema drift or a
+	// hand-edited file can put anything under `limits`. `glm.limits?.find` only
+	// guarded null/undefined: `{}` and `[null]` threw inside the un-awaited stdin
+	// handler — exit 1, ZERO bytes, every gauge gone from the bar until the file
+	// was deleted by hand (measured). The render is now contained: that gauge
+	// degrades to `--`, the rest of the bar still renders.
+	it("a malformed GLM cache degrades one gauge, never the whole bar", async () => {
+		for (const limits of [{}, [null], "nope", 42]) {
+			const dir = fs.mkdtempSync(path.join(os.tmpdir(), "statusline-test-"));
+			fs.writeFileSync(
+				path.join(dir, "glm_quota_cache.json"),
+				JSON.stringify({ level: "pro", limits, _ts: Date.now() }),
+			);
+			const { code, stdout } = await run(
+				{ rate_limits: { five_hour: { used_percentage: 12, resets_at: 0 } } },
+				{
+					CLAUDE_PLUGIN_DATA: dir,
+					GLM_API_KEY: "k",
+					OPENROUTER_API_KEY: "",
+					DEEPSEEK_API_KEY: "",
+					DASHSCOPE_API_KEY: "",
+				},
+			);
+			assert.equal(code, 0, `limits=${JSON.stringify(limits)} exited ${code}`);
+			assert.match(plain(stdout), /cc 5h:12%/, `limits=${JSON.stringify(limits)}: ${stdout}`);
+			assert.match(plain(stdout), /glm 5h:--/, `limits=${JSON.stringify(limits)}: ${stdout}`);
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	// --- stale-while-revalidate: the render path never touches the network ----
 	//
 	// These drive the real script against a LOCAL counting stub, because the
@@ -421,6 +451,52 @@ describe("statusline.js", () => {
 			);
 		} finally {
 			await stub.close();
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	// The failure twin of the single-flight test above. A fetch that FAILS
+	// quickly (a revoked key's 401, a 5xx, a refused connection) leaves the cache
+	// expired on purpose — and without a backoff that meant a fresh refresher
+	// spawn and a fresh vendor request on EVERY render for as long as the
+	// failure lasted (measured: 10 renders 300 ms apart → 10 fetches). The
+	// `.failed` marker holds the gauge back for REFRESH_BACKOFF_MS.
+	it("a failing refresh backs off instead of re-fetching on every render", async () => {
+		const http = await import("node:http");
+		let count = 0;
+		const server = http.createServer((_req, res) => {
+			count += 1;
+			res.writeHead(500);
+			res.end("nope");
+		});
+		await new Promise((r) => server.listen(0, "127.0.0.1", r));
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "statusline-swr-"));
+		try {
+			const env = {
+				CLAUDE_PLUGIN_DATA: dir,
+				DEEPSEEK_BALANCE_URL: `http://127.0.0.1:${server.address().port}/user/balance`,
+				DEEPSEEK_API_KEY: "stub-key",
+				GLM_API_KEY: "",
+				OPENROUTER_API_KEY: "",
+				DASHSCOPE_API_KEY: "",
+			};
+			await renderBurst(10, env);
+			await new Promise((r) => setTimeout(r, 1500));
+			assert.ok(
+				count <= 2,
+				`10 renders against a failing endpoint must not fetch 10 times, got ${count}`,
+			);
+			assert.ok(
+				fs.existsSync(path.join(dir, "deepseek_balance_cache.json.failed")),
+				"the failure marker that carries the backoff was not written",
+			);
+			assert.equal(
+				fs.existsSync(path.join(dir, "deepseek_balance_cache.json")),
+				false,
+				"a failed refresh must not write a cache file",
+			);
+		} finally {
+			await new Promise((r) => server.close(r));
 			fs.rmSync(dir, { recursive: true, force: true });
 		}
 	});

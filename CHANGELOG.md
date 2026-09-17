@@ -2,6 +2,40 @@
 
 All notable changes to cc-proxy are recorded here. Versions follow [semver](https://semver.org/); `package.json` is the single source of truth and propagates to `.claude-plugin/plugin.json` via `scripts/sync-version.mjs`.
 
+## [0.10.2] — 2026-09-17
+
+An audit of the whole tree (four domains, 47 findings, every P1/P2 reproduced
+before it was fixed) and a restructure of the docs, which had grown into a
+wall of text: a 44 KB `CLAUDE.md` loaded into every session, a 2,135-character
+bullet in OPERATIONS, and twenty-odd sentences that no longer matched the code.
+
+### Added
+- **Six focused docs replace the deep sections of the README and OPERATIONS.** `docs/ROUTING.md` (which backend an id goes to), `docs/DISCOVERY.md` (the `/v1/models` contract and the media tunnel), `docs/CONFIGURATION.md` (every knob, auth mode, the picker rows), `docs/STATUSLINE.md`, `docs/TROUBLESHOOTING.md`, `docs/RELEASING.md`, and `docs/MAINTAINING.md` (the traps and the evidence behind every coupling, moved out of `CLAUDE.md`, which is now the rules alone at 13 KB). The README is the front door and a docs map. Content was moved, not deleted.
+- **`test/docs.test.js`** locks the structure: every link and anchor resolves, every `docs/*.md` is in the README's map, no prose line exceeds 400 characters, ARCHITECTURE lists the same invariants as `CLAUDE.md`, its layout tree names every file in `src/`, `hooks/`, `scripts/` and `commands/`, the `Provider` shape in two docs carries every typedef property, the README's routing table names every provider, and the setup skill's expected script phrases are literals in those scripts.
+- **`test/commands.test.js`** runs `commands/bench.md`'s bash body with `$ARGUMENTS` spliced in the way the harness splices it.
+- **Invariant 8: one bad request never ends the process.** The request's `end` listener is wrapped like `handleModels` already was, and a JSON body that is not an object (`null`, `1`, `"x"`, `true`) routes as `unknown` instead of throwing.
+- **A catalog body cap.** Each `/v1/models` live leg reads at most 8 MB (`CATALOG_BODY_LIMIT`); past it the leg reports `response too large`. Measured before: a 150 MB body took the shared proxy from 62 MB to 745 MB RSS.
+- **Statusline refresh backoff.** A failed refresh writes a `<cache>.failed` marker and that gauge is not retried for 15 s. Measured before: 10 renders against a failing endpoint spawned 10 refreshers and issued 10 vendor requests, for as long as the failure lasted.
+- **The release gate runs on the PR.** `test/release-gate.test.js` runs `gate()` against the checkout, so a bumped `package.json` without its CHANGELOG section fails `pnpm check` instead of the tag build. The tag build itself now refuses a tag whose commit is not on `main` (the #41 backstop for `git tag` by hand and `--ignore-scripts`).
+- **`docs/models.html` locks.** Every `CONTEXT_WINDOW` id must be on the page and every graded row must show the `MODEL_GRADES` grade. v0.10.1 was tagged with the page one commit behind the catalog and a green suite.
+- **`.npmrc` is engine-strict**, and `loadEnv()` throws on a Node without `process.loadEnvFile` instead of silently ignoring every key in `~/.env`.
+- `.env.example` gains `PROXY_READY_TIMEOUT_MS`; `PROXY_PATH` is documented as legacy.
+
+### Changed
+- **The SessionStart hook and `scripts/start-proxy.js` load `~/.env`** (never overriding the process environment), so `PROXY_*` knobs may live there and, in auth mode, the hook can present `PROXY_AUTH_TOKEN` to `/_shutdown`. Before this, with the token where the setup skill writes it, a stale proxy answered 401 and was never replaced after an update; setup printed "already up — no action" against the old binary.
+- **`commands/bench.md` reads `$ARGUMENTS` through a quoted heredoc.** The argument is spliced in as source text, so `speed --report | cat` used to run `set --` in a subshell and fall through to a billed `grades` run; `speed > x` truncated `x`; `$(…)` executed.
+- **`skills/setup/SKILL.md` uses `${CLAUDE_PLUGIN_ROOT}` with braces.** The plugin reference substitutes only the braced form in a plugin skill; the brace-less spelling was never substituted. Recorded as backlog item 24 until measured live.
+- `render-model-picker.js` writes **through** a symlinked settings.json (a dotfiles-managed link used to be replaced by a regular file, forking the config), preserves the file's mode (0600 was widened to 0644 on every run), and stamps the tree version so the next session does not call the rows it just wrote stale.
+- `/cc-proxy:status` distinguishes a port that answers but not as cc-proxy from a closed port, with advice that fits (the hook will not start a proxy over a foreign listener).
+- `disablesTagging()` resolves a repeated `--git-tag-version` flag last-wins, as npm does.
+- `PROXY_READY_TIMEOUT_MS`'s documented bound is ~3900 ms, not 10000: the stale-proxy restart path spends it twice inside the hook's 10 s budget. `couplings.test.js` computes the budget from exported constants.
+
+### Fixed
+- A vendor catalog row with a non-string `id` no longer rejects the whole `/v1/models` fan-out (one odd row used to empty the entire list, Claude's static leg included). A `null` element in OpenRouter's list no longer drops the live catalog to the static six.
+- The statusline no longer exits with zero bytes when the GLM cache's `limits` is not an array of objects; that gauge renders `--` and the rest of the bar survives. Cache files are written tmp-then-rename like every other file under `~/.claude`.
+- OpenRouter credits render `--`, not `$0`, when the response carries no `total_credits`.
+- Docs drift: `/_shutdown` described as unauthenticated, setup described as registering `glm-5.2[1m]` via `ANTHROPIC_CUSTOM_MODEL_OPTION`, OpenRouter ids described as always lacking `context_window`, "mismatch" for a replacement that only ever evicts an older proxy, LM Studio missing from the backend lists, four `src/` files and twelve scripts missing from the layout tree, two backlog items shown open after shipping, and a dozen smaller sentences. The full ledger is in `docs/audit/AUDIT_LOG.md`.
+
 ## [0.10.1] — 2026-09-08
 
 ### Added
