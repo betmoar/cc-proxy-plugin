@@ -412,6 +412,44 @@ describe("stripForeignServerToolUse", () => {
 		);
 	});
 
+	it("leaves a result whose tool_use_id matches NOTHING in the history", () => {
+		// An orphan-to-nothing is not this function's business: it did not create
+		// it, and removing it would be a rewrite no measurement asked for. Only
+		// results paired to a block THIS pass removed are swept.
+		const body = {
+			messages: [
+				{
+					role: "assistant",
+					content: [{ type: "server_tool_use", id: "call_a", name: "analyze_image" }],
+				},
+				{ role: "user", content: [{ type: "web_search_tool_result", tool_use_id: "call_never" }] },
+			],
+		};
+		const { body: out, modified } = stripForeignServerToolUse(body);
+		assert.equal(modified, true, "the foreign block itself is still stripped");
+		assert.deepEqual(
+			out.messages.map((m) => (Array.isArray(m.content) ? m.content[0].tool_use_id : null)),
+			["call_never"],
+			"the unmatched result survives untouched",
+		);
+	});
+
+	it("leaves a string-content message byte-identical", () => {
+		// Inherited safety (the per-message `Array.isArray(msg.content)` guard),
+		// asserted here for THIS feature: a refactor merging the two loop bodies
+		// could regress it with nothing else noticing.
+		const body = {
+			messages: [
+				{ role: "user", content: "a plain text turn" },
+				{ role: "assistant", content: [{ type: "server_tool_use", id: "call_a", name: "x" }] },
+				{ role: "user", content: "another" },
+			],
+		};
+		const { body: out } = stripForeignServerToolUse(body);
+		assert.equal(out.messages[0].content, "a plain text turn");
+		assert.equal(out.messages[1].content, "another");
+	});
+
 	it("returns the SAME object when nothing was stripped (the aliasing contract server.js leans on)", () => {
 		const body = { messages: [{ role: "user", content: "hi" }] };
 		const { body: out, modified } = stripForeignServerToolUse(body);

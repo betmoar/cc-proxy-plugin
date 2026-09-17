@@ -2202,5 +2202,28 @@ describe("foreign server_tool_use strip (mixed-backend history routed to Claude)
 			flat.some((b) => b.type === "server_tool_use"),
 			false,
 		);
+		// The MESSAGE COUNT, not just the block absence — the same assertion the
+		// buffered sibling above carries, and for the same reason: a block-only
+		// check passes against the husk defect (messages emptied to `content: []`
+		// and forwarded), which is its own 400. The streaming and buffered paths
+		// are separate code, so the weaker assertion here would have left half
+		// the feature pinned by a test that cannot see the bug.
+		assert.equal(
+			sent.messages.length,
+			2,
+			"the two messages the strip empties must be dropped, not forwarded empty",
+		);
+		assert.equal(
+			flat.some((b) => typeof b.tool_use_id === "string"),
+			false,
+			"the paired result must not survive as an orphan",
+		);
+		for (const m of sent.messages) {
+			assert.notEqual(
+				Array.isArray(m.content) ? m.content.length : -1,
+				0,
+				"no message may reach upstream with an empty content array",
+			);
+		}
 	});
 });
