@@ -147,9 +147,13 @@ export function isForeignServerToolUse(block) {
  * rejection — the same trade-one-400-for-another this function's
  * message-dropping exists to avoid, one level up. (Z.ai's Anthropic skin
  * answers `400 [1214][Input cannot be empty]`, measured 2026-09-17; the case
- * that matters is Anthropic itself, since this guards the CLAUDE route, and it
- * is pinned by "anthropic rejects an EMPTY messages array" in
- * scripts/probe-vendors.mjs rather than by this sentence.) So the array-emptying case
+ * that matters is Anthropic itself, since this guards the CLAUDE route. The
+ * probe case "anthropic rejects an EMPTY messages array" states it, but it is
+ * keyed on `ANTHROPIC_API_KEY` and therefore SKIPS on every cc-proxy machine —
+ * this project authenticates that route by OAuth passthrough and sets no such
+ * key, and no keyless spelling reaches body validation. So the Anthropic half
+ * rests on the 2026-09-14 session measurement, and the Z.ai half is the one a
+ * probe re-checks. Treat it as dated, not as continuously verified.) So the array-emptying case
  * bails out and returns the body UNMODIFIED: the caller forwards the original
  * history and the vendor's own 400 is the answer, which is strictly better
  * than a 400 the proxy manufactured.

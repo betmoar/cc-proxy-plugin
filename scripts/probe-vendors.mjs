@@ -21,6 +21,22 @@
 //   2  inconclusive: something could not be reached (offline, DNS, timeout)
 //   3  nothing ran at all (no keys) — no claim was checked
 //
+// THE `api.anthropic.com` CASES SKIP ON A NORMAL DEV MACHINE, AND THAT IS THE
+// EXPECTED STEADY STATE — not a gap anyone should try to close. cc-proxy does
+// not use `ANTHROPIC_API_KEY`: the claude route authenticates by passing the
+// user's OAuth credential THROUGH (invariant 3), and CLAUDE.md forbids setting
+// that variable at all, because it shadows the OAuth login it would replace.
+// Nor is there a keyless spelling of these cases — auth runs before body
+// validation, so every credential-free form answers 401 and the 400 they exist
+// to measure never happens (measured 2026-09-17: no header → "x-api-key header
+// is required"; a bogus key → "API key is invalid."; an OAuth bearer, with and
+// without `anthropic-beta: oauth-2025-04-20` → "OAuth access token is
+// invalid."). They are written for someone who ALREADY has a key for other
+// reasons; here they are the standing SKIP the summary counts, and the claims
+// they would pin rest on the dated 2026-09-14 session measurement instead. Read
+// a SKIP on these four as "this machine cannot be the one to check it", never
+// as a TODO.
+//
 // A single 0/1 split was the first shape, and the review that caught it was
 // right: `--json` exists precisely because something else will eventually read
 // this, and an exit code that cannot separate "checked and fine" from "checked

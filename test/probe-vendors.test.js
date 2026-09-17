@@ -153,6 +153,50 @@ describe("probe-vendors case table", () => {
 		assert.ok(control, "control case not found");
 		assert.doesNotMatch(control, /\n\s*key:/, "the control must run without a key gate");
 	});
+
+	// The `api.anthropic.com` cases skip on every cc-proxy machine and ALWAYS
+	// WILL: this project sets no `ANTHROPIC_API_KEY` (the claude route passes the
+	// user's OAuth credential through — invariant 3 — and CLAUDE.md forbids the
+	// variable outright, since it shadows that login), and there is no keyless
+	// spelling, because auth precedes body validation and every credential-free
+	// form answers 401 (measured 2026-09-17, four spellings including an OAuth
+	// bearer).
+	//
+	// That reads in the output as `SKIP … ANTHROPIC_API_KEY not set`, which looks
+	// exactly like a key someone forgot to add — a reviewer of #69 (this one)
+	// closed a report by naming it as the gap left to close, when it is the
+	// designed steady state. A dated measurement standing in for a probe is a
+	// legitimate position; mistaking it for an oversight invites someone to
+	// "fix" it by setting the one variable the proxy must never see.
+	//
+	// So the explanation is pinned to the case that needs it: add a fifth
+	// Anthropic case without a word about why it cannot run here, and this fails.
+	it("the anthropic cases explain WHY they permanently skip on this project", () => {
+		const anthropicCases = table.match(/url: "https:\/\/api\.anthropic\.com/g) ?? [];
+		assert.ok(
+			anthropicCases.length >= 4,
+			`expected the anthropic cases, found ${anthropicCases.length}`,
+		);
+		const gated = table.match(/key: "ANTHROPIC_API_KEY"/g) ?? [];
+		assert.equal(
+			gated.length,
+			anthropicCases.length,
+			"an api.anthropic.com case must stay key-gated: keyless, auth answers 401 before body validation",
+		);
+		// In the HEADER, not in one case's comment: the reader who misreads a SKIP
+		// is reading the run's output and then the top of this file, not case 7.
+		const header = SOURCE.slice(0, SOURCE.indexOf("const CASES = ["));
+		assert.match(
+			header,
+			/invariant 3|OAuth/,
+			"the header must say cc-proxy authenticates the claude route by OAuth passthrough",
+		);
+		assert.match(
+			header,
+			/never as a TODO|not a gap/i,
+			"the header must say a SKIP on these is the expected steady state, not a gap to close",
+		);
+	});
 });
 
 // The release-tag guard (issue #41): `pnpm version` on a feature branch tags
