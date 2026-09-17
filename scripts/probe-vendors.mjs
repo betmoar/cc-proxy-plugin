@@ -142,14 +142,24 @@ const CASES = [
 		bodyMatch: /121[14]|does not exist|unknown model/i,
 	},
 	{
-		// The two axes the foreign server_tool_use strip rests on (src/sanitize.js
-		// isForeignServerToolUse). Z.ai emits server_tool_use for its own built-in
-		// tools with call_-shaped ids; Anthropic rejects both the id pattern and
-		// the name on a mixed-backend history. These probes pin the REJECTING side
-		// (what Anthropic does with a foreign block); the emitting side — that Z.ai
-		// produces analyze_image blocks at all — is model-driven and cannot be
-		// forced deterministically from a 4-token turn, so it stays a dated
-		// measurement (2026-09-14, session 71dbf659) rather than a case here.
+		// The ONE axis the foreign server_tool_use strip rests on (src/sanitize.js
+		// isForeignServerToolUse): the id pattern. Z.ai emits server_tool_use for
+		// its own built-in tools with call_-shaped ids, and Anthropic rejects
+		// those — this case pins that rejection.
+		//
+		// Anthropic rejects a foreign NAME too, and that is deliberately NOT a
+		// strip axis: the name set is a dated snapshot of a list Anthropic
+		// extends, so rejecting on it would silently delete Claude's own future
+		// tools out of Claude-bound history. The next case is therefore a DRIFT
+		// GUARD on the enumeration, not a second rejection axis — it fails when
+		// Anthropic's list stops matching ANTHROPIC_SERVER_TOOLS, which is the
+		// only thing that can notice a "closed" set being extended.
+		//
+		// Both cases pin the REJECTING side (what Anthropic does with a foreign
+		// block); the emitting side — that Z.ai produces analyze_image blocks at
+		// all — is model-driven and cannot be forced deterministically from a
+		// 4-token turn, so it stays a dated measurement (2026-09-14, session
+		// 71dbf659) rather than a case here.
 		name: "anthropic rejects a foreign server_tool_use id",
 		claim: "src/sanitize.js — 'call_… id, not Anthropic's srvtoolu_…'",
 		url: "https://api.anthropic.com/v1/messages",

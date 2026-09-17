@@ -286,7 +286,11 @@ describe("stripForeignServerToolUse", () => {
 		assert.equal(out, body);
 	});
 
-	it("strips a valid name carrying a foreign id (the id pattern is its own rejection axis)", () => {
+	it("strips a valid name carrying a foreign id (the id pattern is the rejection axis)", () => {
+		// The trailing user turn is load-bearing: without it this history empties
+		// completely, and the all-emptied bail-out below returns the body
+		// unmodified — so the assertion would be measuring THAT path, not the id
+		// axis it is named for.
 		const body = {
 			messages: [
 				{
@@ -300,6 +304,7 @@ describe("stripForeignServerToolUse", () => {
 						},
 					],
 				},
+				{ role: "user", content: "and now?" },
 			],
 		};
 		const { modified, stripped } = stripForeignServerToolUse(body);
@@ -357,6 +362,54 @@ describe("stripForeignServerToolUse", () => {
 			["server_tool_use", "text"],
 		);
 		assert.equal(out.messages[0].content[0].id, "srvtoolu_abc");
+	});
+
+	it("bails out rather than forward an EMPTY messages array", () => {
+		// The message-drop trades one 400 for another if it is carried to its end:
+		// a transcript whose every message is a foreign block or its result empties
+		// the array, and `messages: []` is itself rejected ("Input cannot be
+		// empty", measured against Z.ai's Anthropic skin 2026-09-17). Forwarding
+		// the ORIGINAL history is strictly better — the vendor's own 400 carries
+		// the vendor's own message, instead of one the proxy manufactured.
+		const body = {
+			model: "claude-opus-5",
+			messages: [
+				{
+					role: "assistant",
+					content: [{ type: "server_tool_use", id: "call_a", name: "analyze_image", input: {} }],
+				},
+				{
+					role: "user",
+					content: [{ type: "web_search_tool_result", tool_use_id: "call_a", content: [] }],
+				},
+			],
+		};
+		const { body: out, modified, dropped } = stripForeignServerToolUse(body);
+		assert.equal(modified, false, "an all-emptied strip must report no modification");
+		assert.equal(dropped, 0);
+		assert.equal(out, body, "the ORIGINAL body is handed back, by reference");
+		assert.equal(out.messages.length, 2, "nothing was removed");
+	});
+
+	it("drops messages[0] when the strip empties it", () => {
+		// An earlier version of the comment above this function claimed messages[0]
+		// "can never be emptied". That reasoned about paired RESULTS — which do
+		// need a server_tool_use before them — and forgot that a LONE foreign
+		// block needs no predecessor at all.
+		const body = {
+			messages: [
+				{ role: "assistant", content: [{ type: "server_tool_use", id: "call_a", name: "x" }] },
+				{ role: "user", content: "hi" },
+			],
+		};
+		const { body: out, modified, dropped } = stripForeignServerToolUse(body);
+		assert.equal(modified, true);
+		assert.equal(dropped, 1);
+		assert.deepEqual(
+			out.messages.map((m) => m.role),
+			["user"],
+			"the emptied first message is dropped, the rest survive",
+		);
 	});
 
 	it("returns the SAME object when nothing was stripped (the aliasing contract server.js leans on)", () => {

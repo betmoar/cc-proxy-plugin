@@ -72,7 +72,9 @@ export const ANTHROPIC_SERVER_TOOLS = new Set([
  * the second as `server_tool_use.name: Input should be 'web_search', …`.
  * A rename is not enough — the NAME has no GLM→Anthropic mapping — so the
  * only faithful move is to drop the block, exactly like the thinking-strip
- * drops history the new backend cannot have produced.
+ * drops history the new backend cannot have produced. (Those are the two
+ * rejections MEASURED. Only the id survives as a strip criterion here — see
+ * the next paragraph, which is the whole design decision.)
  *
  * THE ID PATTERN IS THE ONLY AXIS THIS STRIPS ON, and that is a decision about
  * which failure you would rather have, not an oversight. The name set is a
@@ -132,10 +134,22 @@ export function isForeignServerToolUse(block) {
  * rather than removed it — and the transcript in issue #67 does exactly that
  * (the foreign block and its result each sit alone in their message). Dropping
  * the message is safe because consecutive same-role messages are legal (the
- * API folds them into one turn), and `messages[0]` can never be emptied: a
- * paired result needs a server_tool_use BEFORE it, so the first message holds
- * neither. A message that arrived empty is left exactly as it arrived — this
- * function removes what it removed, and nothing else.
+ * API folds them into one turn). A message that arrived empty is left exactly
+ * as it arrived — this function removes what it removed, and nothing else.
+ *
+ * `messages[0]` CAN be emptied, and an earlier version of this comment claimed
+ * otherwise. The claim reasoned about paired RESULTS (which do need a
+ * server_tool_use before them, so the first message cannot hold one) and
+ * forgot that a lone foreign `server_tool_use` needs no predecessor at all:
+ * `[assistant[server_tool_use call_a], user "hi"]` drops message 0 outright.
+ * Carried to its end, a transcript consisting ONLY of foreign blocks and their
+ * results empties the array completely — and `messages: []` is its own
+ * rejection ("Input cannot be empty", measured against Z.ai's Anthropic skin
+ * 2026-09-17), which is the same trade-one-400-for-another this function's
+ * message-dropping exists to avoid, one level up. So the array-emptying case
+ * bails out and returns the body UNMODIFIED: the caller forwards the original
+ * history and the vendor's own 400 is the answer, which is strictly better
+ * than a 400 the proxy manufactured.
  *
  * DIRECTIONAL, deliberately: this runs only on requests resolved to the
  * `claude` provider. The same history is legal input to the GLM backend that
@@ -210,5 +224,14 @@ export function stripForeignServerToolUse(body) {
 		newMessages.push({ ...msg, content: filtered });
 	}
 	if (!modified) return { body, modified: false, stripped: 0, dropped: 0 };
+	// Dropping every message would forward `messages: []`, which is rejected in
+	// its own right ("Input cannot be empty") — the same trade this function's
+	// message-dropping exists to avoid, just one level up. Hand back the
+	// ORIGINAL history instead and let the vendor answer: a 400 the proxy did
+	// not manufacture is the honest outcome, and it carries the vendor's own
+	// message. Unreachable from a real CC transcript (it needs a history whose
+	// every message is a foreign block or its result), which is exactly why the
+	// first version of this shipped without noticing.
+	if (newMessages.length === 0) return { body, modified: false, stripped: 0, dropped: 0 };
 	return { body: { ...body, messages: newMessages }, modified: true, stripped, dropped };
 }
