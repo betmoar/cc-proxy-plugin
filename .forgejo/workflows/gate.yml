@@ -3,7 +3,9 @@ name: gate
 # The Forgejo half of `pnpm check`, run TWICE — once native, once emulated —
 # because this proxy's tests spin real local HTTP backends and bind ephemeral
 # ports, and that is exactly the class of thing an architecture can change
-# underneath. The GitHub workflow (.github/workflows/ci.yml) runs arm64 only.
+# underneath. The GitHub workflow (.github/workflows/ci.yml) runs x86_64 only
+# (ubuntu-latest hosted runners); this forge adds native arm64 and re-runs
+# x86_64 under Rosetta.
 #
 # Three things here are forced by this forge, not by taste:
 #

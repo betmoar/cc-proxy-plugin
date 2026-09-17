@@ -12,6 +12,7 @@ import {
 	checkPort,
 	ensureProxyRunning,
 	isOlderVersion,
+	loadHomeEnv,
 	pluginVersion,
 	probeProxyVersion,
 	requestShutdown,
@@ -296,8 +297,12 @@ s.listen(${port}, "127.0.0.1", () => {
 	});
 
 	describe("ensureProxyRunning version handshake", () => {
-		/** Stand-in "old proxy": answers /_status with `version`, closes on /_shutdown. */
-		function startOldProxy(port, version) {
+		/**
+		 * Stand-in "old proxy": answers /_status with `version`, closes on
+		 * /_shutdown. With `token`, /_shutdown is gated exactly as the real
+		 * dispatcher gates it under PROXY_AUTH_TOKEN (#45): no Bearer, no ack.
+		 */
+		function startOldProxy(port, version, token) {
 			return new Promise((resolve) => {
 				const srv = http.createServer((req, res) => {
 					if (req.url === "/_status" && req.method === "GET") {
@@ -306,6 +311,11 @@ s.listen(${port}, "127.0.0.1", () => {
 						return;
 					}
 					if (req.url === "/_shutdown" && req.method === "POST") {
+						if (token && req.headers.authorization !== `Bearer ${token}`) {
+							res.writeHead(401, { "content-type": "application/json" });
+							res.end("{}");
+							return;
+						}
 						res.writeHead(200, { "content-type": "application/json" });
 						res.end("{}");
 						srv.close();
@@ -357,6 +367,78 @@ s.listen(${port}, "127.0.0.1", () => {
 				} catch {}
 				fs.rmSync(path.dirname(script), { recursive: true, force: true });
 				fs.rmSync(path.dirname(flag), { recursive: true, force: true });
+			}
+		});
+
+		// The token-gated variant of the same handshake. Before 0.10.2 the hook
+		// read PROXY_AUTH_TOKEN from process.env alone, while /cc-proxy:setup
+		// writes it to ~/.env — a file the hook never loaded. Measured: the stale
+		// stub logged `authorization=(none)`, answered 401, and ensureProxyRunning
+		// returned "already-up" forever, so an auth-mode user never received a
+		// plugin update's proxy. Two locks: the token reaches the wire from
+		// opts.env (the setup path), and its absence is the documented no-op.
+		it("replaces a token-gated stale proxy when opts.env carries PROXY_AUTH_TOKEN", async () => {
+			const port = await freePort();
+			const old = await startOldProxy(port, "0.0.0-stale", "tok-42");
+			const flag = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "cc-proxy-flag-")), "pid");
+			const script = standinSpawnScript(port, flag);
+			try {
+				const state = await ensureProxyRunning({
+					port,
+					proxyPath: script,
+					readyTimeoutMs: 5000,
+					env: { ...process.env, PROXY_AUTH_TOKEN: "tok-42" },
+				});
+				assert.equal(state, "restarted");
+				await waitForFile(flag, "", 5000);
+			} finally {
+				try {
+					process.kill(Number(fs.readFileSync(flag, "utf8")));
+				} catch {}
+				old.close();
+			}
+		});
+
+		it("leaves a token-gated stale proxy alone when no token is presented (the pre-fix hook)", async () => {
+			const port = await freePort();
+			const old = await startOldProxy(port, "0.0.0-stale", "tok-42");
+			const prev = process.env.PROXY_AUTH_TOKEN;
+			// biome-ignore lint/performance/noDelete: one-time test env isolation
+			delete process.env.PROXY_AUTH_TOKEN;
+			const flag = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "cc-proxy-flag-")), "pid");
+			try {
+				const state = await ensureProxyRunning({
+					port,
+					proxyPath: standinSpawnScript(port, flag),
+					readyTimeoutMs: 500,
+				});
+				assert.equal(state, "already-up", "a 401 on /_shutdown must read as not-acknowledged");
+				assert.equal(await probeProxyVersion(port), "0.0.0-stale", "the old proxy is untouched");
+				assert.equal(fs.existsSync(flag), false, "nothing was spawned against the held port");
+			} finally {
+				if (prev !== undefined) process.env.PROXY_AUTH_TOKEN = prev;
+				old.close();
+			}
+		});
+
+		it("loadHomeEnv() loads ~/.env without overriding process.env", () => {
+			const home = fs.mkdtempSync(path.join(os.tmpdir(), "cc-proxy-home-"));
+			fs.writeFileSync(
+				path.join(home, ".env"),
+				"CC_PROXY_TEST_FILE_ONLY=from-file\nCC_PROXY_TEST_PRESET=from-file\n",
+			);
+			process.env.CC_PROXY_TEST_PRESET = "from-env";
+			try {
+				loadHomeEnv(home);
+				assert.equal(process.env.CC_PROXY_TEST_FILE_ONLY, "from-file");
+				assert.equal(process.env.CC_PROXY_TEST_PRESET, "from-env", "process.env wins");
+				loadHomeEnv(path.join(home, "does-not-exist"));
+			} finally {
+				// biome-ignore lint/performance/noDelete: one-time test env restore
+				delete process.env.CC_PROXY_TEST_FILE_ONLY;
+				// biome-ignore lint/performance/noDelete: one-time test env restore
+				delete process.env.CC_PROXY_TEST_PRESET;
+				fs.rmSync(home, { recursive: true, force: true });
 			}
 		});
 

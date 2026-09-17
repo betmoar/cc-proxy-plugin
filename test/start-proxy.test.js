@@ -1,6 +1,7 @@
 import { strict as assert } from "node:assert";
 import { execFile } from "node:child_process";
 import fs from "node:fs";
+import http from "node:http";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -212,6 +213,60 @@ describe("start-proxy.js", () => {
 
 		assert.match(stdout, /cc-proxy started/, `Expected started, got: ${stdout}`);
 		assert.ok(await waitFor(() => fs.existsSync(flag)), "legacy PROXY_PATH bin should have run");
+	});
+
+	// The setup path's twin of the hook fix: /cc-proxy:setup writes
+	// PROXY_AUTH_TOKEN to ~/.env, and start-proxy.js built its env from
+	// process.env + settings.json only — so against an older token-gated proxy
+	// it sent no bearer, got 401, and printed "already up — no action" while the
+	// stale binary kept serving (measured).
+	it("presents a PROXY_AUTH_TOKEN that lives only in ~/.env to a stale token-gated proxy", async () => {
+		const home = tmpHome();
+		fs.writeFileSync(path.join(home, ".env"), "PROXY_AUTH_TOKEN=tok-77\n");
+		const flag = path.join(home, "spawned.txt");
+		const tree = makeTree({ withBin: true, flagFile: flag });
+		cleanups.push(() => fs.rmSync(tree, { recursive: true, force: true }));
+		cleanups.push(() => killPidFile(flag));
+
+		const port = await freePort();
+		const seen = [];
+		const stale = http.createServer((req, res) => {
+			if (req.method === "GET" && req.url === "/_status") {
+				res.writeHead(200, { "content-type": "application/json" });
+				res.end(JSON.stringify({ port, version: "0.0.1", providers: [] }));
+				return;
+			}
+			if (req.method === "POST" && req.url === "/_shutdown") {
+				seen.push(req.headers.authorization ?? "(none)");
+				if (req.headers.authorization !== "Bearer tok-77") {
+					res.writeHead(401);
+					res.end("{}");
+					return;
+				}
+				res.writeHead(200, { "content-type": "application/json" });
+				res.end("{}");
+				stale.close();
+				stale.closeIdleConnections();
+				return;
+			}
+			res.writeHead(404);
+			res.end();
+		});
+		await new Promise((r) => stale.listen(port, "127.0.0.1", r));
+		cleanups.push(() => {
+			try {
+				stale.close();
+			} catch {}
+		});
+		fs.writeFileSync(
+			path.join(home, ".claude", "settings.json"),
+			JSON.stringify({ env: { PROXY_PORT: String(port) } }),
+		);
+
+		const { stdout } = await run(tree, { PATH: process.env.PATH, HOME: home });
+		assert.match(stdout, /restarted/, `Expected restarted, got: ${stdout}`);
+		assert.deepEqual(seen, ["Bearer tok-77"], "the token from ~/.env must reach /_shutdown");
+		assert.ok(await waitFor(() => fs.existsSync(flag)), "the tree's bin should have replaced it");
 	});
 
 	it("reports missing-path when the tree has no bin and settings has no PROXY_PATH", async () => {

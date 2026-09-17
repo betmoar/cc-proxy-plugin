@@ -87,12 +87,12 @@ export function parseModelSelector(model, _config) {
  * and preserved it. Probed 2026-08-14 with real keys:
  *
  *   POST api.z.ai/api/anthropic  model=glm-5.2      → 200
- *   POST api.z.ai/api/anthropic  model=glm-5.2[1m]  → 400 [1214][modelCode: does not exist]
+ *   POST api.z.ai/api/anthropic  model=glm-5.2[1m]  → 400 [1211][Unknown Model]
  *   POST token-plan…/anthropic   model=glm-5.2      → 200
  *   POST token-plan…/anthropic   model=glm-5.2[1m]  → 400 InvalidParameter: Model not exist.
  *
  * Both vendors reject it, with the same error a wholly fake id gets
- * (`glm-5.2-totally-fake` → the identical 1214), so the suffix is not a
+ * (`glm-5.2-totally-fake` → the identical 1211), so the suffix is not a
  * spelling any backend knows — forwarding it means routing correctly and then
  * failing at the vendor anyway. It is Claude Code's own display spelling, so it
  * is stripped on the way out exactly as the `<provider>:` lens is: the third

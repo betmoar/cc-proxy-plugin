@@ -517,7 +517,9 @@ notes referencing "backlog item N" still resolve.
     deliverable, cc-proxy needed zero code changes. Documented in README +
     OPERATIONS. Full evidence: issue #44.
 
-17. **Optional proxy auth for the off-loopback escape hatch.** `PROXY_HOST`
+17. ~~**Optional proxy auth for the off-loopback escape hatch.**~~ — **DONE
+    (0.9.0, `PROXY_AUTH_TOKEN`; 0.10.2 fixed the hook and setup presenting it
+    from `~/.env`).** Original proposal, kept for the reasoning: `PROXY_HOST`
     is the documented opt-out of the loopback bind (invariant 7), and that
     opt-out currently exposes the credential-injecting proxy to the LAN with
     zero auth. Proposal: `PROXY_AUTH_TOKEN`, unset = unchanged behavior;
@@ -527,7 +529,8 @@ notes referencing "backlog item N" still resolve.
     untouched. Found by recon of free-claude-code, which requires a
     constant-time bearer check for exactly this reason. → issue #45.
 
-18. **Request-ID correlation.** The routing log answers "where did this go"
+18. ~~**Request-ID correlation.**~~ — **DONE (0.8.0, `x-request-id` echoed
+    and stamped on the routing line).** Original note: the routing log answers "where did this go"
     but not "which line was my request" — and with one shared proxy process
     across sessions, it usually is being asked by someone whose line is
     interleaved with four others. One short opaque id per request, echoed as
@@ -562,6 +565,42 @@ notes referencing "backlog item N" still resolve.
     Meta-lesson worth keeping: FCC is high-quality engineering with the
     opposite product thesis — "resist making it more than that" is this
     repo's first sentence for a reason.
+
+21. **`probe-vendors` exit-code fold is locked by source regexes, not
+    behaviour** (audit 0.10.2, F66/F71/F72). The three "exit code" tests in
+    `test/probe-vendors.test.js` match the SOURCE of `main()`; commenting out
+    the `return 1` line or reordering the `return 3` line leaves them green.
+    Two adjacent gaps: keyed cases skipped for a missing key still exit 0
+    (header line 19 promises "every case ran and matched"), and the case-table
+    validator calls `process.exit(2)` at import, contradicting the "importing
+    is free of process.exit" comment. Fix: extract
+    `exitCodeFor({ disagreed, unreachable, ranKeyed, skipped, drift })`, test
+    its precedence rows behaviourally, add a distinct code (or a header
+    correction) for "partial", and move the validator into `main()`.
+    Done-when: the three regex tests are deleted and a mutation of each
+    `return` fails a test.
+22. **The direct-run lock checks a guard's argument, not its presence** (audit
+    0.10.2, F69). `couplings.test.js` flags a wrong argument to `isDirectRun`
+    but not a missing guard, nor a second argument (`isDirectRun(import.meta.url,
+    "x")`, a silent always-false). Fix: derive the list of importable entry
+    points from `test/*.test.js` imports of `../scripts/*` and assert each
+    contains exactly `isDirectRun(import.meta.url)`. Done-when: removing the
+    guard from `scripts/status.js` fails `pnpm check`.
+23. **`version-guard.js` trusts the branch NAME `main`** (audit 0.10.2, F74).
+    A fork whose `main` is behind upstream tags a commit the squash will not
+    contain. The tag build now refuses a tag whose commit is not on
+    `origin/main` (0.10.2), which is the backstop; the local guard could also
+    require `git merge-base --is-ancestor HEAD origin/main`. Low priority
+    while the CI check exists. Done-when: either the guard checks ancestry or
+    the header grid records the limitation and points at release.yml.
+24. **`${CLAUDE_PLUGIN_ROOT}` in the setup skill is documented, not measured**
+    (audit 0.10.2, F83). The plugin reference says the braced form is
+    substituted in a plugin skill's markdown and that `$VAR` without braces is
+    never substituted; 0.10.2 changed `skills/setup/SKILL.md` to the braced
+    form on that basis. Nothing in this repo has run the skill against the
+    live `claude` binary since. Done-when: one dated measurement in
+    `docs/MAINTAINING.md` says step 3b resolved to an absolute path, or the
+    skill carries the four-candidate resolver block from `commands/models.md`.
 
 ## Reversed decisions
 

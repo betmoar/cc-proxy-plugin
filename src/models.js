@@ -89,7 +89,12 @@ export const MODEL_GRADES = {
 	"glm-4.5-air": "Specialist",
 	// DeepSeek (native)
 	"deepseek-v4-pro": "Flagship",
-	"deepseek-v4-flash": "Strong",
+	// The vendor's current name for its flash line; the delisted alias
+	// `deepseek-v4-flash` is deliberately NOT graded (see CONTEXT_WINDOW).
+	// Strong, not Flagship: the vendor's own line-up puts Pro above Flash, and
+	// the price gap says the same (cache-miss input $0.15 vs $0.66 per 1M,
+	// off-peak). Flash is the cheap tier, and tier is not this axis.
+	"deepseek-flash": "Strong",
 	// OpenRouter (curated allowlist)
 	"deepseek/deepseek-v4-pro": "Flagship",
 	"deepseek/deepseek-v4-flash": "Strong",
@@ -130,6 +135,16 @@ export const MODEL_GRADES = {
 	"qwen3.7-max": "Strong",
 	"qwen3.7-plus": "Specialist",
 	"qwen3.6-flash": "Specialist",
+	// Graded off the vendor's OWN line-up, which is what this axis reads: within
+	// Qwen 3.8, `-max` is the top build and `-flash` the fast one, the same
+	// relation qwen3.6-flash has to its generation — so it takes that sibling's
+	// Specialist, one step under qwen3.8-max's Strong. Nothing benchmarked it
+	// cross-vendor; `bench grades` is where a score would come from.
+	"qwen3.8-flash": "Specialist",
+	// Plan-served spelling of DeepSeek's flash line, graded as the bare
+	// `deepseek-flash` it serves — identical reasoning to deepseek-v4-flash-0731
+	// below: a route is not a capability.
+	"deepseek-v4.1-flash": "Strong",
 	// Plan-served DeepSeek build — graded as its bare sibling deepseek-v4-flash,
 	// which it is a dated snapshot of. Capability, not cost: reaching it through
 	// the plan is cheaper, but that is the tier's business, not the grade's.
@@ -321,12 +336,36 @@ export const CONTEXT_WINDOW = {
 	"glm-5.3-flash": 1048576,
 	// DeepSeek (api-docs.deepseek.com/quick_start/pricing)
 	"deepseek-v4-pro": 1000000,
-	"deepseek-v4-flash": 1000000,
+	// Re-read 2026-09-17: the vendor RENAMED its flash line to `deepseek-flash`
+	// (model version DeepSeek-V4.1-Flash) and delisted the old `deepseek-v4-flash`
+	// from /models, while keeping it working as an alias — confirmed live, it
+	// answers 200 with `"model":"deepseek-flash"` in the body. So the old name
+	// keeps its ROUTES entry (it routes) but loses its window and grade, exactly
+	// as `qwen3.8-max-preview` is routed-but-uncurated: curating both spellings
+	// would put one model in the catalog twice. The rename was PREDICTED by the
+	// comment at the head of routes.js; this is it happening.
+	// The 1M is the vendor's own figure, NOT the 1048576 OpenRouter advertises
+	// for its resold `deepseek/deepseek-v4.1-flash` — same precedent as
+	// glm-5.3-flash above, a reseller's number describes the reseller's route.
+	"deepseek-flash": 1000000,
 	// Qwen (Alibaba Cloud Model Studio)
 	"qwen3.8-max": 1000000,
 	"qwen3.7-max": 1000000,
 	"qwen3.7-plus": 1000000,
 	"qwen3.6-flash": 1000000,
+	// MEASURED 2026-09-17, because the plan's list endpoint publishes no window
+	// for either: the gateway names its own bound in the 400 it returns for an
+	// over-long prompt — `Range of input length should be [1, 983616]` for
+	// qwen3.8-flash and every qwen3.x sibling, `[1, 1000000]` for
+	// deepseek-v4.1-flash. 983616 + 16384 (the max output) is exactly 1000000,
+	// and the input bound does NOT move with max_tokens (probed at 1 / 4096 /
+	// 16384 / 32768 — identical), so the 1M figure is the total window and the
+	// already-curated qwen3.x entries above are consistent with it.
+	"qwen3.8-flash": 1000000,
+	// Plan-only spelling of DeepSeek's flash line (DeepSeek native 400s it:
+	// "The supported API model names are deepseek-flash, deepseek-v4-pro"),
+	// which is the same first-party asymmetry deepseek-v4-flash-0731 shows.
+	"deepseek-v4.1-flash": 1000000,
 	// Plan-served DeepSeek build; same 1M window as the bare deepseek-v4-* it is
 	// a dated snapshot of (api-docs.deepseek.com/quick_start/pricing).
 	"deepseek-v4-flash-0731": 1000000,
@@ -348,8 +387,8 @@ export function withContextWindow(entry) {
 	// member and ship `"context_window": {}` (or a function, which
 	// JSON.stringify silently drops — leaving the key absent on the wire but
 	// present in the object collectModels() returns in-process). Ids come from
-	// live GLM/DeepSeek catalogs and coerceEntry only checks `!e.id`, so the
-	// key space is the vendor's, not ours.
+	// live GLM/DeepSeek catalogs and coerceEntry requires only a non-empty
+	// STRING, so the key space is the vendor's, not ours.
 	if (!Object.hasOwn(CONTEXT_WINDOW, entry.id)) return entry;
 	return { ...entry, context_window: CONTEXT_WINDOW[entry.id] };
 }
@@ -388,10 +427,11 @@ export function withContextWindow(entry) {
  * @doctest identityOf("vendor/family/model-1") -> "family/model-1"
  *
  * TAKES `unknown`, NOT `string`, and that is the honest signature rather than a
- * loosened one. The ids come from live vendor catalogues, and `coerceEntry()`
- * admits an entry on a TRUTHY `id` (`if (!e || !e.id) return null`) — so a
- * vendor sending `id: 123` reaches this function, and the guard below is
- * load-bearing rather than defensive dressing. Annotating the parameter
+ * loosened one. This function is exported and `dedupByIdentity()` keys a Map on
+ * whatever a caller hands it; from the catalogue path only strings arrive now
+ * (`coerceEntry()` drops a non-string id — before 0.10.2 `id: 123` passed its
+ * truthiness check and threw in `ownsId()`, never reaching here), so the guard
+ * below is for direct callers rather than vendor data. Annotating the parameter
  * `string` made the guard's own branch narrow to `never`, which type-checks
  * clean while promising a `string` return this function cannot honour for a
  * non-string input: the id is returned unchanged, on purpose, because dropping
@@ -612,13 +652,68 @@ export function coerceCreated(v) {
  * @returns {ModelEntry | null}
  */
 function coerceEntry(e) {
-	if (!e || !e.id) return null;
+	// `typeof`, not truthiness. A vendor row with `id: 123` passed `!e.id`,
+	// reached ownsId()'s `id.includes("/")`, and threw OUT of the leg loop —
+	// rejecting collectModels() as a whole, so ONE odd row in ONE catalog
+	// emptied the entire /v1/models answer (200 + `data: []`, Claude's static
+	// list included; measured). A non-string id is not an id: drop the row and
+	// keep the other 400.
+	if (!e || typeof e !== "object" || typeof e.id !== "string" || !e.id) return null;
 	return {
 		type: e.type || "model",
 		id: e.id,
 		display_name: e.display_name || e.id,
 		created_at: coerceCreated(e.created_at ?? e.created),
 	};
+}
+
+/**
+ * Byte cap on one catalog body. The forwarding path caps everything it holds
+ * in memory (NON_STREAM_BUFFER_LIMIT, RATE_LIMIT_PEEK_LIMIT — CLAUDE.md's
+ * "holds response bytes? needs a size cap"); the four catalog legs did not,
+ * and `res.json()` buffers whatever arrives inside modelsTimeoutMs: a 150 MB
+ * body delivered in 1.3 s grew the shared proxy's RSS from 62 MB to 745 MB
+ * (measured), on a request any local client — or CC's own gateway discovery —
+ * can trigger against a public, unauthenticated endpoint. OpenRouter's real
+ * catalogue is ~1 MB; 8 MB is generous and still a bound.
+ */
+export const CATALOG_BODY_LIMIT = 8 * 1024 * 1024;
+
+class BodyTooLargeError extends Error {
+	/** @param {number} limit */
+	constructor(limit) {
+		super(`catalog body exceeds ${limit} bytes`);
+		this.name = "BodyTooLargeError";
+	}
+}
+
+/**
+ * `res.json()` with a byte budget. Reads the stream chunk by chunk and gives
+ * up — cancelling the body — the moment the budget is exceeded, so the process
+ * never holds more than `limit` bytes of one catalog. An abort mid-read
+ * rejects with the same AbortError `res.json()` would have thrown, so the
+ * legs' timeout classification is unchanged.
+ *
+ * @param {Response} res
+ * @param {number} [limit]
+ * @returns {Promise<unknown>}
+ */
+async function readJsonCapped(res, limit = CATALOG_BODY_LIMIT) {
+	if (!res.body) return await res.json();
+	const reader = res.body.getReader();
+	const chunks = [];
+	let total = 0;
+	for (;;) {
+		const { done, value } = await reader.read();
+		if (done) break;
+		total += value.byteLength;
+		if (total > limit) {
+			await reader.cancel().catch(() => {});
+			throw new BodyTooLargeError(limit);
+		}
+		chunks.push(value);
+	}
+	return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
 
 /**
@@ -639,7 +734,7 @@ async function fetchGlmModels(glm, timeoutMs) {
 		if (res.status < 200 || res.status >= 300) return { error: `HTTP ${res.status}` };
 		let body;
 		try {
-			body = await res.json();
+			body = await readJsonCapped(res);
 		} catch (err) {
 			// The abort can land HERE — headers arrived, then the vendor stalled past
 			// modelsTimeoutMs while the body was being read. Reported as a schema
@@ -648,6 +743,7 @@ async function fetchGlmModels(glm, timeoutMs) {
 			// came back "invalid response shape"). Classify before the outer catch
 			// would have, since this catch shadows it.
 			if (err?.name === "AbortError") return { error: "timeout" };
+			if (err?.name === "BodyTooLargeError") return { error: "response too large" };
 			// Not an abort, and not necessarily malformed JSON either: a vendor that
 			// resets the socket after the headers (its own idle timeout firing before
 			// ours) throws `TypeError: terminated` here, cause "other side closed"
@@ -769,7 +865,7 @@ async function fetchQwenModels(qwen, timeoutMs) {
 		if (res.status < 200 || res.status >= 300) return { error: `HTTP ${res.status}` };
 		let body;
 		try {
-			body = await res.json();
+			body = await readJsonCapped(res);
 		} catch (err) {
 			// The abort can land HERE — headers arrived, then the vendor stalled past
 			// modelsTimeoutMs while the body was being read. Reported as a schema
@@ -778,6 +874,7 @@ async function fetchQwenModels(qwen, timeoutMs) {
 			// came back "invalid response shape"). Classify before the outer catch
 			// would have, since this catch shadows it.
 			if (err?.name === "AbortError") return { error: "timeout" };
+			if (err?.name === "BodyTooLargeError") return { error: "response too large" };
 			// Not an abort, and not necessarily malformed JSON either: a vendor that
 			// resets the socket after the headers (its own idle timeout firing before
 			// ours) throws `TypeError: terminated` here, cause "other side closed"
@@ -836,7 +933,7 @@ async function fetchOpenRouterModels(openrouter, timeoutMs) {
 		if (res.status < 200 || res.status >= 300) return { error: `HTTP ${res.status}` };
 		let body;
 		try {
-			body = await res.json();
+			body = await readJsonCapped(res);
 		} catch (err) {
 			// The abort can land HERE — headers arrived, then the vendor stalled past
 			// modelsTimeoutMs while the body was being read. Reported as a schema
@@ -845,6 +942,7 @@ async function fetchOpenRouterModels(openrouter, timeoutMs) {
 			// came back "invalid response shape"). Classify before the outer catch
 			// would have, since this catch shadows it.
 			if (err?.name === "AbortError") return { error: "timeout" };
+			if (err?.name === "BodyTooLargeError") return { error: "response too large" };
 			// Not an abort, and not necessarily malformed JSON either: a vendor that
 			// resets the socket after the headers (its own idle timeout firing before
 			// ours) throws `TypeError: terminated` here, cause "other side closed"
@@ -860,7 +958,10 @@ async function fetchOpenRouterModels(openrouter, timeoutMs) {
 		if (!body || !Array.isArray(body.data)) return { error: "invalid response shape" };
 		const entries = body.data
 			.map((e) => {
-				const base = coerceEntry({ ...e, display_name: e.name });
+				// `e.name` is read BEFORE coerceEntry's own null guard runs, so a
+				// `null` element here threw inside the leg and dropped the whole live
+				// catalogue to the static six — with no `_errors` entry (measured).
+				const base = coerceEntry(e && typeof e === "object" ? { ...e, display_name: e.name } : e);
 				if (!base) return null;
 				// Vendor-reported window wins over the curated table for these ids —
 				// see the note above. Guard the type: a malformed value must omit the
@@ -891,14 +992,20 @@ async function fetchOpenRouterModels(openrouter, timeoutMs) {
  * DeepSeek exposes no pricing API (the /pricing page is HTML-only), so per-1M-token
  * prices are curated here against the documented table and updated per release.
  * The models themselves stay live-fetched (fetchDeepSeekModels); this is the only
- * static data. Note: DeepSeek has ANNOUNCED (not yet live as of 2026-08-04) a 2×
- * peak-hour surcharge (9–12, 14–18 UTC+8) — not modeled here, and re-check before
- * it activates (the proxy has no clock and shouldn't model time-varying price).
+ * static data.
+ *
+ * Re-read 2026-09-17 (api-docs.deepseek.com/quick_start/pricing). The peak-hour
+ * surcharge that was ANNOUNCED-not-live at 2026-08-04 has ACTIVATED: the table
+ * is now quoted per period, peak exactly 2× off-peak (peak = 01:00–04:00 and
+ * 06:00–10:00 UTC on weekdays). The proxy has no clock and must not model a
+ * time-varying price, so these stay the OFF-PEAK figures — the lower bound, and
+ * the number a reader should assume can double. `deepseek-flash` is the current
+ * name of the line the delisted `deepseek-v4-flash` alias still reaches.
  * @type {Record<string, { in: number, out: number, cached: number }>}
  */
 export const DEEPSEEK_PRICING = {
-	"deepseek-v4-pro": { in: 0.435, out: 0.87, cached: 0.003625 },
-	"deepseek-v4-flash": { in: 0.14, out: 0.28, cached: 0.0028 },
+	"deepseek-v4-pro": { in: 0.66, out: 1.98, cached: 0.022 },
+	"deepseek-flash": { in: 0.15, out: 0.6, cached: 0.003 },
 };
 
 /**
@@ -924,7 +1031,7 @@ async function fetchDeepSeekModels(deepseek, timeoutMs) {
 		if (res.status < 200 || res.status >= 300) return { error: `HTTP ${res.status}` };
 		let body;
 		try {
-			body = await res.json();
+			body = await readJsonCapped(res);
 		} catch (err) {
 			// The abort can land HERE — headers arrived, then the vendor stalled past
 			// modelsTimeoutMs while the body was being read. Reported as a schema
@@ -933,6 +1040,7 @@ async function fetchDeepSeekModels(deepseek, timeoutMs) {
 			// came back "invalid response shape"). Classify before the outer catch
 			// would have, since this catch shadows it.
 			if (err?.name === "AbortError") return { error: "timeout" };
+			if (err?.name === "BodyTooLargeError") return { error: "response too large" };
 			// Not an abort, and not necessarily malformed JSON either: a vendor that
 			// resets the socket after the headers (its own idle timeout firing before
 			// ours) throws `TypeError: terminated` here, cause "other side closed"

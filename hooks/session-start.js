@@ -1,7 +1,13 @@
 #!/usr/bin/env node
 // @ts-check
 import { pickerNotice } from "./picker-staleness.js";
-import { DEFAULT_LOG_PATH, ensureProxyRunning } from "./proxy-lifecycle.js";
+import { DEFAULT_LOG_PATH, ensureProxyRunning, loadHomeEnv } from "./proxy-lifecycle.js";
+
+// ~/.env before anything reads process.env at call time: PROXY_AUTH_TOKEN lives
+// there (that is where /cc-proxy:setup writes it), and without it the stale-
+// proxy handshake below cannot present it. settings.json's `env` block is
+// already in process.env and is never overridden by this.
+loadHomeEnv();
 
 /**
  * One line of session context when the proxy did NOT come up (issue #55).

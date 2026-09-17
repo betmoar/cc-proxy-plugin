@@ -49,8 +49,8 @@ describe("modelPicker row generation (issue #62)", () => {
 			);
 		}
 		// Guard against the assertion above passing vacuously on an empty set.
-		assert.equal(rows.filter((r) => r.model.endsWith("[1m]")).length, 10);
-		assert.equal(rows.length, 17);
+		assert.equal(rows.filter((r) => r.model.endsWith("[1m]")).length, 12);
+		assert.equal(rows.length, 19);
 	});
 
 	// behavesAs is what makes CC stop calling the id unknown, which is what
@@ -382,6 +382,50 @@ describe("render-model-picker.js I/O", () => {
 		writeSettings(nested, { ok: true });
 		assert.deepEqual(JSON.parse(fs.readFileSync(nested, "utf8")), { ok: true });
 	});
+
+	// A dotfiles-managed ~/.claude/settings.json is a SYMLINK into a checkout.
+	// rename() over the link replaces the link itself with a regular file: the
+	// checkout keeps the old content, the live file silently forks, and the next
+	// `stow`/sync puts the old rows back (measured). The write must land in the
+	// link's TARGET, with the .bak beside it, and the link must survive.
+	it("writes through a symlinked settings.json, never over the link", async () => {
+		const { writeSettings } = await import("../scripts/render-model-picker.js");
+		const dir = tmp();
+		const real = path.join(dir, "dotfiles", "claude-settings.json");
+		fs.mkdirSync(path.dirname(real), { recursive: true });
+		fs.writeFileSync(real, JSON.stringify({ env: { A: "1" } }));
+		const link = path.join(dir, "settings.json");
+		fs.symlinkSync(real, link);
+		writeSettings(link, { env: { A: "2" } });
+		assert.ok(fs.lstatSync(link).isSymbolicLink(), "the link was replaced by a regular file");
+		assert.deepEqual(JSON.parse(fs.readFileSync(real, "utf8")), { env: { A: "2" } });
+		assert.deepEqual(JSON.parse(fs.readFileSync(`${real}.bak`, "utf8")), { env: { A: "1" } });
+		assert.ok(!fs.existsSync(`${link}.bak`), "the backup belongs beside the real file");
+	});
+
+	it("refuses a dangling symlink rather than replacing it", async () => {
+		const { writeSettings } = await import("../scripts/render-model-picker.js");
+		const dir = tmp();
+		const link = path.join(dir, "settings.json");
+		fs.symlinkSync(path.join(dir, "missing.json"), link);
+		assert.throws(() => writeSettings(link, { ok: true }), /symlink to a missing target/);
+		assert.ok(fs.lstatSync(link).isSymbolicLink(), "the dangling link is untouched");
+	});
+
+	// writeFileSync's default mode is 0666 & ~umask, so a rename over a 0600
+	// settings.json widened it to 0644 on every run (measured) — and its env
+	// block is where ANTHROPIC_AUTH_TOKEN lives in auth mode.
+	it("preserves the target's mode, and creates a fresh file 0600", async () => {
+		const { writeSettings } = await import("../scripts/render-model-picker.js");
+		const dir = tmp();
+		const file = path.join(dir, "settings.json");
+		fs.writeFileSync(file, "{}", { mode: 0o600 });
+		writeSettings(file, { env: { A: "2" } });
+		assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+		const fresh = path.join(dir, "fresh", "settings.json");
+		writeSettings(fresh, { ok: true });
+		assert.equal(fs.statSync(fresh).mode & 0o777, 0o600);
+	});
 });
 
 // main() was unreachable from the suite until it became run(): every helper was
@@ -409,6 +453,25 @@ describe("render-model-picker run() (issue #62)", () => {
 		});
 		return { code, out, err };
 	}
+
+	// The hook compares its stamp to its own tree version and reports "generated
+	// by an earlier version" on a mismatch. With no stamp written by the writer,
+	// every fresh setup was followed by that notice one session later (measured).
+	it("stamps the tree version so the next SessionStart does not call fresh rows stale", async () => {
+		const { pickerNotice, treeVersion } = await import("../hooks/picker-staleness.js");
+		const dir = tmp();
+		const file = path.join(dir, "settings.json");
+		fs.writeFileSync(file, "{}");
+		const { code } = await invoke({ argv: [], file, env: GLM });
+		assert.equal(code, 0);
+		const stampFile = path.join(dir, "cc-proxy", "picker-stamp.json");
+		assert.ok(fs.existsSync(stampFile), "no stamp landed beside the settings file");
+		assert.equal(
+			pickerNotice({ version: treeVersion(), settingsFile: file, stampFile }),
+			undefined,
+			"rows written by this version must not be reported stale by this version",
+		);
+	});
 
 	it("writes the rows, backs up, and reports the count", async () => {
 		const file = path.join(tmp(), "settings.json");

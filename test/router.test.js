@@ -475,7 +475,7 @@ describe("router", () => {
 	// The upstream half is a MEASUREMENT, and it reversed mid-PR. The first cut
 	// preserved the raw suffix on the belief that Z.ai accepted it; probed
 	// 2026-08-14 with real keys, it does not — `glm-5.2[1m]` and `glm-5.3[1m]`
-	// both draw `400 [1214][modelCode: does not exist]`, the same rejection a
+	// both draw `400 [1211][Unknown Model]`, the same rejection a
 	// wholly fake id gets, and the Qwen plan answers `InvalidParameter: Model
 	// not exist.` So the suffix reaches no vendor: it is stripped on the way out
 	// exactly as the `<provider>:` lens is.
@@ -494,7 +494,7 @@ describe("router", () => {
 			const suffixed = resolve2("glm-5.2[1m]", planOnly);
 			assert.equal(suffixed.provider.id, "qwen", "the suffix must not defeat the ROUTES lookup");
 			// Measured 2026-08-14: BOTH vendors 400 on the suffixed spelling
-			// (Z.ai `[1214][modelCode: does not exist]`, the Qwen plan
+			// (Z.ai `[1211][Unknown Model]`, the Qwen plan
 			// `InvalidParameter: Model not exist.`), so forwarding it would route
 			// correctly and then fail at the vendor anyway. It is Claude Code's
 			// display spelling, stripped on the way out like the `<provider>:`
@@ -511,7 +511,7 @@ describe("router", () => {
 		// predicate. That makes it the honest test of the predicate path: the
 		// suffix must not defeat it, and the bare id must reach the vendor.
 		// Probed the same day against the live endpoint: `glm-5.3` -> 200,
-		// `glm-5.3[1m]` -> 400 [1214][modelCode: does not exist], the identical
+		// `glm-5.3[1m]` -> 400 [1211][Unknown Model], the identical
 		// rejection glm-5.2 gives. The suffix is not a spelling Z.ai knows for
 		// ANY model, new ones included — which is why the strip goes upstream.
 		it("strips the suffix for an id that only the predicate claims (glm-5.3)", () => {

@@ -886,7 +886,7 @@ describe("server end-to-end routing", () => {
 		// The bytes the BACKEND actually received — the project's rule is that a
 		// forwarding change with no failing test is untested, and every other
 		// suffix assertion is unit-level against resolve(). Measured 2026-08-14:
-		// Z.ai 400s on `glm-5.2[1m]` ([1214][modelCode: does not exist]) and the
+		// Z.ai 400s on `glm-5.2[1m]` ([1211][Unknown Model]) and the
 		// Qwen plan 400s the same way, so sending the suffix upstream would route
 		// correctly and fail at the vendor. This is the assertion that catches a
 		// regression to forwarding it.
@@ -1959,5 +1959,89 @@ describe("PROXY_AUTH_TOKEN gate (issue #45)", () => {
 		);
 		assert.equal(res.status, 401);
 		assert.equal(glm.calls.length, 0);
+	});
+});
+
+// ── dispatcher containment ────────────────────────────────────────────────────
+// A throw inside the request's 'end' listener is an uncaught exception, and
+// Node's default for that is to END THE PROCESS — every session on the machine,
+// not one request. Measured before the guard: a POST whose body was the four
+// bytes `null` (valid JSON, not an object) reached `body.model` in handleProxy,
+// threw a TypeError, and the proxy exited 1 with no response written. Two locks:
+// the specific input, and the CLASS (any throw in the dispatcher answers 500).
+describe("dispatcher containment (a bad request never ends the process)", () => {
+	let backend;
+	let proxy;
+
+	afterEach(async () => {
+		await close(proxy?.server, backend?.server);
+		backend = proxy = undefined;
+	});
+
+	async function wireDefault(extraProvider) {
+		backend = await startBackend(() => ({
+			status: 200,
+			headers: { "content-type": "application/json" },
+			body: NORMAL_200,
+		}));
+		const providers = buildProviders({}, "claude");
+		providers.find((p) => p.id === "claude").baseUrl = backend.baseUrl;
+		if (extraProvider) providers.unshift(extraProvider);
+		proxy = await startProxy({ port: 0, providers });
+	}
+
+	/** POST raw bytes (not JSON.stringify'd) so a non-object body reaches the wire. */
+	function postRaw(port, raw) {
+		return new Promise((resolve, reject) => {
+			const req = http.request(
+				{
+					hostname: "127.0.0.1",
+					port,
+					path: "/v1/messages",
+					method: "POST",
+					headers: { "content-type": "application/json", "content-length": Buffer.byteLength(raw) },
+				},
+				(res) => {
+					const chunks = [];
+					res.on("data", (c) => chunks.push(c));
+					res.on("end", () =>
+						resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString() }),
+					);
+				},
+			);
+			req.on("error", reject);
+			req.end(raw);
+		});
+	}
+
+	it("a JSON body that is not an object routes as `unknown` and the proxy survives", async () => {
+		await wireDefault();
+		for (const raw of ["null", "1", '"x"', "true"]) {
+			const r = await postRaw(proxy.port, raw);
+			assert.equal(r.status, 200, `body ${raw}: expected the default backend's own answer`);
+		}
+		assert.equal(backend.calls.length, 4, "every non-object body still reached the backend");
+		// Forwarded byte-for-byte (invariant 1): the guard changes what the
+		// dispatcher READS, never what it sends.
+		assert.equal(backend.calls[0].body, "null");
+		const after = await get(proxy.port, "/_status");
+		assert.equal(after.status, 200, "the proxy is still serving after the bad bodies");
+	});
+
+	it("a throw inside the dispatcher answers 500 for that request only", async () => {
+		await wireDefault({
+			id: "boom",
+			baseUrl: "http://127.0.0.1:1",
+			apiKey: "k",
+			auth: "bearer",
+			match: () => {
+				throw new Error("predicate bug");
+			},
+		});
+		const r = await postRaw(proxy.port, JSON.stringify({ model: "anything" }));
+		assert.equal(r.status, 500);
+		assert.match(r.body, /internal error/);
+		const after = await get(proxy.port, "/_status");
+		assert.equal(after.status, 200, "one throwing request must not take the process down");
 	});
 });

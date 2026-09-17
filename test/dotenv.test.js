@@ -182,3 +182,25 @@ describe("bin/cc-proxy.js loads ~/.env", () => {
 		assert.doesNotMatch(stderr, /did NOT register/, `expected no warning, got: ${stderr}`);
 	});
 });
+
+// On a Node without `process.loadEnvFile` (< 21.7) both try/catch blocks in
+// loadEnv() swallowed the TypeError and every key in ~/.env was ignored — the
+// proxy registered Claude only, with no error anywhere (measured by deleting
+// the API in-process). The wrong runtime is now the one thing loadEnv refuses
+// loudly. Run in a subprocess so the deletion never touches this process.
+describe("loadEnv refuses a Node without process.loadEnvFile", () => {
+	it("throws a message naming the Node floor", async () => {
+		const env = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../src/env.js");
+		const script = `delete process.loadEnvFile; import(${JSON.stringify(env)}).then((m) => m.loadEnv());`;
+		const result = await new Promise((resolve) => {
+			const child = spawn(process.execPath, ["-e", script], { stdio: ["ignore", "pipe", "pipe"] });
+			let stderr = "";
+			child.stderr.on("data", (c) => {
+				stderr += c;
+			});
+			child.on("exit", (code) => resolve({ code, stderr }));
+		});
+		assert.notEqual(result.code, 0, "loadEnv stayed silent on a runtime that cannot read ~/.env");
+		assert.match(result.stderr, /needs Node >= 22/);
+	});
+});

@@ -45,19 +45,59 @@ EOF
 #      sub-command entirely.
 #
 # So parse $ARGUMENTS — the whole argument string, the only token that carries
-# every word — with `set --` word-splitting it into a real argv. The unquoted
-# expansion is deliberate: these are shell-word arguments (`speed --report`),
-# and the values are the user's own command line.
+# every word. It is spliced in as SOURCE TEXT, not expanded as a variable, so a
+# bare `set -- $ARGUMENTS` hands the user's words to the parser as syntax:
+# measured, `speed --report | cat` ran `set --` in a subshell and fell through
+# to `grades` (a billed network run plus a grades.json rewrite, from a
+# read-only report), `speed > x` created/truncated x, `speed 'a` was a syntax
+# error, and `$(…)` executed. A QUOTED heredoc is the one place the shell
+# never parses its contents, so the spliced text becomes data in `$args`, and
+# only THEN is it word-split into a real argv. (Only a line that is exactly
+# the terminator could end it early, which a one-line slash argument cannot
+# contain.) Locked by test/commands.test.js, which runs this block with each
+# of those arguments spliced in.
 #
+# The heredoc is read by `read`, NOT by `args=$(cat <<'Q' … )`: a heredoc
+# nested inside command substitution is mis-parsed by bash 3.2, which is
+# /bin/bash on every macOS. Measured there — `speed 'glm-5.2` died with
+# "unexpected EOF while looking for matching `''" and exit 2, while bash 5
+# (what CI runs) accepted it, so the suite was green on the one platform the
+# defect could not reach.
+#
+# Plain `read -r`, with NO `-d`: the delimiter flag is a bash/zsh extension
+# that dash — Ubuntu's /bin/sh — rejects outright ("read: Illegal option -d",
+# measured), and a slash argument is a single line anyway, which is exactly
+# what an unadorned `read` consumes. `read` returns non-zero on a final line
+# with no trailing newline, and on an EMPTY argument it reads nothing at all,
+# so `|| true` is what keeps both cases from aborting under `set -e`.
+args=""
+IFS= read -r args <<'CC_PROXY_ARGS' || true
+$ARGUMENTS
+CC_PROXY_ARGS
 # `set -f` first, because unquoted word-splitting also GLOBS: measured in a
 # directory holding two files, `bench speed *` split to three words
 # (`speed aaa.txt bbb.txt`) instead of two. Splitting is what we want; pathname
 # expansion is not, and the argv it builds is passed straight to a script.
+#
+# Split through a COMMAND SUBSTITUTION, not `set -- $args`: a slash command
+# runs under the user's login shell, which on macOS is ZSH (the same trap
+# commands/models.md documents), and zsh does not word-split an unquoted
+# parameter. Measured: with args="speed --report", `set -- $args` gives bash
+# two words and zsh ONE, so `$1` was the whole string, `case` matched no
+# branch, and `/cc-proxy:bench speed` was dead for every macOS user. zsh DOES
+# split an unquoted command substitution, so this form gives two words in
+# bash, zsh and dash alike. The trailing newline `read` leaves on $args is
+# absorbed by that same splitting.
 set -f
-set -- $ARGUMENTS
+set -- $(printf '%s' "$args")
 set +f
 sub="${1:-grades}"
-shift 2>/dev/null || true
+# Guard on $#, do NOT rely on `shift 2>/dev/null || true`: shifting an empty
+# argv is a FATAL shell error in dash (Ubuntu's /bin/sh), not a command that
+# fails, so neither the redirect nor the `|| true` catches it and the body dies
+# with exit 2 on the no-argument path — the plain `/cc-proxy:bench` case.
+# Measured across bash/zsh/dash: only the $# test survives all three.
+[ "$#" -gt 0 ] && shift
 case "$sub" in
   speed) node "$root/scripts/bench-speed.js" "$@" ;;
   grades) node "$root/scripts/bench-grades.js" ;;
@@ -84,6 +124,8 @@ Two things to keep straight if the user asks about the output:
   proxy binary changed mid-series and those numbers are not comparable.
 
 `grades` needs network (benchlm.ai + OpenRouter) and writes
-`~/.claude/cc-proxy/grades.json`. `speed` needs the proxy running and appends to
-`~/.claude/cc-proxy/speed.jsonl`. On failure both say so and write nothing —
-a stale file is useful, a silently-empty one is a lie.
+`~/.claude/cc-proxy/grades.json`; on any failure it says so and writes nothing —
+a stale file is useful, a silently-empty one is a lie. `speed` needs the proxy
+running and appends to `~/.claude/cc-proxy/speed.jsonl` one row per route,
+**FAIL rows included** (a route that stopped answering is the finding); it
+writes nothing only when the proxy itself is down.

@@ -10,6 +10,42 @@ import { fileURLToPath } from "node:url";
 export const PORT = Number(process.env.PROXY_PORT || 4000);
 const POLL_INTERVAL_MS = 100;
 
+// One probe of the version handshake (GET /_status, POST /_shutdown). Shared so
+// the restart-path budget below is computed from one number, not two literals.
+export const HANDSHAKE_TIMEOUT_MS = 1000;
+
+// COUPLING (locked by test/couplings.test.js "the stale-proxy restart path fits
+// inside the hooks.json timeout"): hooks/hooks.json kills the SessionStart hook
+// at 10 s. The RESTART path is the long one — checkPort (PROBE_TIMEOUT_MS) +
+// probeProxyVersion (HANDSHAKE) + requestShutdown (HANDSHAKE) + waitGone (this)
+// + waitReady (this) — ≈ 8.3 s at this default. Raise it past ~3.9 s and a
+// stale-proxy replacement can be killed mid-poll: the proxy still comes up
+// (spawned detached) but the hook's one context line is lost. The fresh-start
+// path only spends it once, which is why the old prose said "≥10000 never
+// completes" — true, and understated by half on the path that matters.
+export const DEFAULT_READY_TIMEOUT_MS = 3000;
+
+/**
+ * Load `~/.env` into process.env WITHOUT overriding anything already set
+ * (`process.loadEnvFile` never overwrites). `~/.env` is where /cc-proxy:setup
+ * writes every key — PROXY_AUTH_TOKEN included — and the hook needs that one
+ * itself: under auth mode /_shutdown is gated, so a hook that cannot present
+ * the token can never replace a stale proxy (measured: the stale stub answered
+ * `authorization=(none)` → 401 → "already-up", forever). Self-contained rather
+ * than importing src/env.js because hooks/ deliberately does not import src/
+ * (the test suites copy the three hook files alone into a fixture tree).
+ * Repo-root `.env` is NOT loaded here: the hook has no repo, only a tree.
+ *
+ * @param {string} [home]
+ */
+export function loadHomeEnv(home = os.homedir()) {
+	try {
+		process.loadEnvFile(path.join(home, ".env"));
+	} catch {
+		// absent or unreadable — the proxy child loads it again for itself
+	}
+}
+
 // This file runs from inside the plugin tree (marketplace cache dir or dev
 // repo), so its own location identifies the CURRENT plugin version — unlike a
 // PROXY_PATH pinned into settings.json by an old /cc-proxy:setup run, which
@@ -92,7 +128,7 @@ export function isOlderVersion(a, b) {
 export function probeProxyVersion(port) {
 	return new Promise((resolve) => {
 		const req = http.get(
-			{ hostname: "127.0.0.1", port, path: "/_status", timeout: 1000 },
+			{ hostname: "127.0.0.1", port, path: "/_status", timeout: HANDSHAKE_TIMEOUT_MS },
 			(res) => {
 				const chunks = [];
 				res.on("data", (c) => chunks.push(c));
@@ -130,20 +166,31 @@ export function probeProxyVersion(port) {
  *
  * PROXY_AUTH_TOKEN (#45): /_shutdown requires the token when the proxy was
  * started with one — a destructive endpoint must not stay open to whatever
- * else can reach the port. Read from env (settings.json `env` plumbing, the
- * same source the proxy itself read) and presented as Bearer; a 401 reads as
- * "not acknowledged" so the caller's waitGone() poll decides. Not logged — a
+ * else can reach the port. Presented as Bearer; a 401 reads as "not
+ * acknowledged" so the caller's waitGone() poll decides. Not logged — a
  * token-bearing header is a secret, and nothing here logs headers.
+ *
+ * The token is a PARAMETER, defaulting to process.env, because the two callers
+ * hold it in different places: the SessionStart hook has it in process.env
+ * once loadHomeEnv() ran, while /cc-proxy:setup's start-proxy.js carries a
+ * merged env it passes as `opts.env`. Reading process.env directly here made
+ * the setup path silently token-less.
  * @param {number} port
+ * @param {string} [token]
  * @returns {Promise<boolean>} true if the proxy acknowledged the shutdown.
  */
-export function requestShutdown(port) {
-	const headers = process.env.PROXY_AUTH_TOKEN
-		? { authorization: `Bearer ${process.env.PROXY_AUTH_TOKEN}` }
-		: {};
+export function requestShutdown(port, token = process.env.PROXY_AUTH_TOKEN) {
+	const headers = token ? { authorization: `Bearer ${token}` } : {};
 	return new Promise((resolve) => {
 		const req = http.request(
-			{ hostname: "127.0.0.1", port, path: "/_shutdown", method: "POST", timeout: 1000, headers },
+			{
+				hostname: "127.0.0.1",
+				port,
+				path: "/_shutdown",
+				method: "POST",
+				timeout: HANDSHAKE_TIMEOUT_MS,
+				headers,
+			},
 			(res) => {
 				res.resume();
 				res.on("end", () => resolve(res.statusCode === 200));
@@ -325,8 +372,11 @@ export function spawnProxy(proxyPath, logPath, env = process.env) {
  * TCP probe, and never a kill).
  *
  * @param {object} [opts]
- * @param {number} [opts.port]         Defaults to PROXY_PORT or 4000.
- * @param {number} [opts.readyTimeoutMs] Defaults to PROXY_READY_TIMEOUT_MS or 3000.
+ * @param {number} [opts.port]         Defaults to PROXY_PORT or 4000, read at
+ *   CALL time so a value loadHomeEnv() brought in is honoured (the exported
+ *   PORT is frozen at import, before any loader can run).
+ * @param {number} [opts.readyTimeoutMs] Defaults to PROXY_READY_TIMEOUT_MS or
+ *   DEFAULT_READY_TIMEOUT_MS.
  * @param {string} [opts.proxyPath]    Defaults to resolveProxyPath() (own tree's
  *   bin, then env PROXY_PATH).
  * @param {string} [opts.logPath]      Defaults to PROXY_LOG or DEFAULT_LOG_PATH.
@@ -335,13 +385,14 @@ export function spawnProxy(proxyPath, logPath, env = process.env) {
  * @returns {Promise<"already-up" | "started" | "restarted" | "missing-path" | "unreachable">}
  */
 export async function ensureProxyRunning(opts = {}) {
-	const port = opts.port ?? PORT;
+	const port = opts.port ?? Number(process.env.PROXY_PORT || 4000);
 	// Validate the env value: a non-numeric PROXY_READY_TIMEOUT_MS would yield
 	// NaN, making the readiness deadline NaN and waitReady() return false
 	// immediately (proxy reported unreachable even when it comes up).
 	const envTimeout = Number(process.env.PROXY_READY_TIMEOUT_MS);
 	const readyTimeoutMs =
-		opts.readyTimeoutMs ?? (Number.isFinite(envTimeout) && envTimeout > 0 ? envTimeout : 3000);
+		opts.readyTimeoutMs ??
+		(Number.isFinite(envTimeout) && envTimeout > 0 ? envTimeout : DEFAULT_READY_TIMEOUT_MS);
 	const proxyPath = opts.proxyPath ?? resolveProxyPath();
 	const logPath = opts.logPath ?? process.env.PROXY_LOG ?? DEFAULT_LOG_PATH;
 
@@ -370,7 +421,9 @@ export async function ensureProxyRunning(opts = {}) {
 		if (!stale) return "already-up";
 		if (!proxyPath) return "missing-path";
 
-		const acked = await requestShutdown(port);
+		// The token comes from the same env the spawn will use: opts.env when the
+		// caller merged one (start-proxy.js), process.env otherwise.
+		const acked = await requestShutdown(port, (opts.env ?? process.env).PROXY_AUTH_TOKEN);
 		// close() waits for in-flight responses, so allow the drain a share of
 		// the ready budget; if the old process won't die, leave it — two proxies
 		// racing one port is worse than one stale proxy.

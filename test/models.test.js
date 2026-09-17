@@ -64,13 +64,13 @@ describe("models.js pure helpers", () => {
 
 	it("DEEPSEEK_PRICING holds the curated per-1M-token prices for both live models", () => {
 		// Curated (no pricing API exists). Pins the two documented ids + their prices
-		// so a silent edit or a dropped model is caught.
-		assert.deepEqual(Object.keys(DEEPSEEK_PRICING).sort(), [
-			"deepseek-v4-flash",
-			"deepseek-v4-pro",
-		]);
-		assert.equal(DEEPSEEK_PRICING["deepseek-v4-pro"].out, 0.87);
-		assert.equal(DEEPSEEK_PRICING["deepseek-v4-flash"].out, 0.28);
+		// so a silent edit or a dropped model is caught. Re-read 2026-09-17: the
+		// flash line is keyed by its CURRENT name (`deepseek-v4-flash` is a
+		// delisted alias onto it), and the figures are the OFF-PEAK half of the
+		// now-active peak/off-peak table.
+		assert.deepEqual(Object.keys(DEEPSEEK_PRICING).sort(), ["deepseek-flash", "deepseek-v4-pro"]);
+		assert.equal(DEEPSEEK_PRICING["deepseek-v4-pro"].out, 1.98);
+		assert.equal(DEEPSEEK_PRICING["deepseek-flash"].out, 0.6);
 	});
 
 	it("DEFAULT_QWEN_MODELS is the offline fallback for the live plan catalog", () => {
@@ -1362,6 +1362,81 @@ describe("media generation tunnel (issue #40)", () => {
 		await up();
 		await postReq(proxy.port, PATH, IMAGE_BODY);
 		assert.equal(qwen.calls[0].headers["accept-encoding"], "identity");
+	});
+});
+
+describe("one malformed vendor row never empties the catalogue", () => {
+	let stub;
+	afterEach(async () => {
+		await close(stub?.server);
+		stub = undefined;
+	});
+
+	// Before coerceEntry checked `typeof e.id`, a row with `id: 123` passed its
+	// truthiness test and threw in ownsId() — OUT of the leg loop, rejecting
+	// collectModels() as a whole. handleModels caught that and answered 200 with
+	// `data: []`, so one odd row in one vendor's catalog silently emptied the
+	// entire /v1/models answer, Claude's static list included (measured).
+	it("glm: a non-string id is dropped and every other leg still publishes", async () => {
+		stub = await startBackend(() => ({
+			status: 200,
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				data: [{ id: "glm-5.3" }, { id: 123 }, { id: {} }, null, { id: "" }],
+			}),
+		}));
+		const config = wireConfig(stub.baseUrl);
+		const { data, _errors } = await collectModels(config);
+		const ids = data.map((m) => m.id);
+		assert.deepEqual(_errors, []);
+		assert.ok(ids.includes("glm-5.3"), "the well-formed row survived");
+		assert.ok(ids.includes("claude-fable-5"), "the static Claude leg still published");
+		assert.equal(
+			ids.filter((id) => typeof id !== "string").length,
+			0,
+			"no non-string id on the wire",
+		);
+	});
+
+	// The OpenRouter leg read `e.name` BEFORE coerceEntry's null guard, so a
+	// `null` element threw inside the leg and dropped the whole live catalogue
+	// to the static six — with an empty `_errors`, because the leg swallows.
+	it("openrouter: a null element is dropped, the live ids stay live", async () => {
+		stub = await startBackend(() => ({
+			status: 200,
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ data: [{ id: "tencent/hy3", name: "HY3" }, null, { id: 7 }] }),
+		}));
+		const config = wireConfig("http://127.0.0.1:1", {
+			orKey: "o",
+			openRouterBaseUrl: stub.baseUrl,
+			openRouterModelsExplicit: false,
+			openRouterModels: [{ id: "static/only" }],
+		});
+		const { data } = await collectModels(config);
+		const ids = data.filter((m) => m.provider === "openrouter").map((m) => m.id);
+		assert.deepEqual(ids, ["tencent/hy3"], "live catalogue, not the static fallback");
+	});
+
+	// The forwarding path caps every body it holds (NON_STREAM_BUFFER_LIMIT); the
+	// catalog legs buffered whatever arrived inside the timeout — 150 MB in 1.3 s
+	// took the shared proxy from 62 MB to 745 MB RSS (measured). Past the cap
+	// the leg reports a pinned error and the rest of the fan-out is unaffected.
+	it("a catalog body past CATALOG_BODY_LIMIT is an _errors entry, not a heap", async () => {
+		const { CATALOG_BODY_LIMIT } = await import("../src/models.js");
+		const huge = `{"data":[${" ".repeat(CATALOG_BODY_LIMIT + 16)}`;
+		stub = await startBackend(() => ({
+			status: 200,
+			headers: { "content-type": "application/json" },
+			body: huge,
+		}));
+		const config = wireConfig(stub.baseUrl, { modelsTimeoutMs: 20000 });
+		const { data, _errors } = await collectModels(config);
+		assert.deepEqual(_errors, [{ provider: "glm", message: "response too large" }]);
+		assert.ok(
+			data.some((m) => m.id === "claude-fable-5"),
+			"the other legs still published",
+		);
 	});
 });
 

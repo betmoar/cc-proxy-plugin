@@ -103,11 +103,48 @@ async function checkProxyAlive(port, cacheDir) {
 	const alive = await probePort(port);
 	try {
 		fs.mkdirSync(cacheDir, { recursive: true });
-		fs.writeFileSync(cachePath, JSON.stringify({ port, alive, _ts: Date.now() }));
+		writeCacheAtomic(cachePath, { port, alive, _ts: Date.now() });
 	} catch {
 		// non-fatal
 	}
 	return alive;
+}
+
+/**
+ * Every cache file goes tmp-then-rename, like every other writer under
+ * ~/.claude (CLAUDE.md coupling). A plain writeFileSync opens with O_TRUNC, so
+ * a render reading between the truncate and the write — or a refresher killed
+ * between them — sees an EMPTY file, which readCache() reports as "no cache"
+ * and the gauge vanishes instead of serving the stale value the refresher's
+ * contract promises (measured with an emptied cache: no `ds:` segment at all).
+ * @param {string} cachePath
+ * @param {object} value
+ */
+function writeCacheAtomic(cachePath, value) {
+	const tmp = `${cachePath}.tmp-${process.pid}`;
+	fs.writeFileSync(tmp, JSON.stringify(value));
+	fs.renameSync(tmp, cachePath);
+}
+
+// A failed refresh writes a sibling `<cache>.failed` marker and needsRefresh()
+// skips that gauge while the marker is younger than this. Without it a fast
+// failure — a revoked key's 401, a 5xx, a refused connection — re-spawned a
+// refresher on EVERY render: the cache file is (correctly) left alone, so it
+// stays expired, the lock is released ~150 ms later, and the next render 300 ms
+// after that spawns again. Measured: 10 renders → 10 node spawns and 10 vendor
+// requests, for as long as the failure lasts (hours, on a bad key — and that
+// request rate is how a key gets rate-limited). Shorter than the 60 s TTL so a
+// transient failure still recovers within a minute.
+const REFRESH_BACKOFF_MS = 15_000;
+const failedMarker = (cachePath) => `${cachePath}.failed`;
+
+/** True while a gauge's last refresh failed less than REFRESH_BACKOFF_MS ago. */
+function inBackoff(cachePath) {
+	try {
+		return Date.now() - fs.statSync(failedMarker(cachePath)).mtimeMs < REFRESH_BACKOFF_MS;
+	} catch {
+		return false;
+	}
 }
 
 function colorize(pct) {
@@ -192,10 +229,18 @@ async function refreshOne(cacheDir, cacheFile, apiKey, fetcher) {
 	try {
 		const result = { ...(await fetcher(apiKey)), _ts: Date.now() };
 		fs.mkdirSync(path.dirname(cachePath), { recursive: true });
-		fs.writeFileSync(cachePath, JSON.stringify(result));
+		writeCacheAtomic(cachePath, result);
+		fs.rmSync(failedMarker(cachePath), { force: true });
 	} catch {
 		// Network/HTTP failure, or an unwritable cache dir. Leave the previous
-		// file in place: the render path marks it `_stale` and shows "!".
+		// file in place: the render path marks it `_stale` and shows "!". Stamp
+		// the failure so the next renders back off instead of re-spawning.
+		try {
+			fs.mkdirSync(path.dirname(cachePath), { recursive: true });
+			writeCacheAtomic(failedMarker(cachePath), { _ts: Date.now() });
+		} catch {
+			// unwritable cache dir — nothing to back off against
+		}
 	}
 }
 
@@ -239,7 +284,11 @@ const loadDeepSeekBalance = (cacheDir) =>
  */
 function needsRefresh(cacheDir) {
 	if (!cacheDir) return false;
-	return GAUGES.some((g) => process.env[g.env] && !isFresh(readCache(path.join(cacheDir, g.file))));
+	return GAUGES.some((g) => {
+		if (!process.env[g.env]) return false;
+		const cachePath = path.join(cacheDir, g.file);
+		return !isFresh(readCache(cachePath)) && !inBackoff(cachePath);
+	});
 }
 
 /**
@@ -305,101 +354,119 @@ process.stdin.on("end", async () => {
 	}
 
 	const parts = [];
-	// CLAUDE_PLUGIN_DATA is only set in plugin hook context, not in statusLine, so
-	// a fallback is needed when run from settings.json's statusLine command. It
-	// used to be /tmp, where another local user can pre-create
-	// glm_quota_cache.json et al and the reader would render their numbers as
-	// this user's quota (garbage gauges, no key leak — we only ever read). $HOME
-	// isn't shared. cachedFetch/checkProxyAlive mkdir -p before writing, so a
-	// missing dir is a cache miss, not an error.
-	const cacheDir = process.env.CLAUDE_PLUGIN_DATA || path.join(os.homedir(), ".claude", "cc-proxy");
+	// THE WHOLE RENDER IS INSIDE A try. This is the stdin 'end' handler — an
+	// un-awaited async function — so a throw anywhere below is an unhandled
+	// rejection: exit 1 with nothing written, and the composer shows NO segment
+	// at all (not one gauge: the whole bar's cc-proxy slice). A defect in one
+	// gauge degrades to that gauge missing; whatever was already in `parts` is
+	// still written. Same rule server.js applies to handleModels.
+	try {
+		// CLAUDE_PLUGIN_DATA is only set in plugin hook context, not in statusLine, so
+		// a fallback is needed when run from settings.json's statusLine command. It
+		// used to be /tmp, where another local user can pre-create
+		// glm_quota_cache.json et al and the reader would render their numbers as
+		// this user's quota (garbage gauges, no key leak — we only ever read). $HOME
+		// isn't shared. refreshOne/checkProxyAlive mkdir -p before writing, so a
+		// missing dir is a cache miss, not an error.
+		const cacheDir =
+			process.env.CLAUDE_PLUGIN_DATA || path.join(os.homedir(), ".claude", "cc-proxy");
 
-	// Proxy liveness probe (cached 1s). The indicator is appended at the tail
-	// so the primary quota signals read first; bold-red differentiates it
-	// from the non-bold RED used by quota gauges at ≥85%.
-	const proxyAlive = await checkProxyAlive(PROXY_PORT, cacheDir);
+		// Proxy liveness probe (cached 1s). The indicator is appended at the tail
+		// so the primary quota signals read first; bold-red differentiates it
+		// from the non-bold RED used by quota gauges at ≥85%.
+		const proxyAlive = await checkProxyAlive(PROXY_PORT, cacheDir);
 
-	// Claude section (`cc`): 5h usage %, or a reset countdown once exhausted.
-	const rl = input.rate_limits;
-	if (rl?.five_hour) {
-		parts.push(renderQuota("cc", Number(rl.five_hour.used_percentage), rl.five_hour.resets_at));
-	} else {
-		parts.push("cc 5h:--");
-	}
-
-	// GLM section
-	const glm = loadGlmQuota(cacheDir);
-	if (glm) {
-		const stale = glm._stale ? "!" : "";
-
-		// TOKENS_LIMIT = 5-hour coding quota (confirmed via zai-org/zai-coding-plugins)
-		const tokLim = glm.limits?.find((l) => l.type === "TOKENS_LIMIT");
-		if (tokLim) {
-			// nextResetTime is epoch ms; renderQuota takes seconds. Coerce so a
-			// string/garbage value is non-finite and yields no countdown.
-			const resetSec = Number(tokLim.nextResetTime) / 1000;
-			// Backlog item 11: `?` marks a countdown computed against a local clock
-			// that disagrees with the vendor's by more than a minute — the reset
-			// time is then wrong by exactly that offset and would otherwise look
-			// perfectly plausible. It rides in the same slot as the staleness "!"
-			// because both qualify the number rather than replace it.
-			const skewed = Number.isFinite(glm._skewMs) ? "?" : "";
-			parts.push(renderQuota("glm", tokLim.percentage, resetSec, `${stale}${skewed}`));
+		// Claude section (`cc`): 5h usage %, or a reset countdown once exhausted.
+		const rl = input.rate_limits;
+		if (rl?.five_hour) {
+			parts.push(renderQuota("cc", Number(rl.five_hour.used_percentage), rl.five_hour.resets_at));
 		} else {
-			parts.push("glm 5h:--");
+			parts.push("cc 5h:--");
 		}
-	}
 
-	// One $ per digit of whole-dollar balance remaining: $1–9=$, $10–99=$$,
-	// $100–999=$$$, $1000+=$$$$ (unbounded by design). An empty balance renders a
-	// distinct `$0`; any non-empty balance — including a sub-$1 amount that floors
-	// to 0 — shows at least one `$`. A non-finite balance (stale/corrupt cache,
-	// schema drift) renders `--` rather than deriving a misleading tier from NaN
-	// (String(NaN).length === 3 would yield "$$$"). Shared by the OpenRouter and
-	// DeepSeek balance gauges.
-	function dollarTier(remaining) {
-		// null/undefined mean "no number", not zero — Number(null) === 0 would
-		// otherwise render a false `$0`. This is the unknown-balance carrier
-		// (DeepSeek's non-USD case) precisely because null survives the JSON
-		// cache round-trip, which NaN does not (JSON.stringify(NaN) === "null").
-		if (remaining === null || remaining === undefined) return "--";
-		const r = Number(remaining);
-		if (!Number.isFinite(r)) return "--";
-		if (r <= 0) return "$0";
-		return "$".repeat(Math.max(1, String(Math.floor(r)).length));
-	}
+		// GLM section
+		const glm = loadGlmQuota(cacheDir);
+		if (glm) {
+			const stale = glm._stale ? "!" : "";
 
-	// OpenRouter section (`or:`, only when OPENROUTER_API_KEY is set)
-	const or = loadOpenRouterCredits(cacheDir);
-	if (or) {
-		const stale = or._stale ? "!" : "";
-		const c = colorize(or.usedPct);
-		parts.push(`or:${c}${dollarTier(or.remaining)}${stale}${RESET}`);
-	}
+			// TOKENS_LIMIT = 5-hour coding quota (confirmed via zai-org/zai-coding-plugins)
+			// Array.isArray + `l?.type`: the cache holds the vendor's raw `data`, so a
+			// schema drift (`limits: {}`, `[null]`) or a hand-edited file used to
+			// throw here — inside the un-awaited stdin handler, exit 1, ZERO bytes,
+			// every gauge gone until the file was deleted by hand (measured).
+			const tokLim = Array.isArray(glm.limits)
+				? glm.limits.find((l) => l?.type === "TOKENS_LIMIT")
+				: undefined;
+			if (tokLim) {
+				// nextResetTime is epoch ms; renderQuota takes seconds. Coerce so a
+				// string/garbage value is non-finite and yields no countdown.
+				const resetSec = Number(tokLim.nextResetTime) / 1000;
+				// Backlog item 11: `?` marks a countdown computed against a local clock
+				// that disagrees with the vendor's by more than a minute — the reset
+				// time is then wrong by exactly that offset and would otherwise look
+				// perfectly plausible. It rides in the same slot as the staleness "!"
+				// because both qualify the number rather than replace it.
+				const skewed = Number.isFinite(glm._skewMs) ? "?" : "";
+				parts.push(renderQuota("glm", tokLim.percentage, resetSec, `${stale}${skewed}`));
+			} else {
+				parts.push("glm 5h:--");
+			}
+		}
 
-	// DeepSeek section (`ds:`, only when DEEPSEEK_API_KEY is set)
-	const ds = loadDeepSeekBalance(cacheDir);
-	if (ds) {
-		const stale = ds._stale ? "!" : "";
-		parts.push(`ds:${dollarTier(ds.remaining)}${stale}`);
-	}
+		// One $ per digit of whole-dollar balance remaining: $1–9=$, $10–99=$$,
+		// $100–999=$$$, $1000+=$$$$ (unbounded by design). An empty balance renders a
+		// distinct `$0`; any non-empty balance — including a sub-$1 amount that floors
+		// to 0 — shows at least one `$`. A non-finite balance (stale/corrupt cache,
+		// schema drift) renders `--` rather than deriving a misleading tier from NaN
+		// (String(NaN).length === 3 would yield "$$$"). Shared by the OpenRouter and
+		// DeepSeek balance gauges.
+		function dollarTier(remaining) {
+			// null/undefined mean "no number", not zero — Number(null) === 0 would
+			// otherwise render a false `$0`. This is the unknown-balance carrier
+			// (DeepSeek's non-USD case) precisely because null survives the JSON
+			// cache round-trip, which NaN does not (JSON.stringify(NaN) === "null").
+			if (remaining === null || remaining === undefined) return "--";
+			const r = Number(remaining);
+			if (!Number.isFinite(r)) return "--";
+			if (r <= 0) return "$0";
+			return "$".repeat(Math.max(1, String(Math.floor(r)).length));
+		}
 
-	// Qwen section (`qw:on`, only when DASHSCOPE_API_KEY is set). Deliberately a
-	// presence marker, not a gauge: QwenCloud exposes no quota/balance API. The
-	// Token Plan percentage + reset time you see in the console come from
-	// cs-data.qwencloud.com, which authenticates on a browser login cookie plus a
-	// rotating sec_token and answers `BailianGateway.Login.NotLogined` to an API
-	// key (verified 2026-08-04, with the console's own verbatim request body).
-	// The Anthropic skin returns no x-ratelimit-*/x-quota-* response headers
-	// either — only Envoy timing. The sole programmatic signal is per-response
-	// `usage`, and accumulating that would mean cross-request state (invariant 2).
-	// So there is no number to render; anything tier-shaped here would be fiction.
-	if (process.env.DASHSCOPE_API_KEY) {
-		parts.push("qw:on");
-	}
+		// OpenRouter section (`or:`, only when OPENROUTER_API_KEY is set)
+		const or = loadOpenRouterCredits(cacheDir);
+		if (or) {
+			const stale = or._stale ? "!" : "";
+			const c = colorize(or.usedPct);
+			parts.push(`or:${c}${dollarTier(or.remaining)}${stale}${RESET}`);
+		}
 
-	if (!proxyAlive) {
-		parts.push(`${RED_BOLD}proxy down${RESET}`);
+		// DeepSeek section (`ds:`, only when DEEPSEEK_API_KEY is set)
+		const ds = loadDeepSeekBalance(cacheDir);
+		if (ds) {
+			const stale = ds._stale ? "!" : "";
+			parts.push(`ds:${dollarTier(ds.remaining)}${stale}`);
+		}
+
+		// Qwen section (`qw:on`, only when DASHSCOPE_API_KEY is set). Deliberately a
+		// presence marker, not a gauge: QwenCloud exposes no quota/balance API. The
+		// Token Plan percentage + reset time you see in the console come from
+		// cs-data.qwencloud.com, which authenticates on a browser login cookie plus a
+		// rotating sec_token and answers `BailianGateway.Login.NotLogined` to an API
+		// key (verified 2026-08-04, with the console's own verbatim request body).
+		// The Anthropic skin returns no x-ratelimit-*/x-quota-* response headers
+		// either — only Envoy timing. The sole programmatic signal is per-response
+		// `usage`, and accumulating that would mean cross-request state (invariant 2).
+		// So there is no number to render; anything tier-shaped here would be fiction.
+		if (process.env.DASHSCOPE_API_KEY) {
+			parts.push("qw:on");
+		}
+
+		if (!proxyAlive) {
+			parts.push(`${RED_BOLD}proxy down${RESET}`);
+		}
+	} catch (err) {
+		// stderr is discarded by the composer; it still reaches a foreground run.
+		process.stderr.write(`cc-proxy statusline: render failed: ${err?.message || err}\n`);
 	}
 
 	// The segment goes out FIRST. Everything below is best-effort background
@@ -410,6 +477,7 @@ process.stdin.on("end", async () => {
 	// Trigger the background refresh only when something is actually expired,
 	// and only if no other render is already doing it. Both checks are local
 	// file reads — no network, and nothing here is awaited.
+	const cacheDir = process.env.CLAUDE_PLUGIN_DATA || path.join(os.homedir(), ".claude", "cc-proxy");
 	if (needsRefresh(cacheDir) && takeRefreshLock(cacheDir)) {
 		spawnRefresher(cacheDir);
 	}

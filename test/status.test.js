@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { describe, it } from "node:test";
-import { formatStatusReport, parseRoutingLines } from "../scripts/status.js";
+import { formatStatusReport, parseRoutingLines, probeStatus } from "../scripts/status.js";
 
 describe("status.js parseRoutingLines", () => {
 	const log = [
@@ -148,5 +148,56 @@ describe("status.js formatStatusReport", () => {
 		});
 		assert.match(out, /glm\[pro\]:\s+5% used/);
 		assert.doesNotMatch(out, /resets/);
+	});
+});
+
+// A port that ANSWERS but not as cc-proxy (another dev server on :4000, a
+// proxy returning garbage) was reported "DOWN" with advice to start a new
+// session — which cannot help, because the SessionStart hook treats a foreign
+// listener as "already up" and never spawns over it (measured against an HTML
+// listener). The report now names the real situation.
+describe("status.js foreign listener", () => {
+	it("formatStatusReport names a foreign listener instead of calling it DOWN", () => {
+		const out = formatStatusReport({
+			status: { up: false, foreign: true, detail: "Unexpected token <" },
+		});
+		assert.match(out, /answering but not as cc-proxy \(Unexpected token <\)/);
+		assert.doesNotMatch(out, /DOWN/);
+		assert.match(out, /lsof -nP/);
+	});
+
+	it("probeStatus classifies an HTML listener as foreign and a closed port as down", async () => {
+		const http = await import("node:http");
+		const server = http.createServer((_req, res) => {
+			res.setHeader("content-type", "text/html");
+			res.end("<html>not a proxy</html>");
+		});
+		await new Promise((r) => server.listen(0, "127.0.0.1", r));
+		const port = server.address().port;
+		try {
+			const foreign = await probeStatus(port);
+			assert.equal(foreign.up, false);
+			assert.equal(foreign.foreign, true);
+			assert.ok(foreign.detail, "a foreign answer carries the reason");
+		} finally {
+			await new Promise((r) => server.close(r));
+		}
+		const down = await probeStatus(port);
+		assert.deepEqual(down, { up: false });
+	});
+
+	it("probeStatus treats a 200 without the /_status shape as foreign", async () => {
+		const http = await import("node:http");
+		const server = http.createServer((_req, res) => {
+			res.setHeader("content-type", "application/json");
+			res.end(JSON.stringify({ ok: true }));
+		});
+		await new Promise((r) => server.listen(0, "127.0.0.1", r));
+		try {
+			const r = await probeStatus(server.address().port);
+			assert.equal(r.foreign, true);
+		} finally {
+			await new Promise((r) => server.close(r));
+		}
 	});
 });
