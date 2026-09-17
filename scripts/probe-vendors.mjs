@@ -30,6 +30,7 @@
 import { loadEnv } from "../src/env.js";
 import { DEFAULT_QWEN_MODELS } from "../src/models.js";
 import { ROUTES } from "../src/routes.js";
+import { ANTHROPIC_SERVER_TOOLS } from "../src/sanitize.js";
 import { isDirectRun } from "./direct-run.js";
 
 // loadEnv() runs in the CLI guard at the bottom, NOT at import time: the test
@@ -74,6 +75,26 @@ function caseUrl(c) {
 // checked-in proof that the collector walks more than one directory.
 //
 // @doctest stripVariantSuffix("glm-5.2[1m]") -> "glm-5.2"
+// The DRIFT GUARD for `ANTHROPIC_SERVER_TOOLS` (src/sanitize.js). That set is a
+// snapshot of a vendor's "closed" enumeration, and a snapshot of someone else's
+// list is a claim with a clock on it: the day Anthropic adds a server tool, a
+// block CLAUDE ITSELF produced stops matching our copy. Nothing offline can
+// notice that, and a bodyMatch naming three of the eight names cannot either —
+// it still matches after the vendor adds a ninth.
+//
+// So the pattern is BUILT FROM THE SET: it pins the enumeration Anthropic
+// prints, in full and in order, and fails the moment the two disagree. The
+// separator is the one measured 2026-09-14 (comma-space, no "or" before the
+// last item); a vendor rewording alone trips this too, which is the correct
+// outcome for a manual gate whose exit 1 means "go re-measure".
+// The trailing lookahead is the half that does the work: without it the pattern
+// is a PREFIX match, so appending a ninth name — the drift most likely to
+// happen, and the one that silently strips Claude's own blocks — still matched
+// and the guard reported OK (measured while writing it).
+const SERVER_TOOL_ENUMERATION = new RegExp(
+	`Input should be\\s*${[...ANTHROPIC_SERVER_TOOLS].map((n) => `'${n}'`).join(",\\s*")}(?!,\\s*')`,
+);
+
 const CASES = [
 	{
 		name: "z.ai accepts a bare id",
@@ -119,6 +140,110 @@ const CASES = [
 		model: "glm-5.2-totally-fake",
 		expect: 400,
 		bodyMatch: /121[14]|does not exist|unknown model/i,
+	},
+	{
+		// The two axes the foreign server_tool_use strip rests on (src/sanitize.js
+		// isForeignServerToolUse). Z.ai emits server_tool_use for its own built-in
+		// tools with call_-shaped ids; Anthropic rejects both the id pattern and
+		// the name on a mixed-backend history. These probes pin the REJECTING side
+		// (what Anthropic does with a foreign block); the emitting side — that Z.ai
+		// produces analyze_image blocks at all — is model-driven and cannot be
+		// forced deterministically from a 4-token turn, so it stays a dated
+		// measurement (2026-09-14, session 71dbf659) rather than a case here.
+		name: "anthropic rejects a foreign server_tool_use id",
+		claim: "src/sanitize.js — 'call_… id, not Anthropic's srvtoolu_…'",
+		url: "https://api.anthropic.com/v1/messages",
+		// A KEYED case: auth runs before body validation, so a keyless request
+		// answers 401 and the 400 this case exists to measure never happens.
+		// (The first cut sent no header on the reasoning that the proxy injects
+		// the user's OAuth token — true of the PROXY's own hop, irrelevant to a
+		// direct probe, and it turned the manual gate into a guaranteed exit 1
+		// for anyone who has ANTHROPIC_API_KEY set.)
+		auth: (k) => ({ "x-api-key": k }),
+		key: "ANTHROPIC_API_KEY",
+		model: "claude-opus-5",
+		// user → assistant → user, not assistant-first: a first message that is
+		// not `user`, and a LAST message that is `assistant` (a prefill, removed
+		// on current models), are each their own 400 — either would answer this
+		// case with the right status for the wrong reason.
+		body: (model) => ({
+			model,
+			max_tokens: 4,
+			messages: [
+				{ role: "user", content: "hi" },
+				{
+					role: "assistant",
+					content: [
+						{
+							type: "server_tool_use",
+							id: "call_d88edcb2ba6d4d789afd7a0e",
+							name: "web_search",
+							input: {},
+						},
+					],
+				},
+				{ role: "user", content: "hi" },
+			],
+		}),
+		expect: 400,
+		bodyMatch: /srvtoolu_/i,
+	},
+	{
+		name: "anthropic's server-tool name set still matches ANTHROPIC_SERVER_TOOLS",
+		claim: "src/sanitize.js ANTHROPIC_SERVER_TOOLS — the snapshot AND its drift guard",
+		url: "https://api.anthropic.com/v1/messages",
+		auth: (k) => ({ "x-api-key": k }),
+		key: "ANTHROPIC_API_KEY",
+		model: "claude-opus-5",
+		body: (model) => ({
+			model,
+			max_tokens: 4,
+			messages: [
+				{ role: "user", content: "hi" },
+				{
+					role: "assistant",
+					content: [
+						{
+							type: "server_tool_use",
+							id: "srvtoolu_d88edcb2ba6d4d789afd7a0e",
+							name: "analyze_image",
+							input: {},
+						},
+					],
+				},
+				{ role: "user", content: "hi" },
+			],
+		}),
+		expect: 400,
+		// Two duties in one case: the 400 proves a foreign NAME is rejected on its
+		// own axis (why a rename cannot repair a poisoned transcript), and the
+		// full enumeration proves our copy of the set is still the vendor's.
+		bodyMatch: SERVER_TOOL_ENUMERATION,
+	},
+	{
+		// The claim the message-DROP rests on (src/sanitize.js
+		// stripForeignServerToolUse): filtering a message's only block and
+		// forwarding the husk swaps one 400 for another, so the strip has to
+		// remove the message too. Without this case that is an assertion about
+		// someone else's validator sitting in a comment — the exact shape the
+		// #34 reversal taught this repo not to trust.
+		name: "anthropic rejects an EMPTIED content array",
+		claim: "src/sanitize.js — why an emptied message is dropped, not forwarded",
+		url: "https://api.anthropic.com/v1/messages",
+		auth: (k) => ({ "x-api-key": k }),
+		key: "ANTHROPIC_API_KEY",
+		model: "claude-opus-5",
+		body: (model) => ({
+			model,
+			max_tokens: 4,
+			messages: [
+				{ role: "user", content: "hi" },
+				{ role: "assistant", content: [] },
+				{ role: "user", content: "hi" },
+			],
+		}),
+		expect: 400,
+		bodyMatch: /at least 1 item|non-?empty/i,
 	},
 	{
 		name: "qwen plan accepts a bare id",

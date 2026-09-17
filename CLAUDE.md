@@ -37,13 +37,19 @@ Each is locked by tests; the test names tell you what you broke.
 
 1. **Transparent pipe.** Auth and headers only. The full inbound path
    _including the query string_ reaches upstream; bodies forwarded byte for
-   byte. Three body exceptions (thinking-strip, `<provider>:` selector strip,
-   `[1m]` suffix strip: each a spelling the CLIENT uses that no BACKEND knows)
-   and two header exceptions (hop-by-hop dropped; the upstream's own
-   `x-request-id` dropped, because `writeHead` replaces what `setHeader` put
-   there). → `server.test.js` "query string is preserved…", "provider selector
-   strip…", "routing log annotates the normalized id…", "keeps the proxy's
-   x-request-id when the upstream sets its own…"
+   byte. Four body exceptions and two header exceptions (hop-by-hop dropped;
+   the upstream's own `x-request-id` dropped, because `writeHead` replaces what
+   `setHeader` put there). The first three body strips share one shape — a
+   spelling the CLIENT uses that no BACKEND knows: thinking-strip,
+   `<provider>:` selector strip, `[1m]` suffix strip. The fourth is the INVERSE
+   shape — history a BACKEND produced that the destination backend rejects
+   wholesale (GLM's own `server_tool_use` calls) — and is DIRECTIONAL for that
+   reason: claude route only, since the same history is legal input to the
+   backend that made it. It removes MESSAGES too, not just blocks, because
+   `content: []` is its own 400. → `server.test.js` "query string is
+   preserved…", "provider selector strip…", "routing log annotates the
+   normalized id…", "keeps the proxy's x-request-id when the upstream sets its
+   own…", "no message reaches upstream with an EMPTY content array"
 2. **Stateless.** No breakers, no on-disk state, no in-proxy waiting. Rate
    limits inject `Retry-After` and let the client back off. → "…1302 … gets a
    Retry-After", "1313 … no Retry-After"
@@ -193,4 +199,5 @@ Worth knowing exist: **1** thinking-strip vs Claude tool-use loops (the fix to
 apply _if_ it fires); **8** the `<provider>:` selector and the measured
 +79-token plan preamble; **9** where grades come from; **12** `ROUTES` rots
 silently and no test can catch it; **16–20** the free-claude-code recon and the
-declined-features register; **21–24** the 0.10.2 audit's deferred items.
+declined-features register; **21–23** the 0.10.2 audit's deferred items (24
+closed in 0.10.3).

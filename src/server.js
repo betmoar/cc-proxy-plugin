@@ -17,7 +17,7 @@ import {
 	withoutRequestId,
 } from "./proxy.js";
 import { resolve, routingIdOf } from "./router.js";
-import { stripAssistantThinking } from "./sanitize.js";
+import { stripAssistantThinking, stripForeignServerToolUse } from "./sanitize.js";
 
 function debug(...args) {
 	if (process.env.PROXY_DEBUG) console.log(...args);
@@ -311,6 +311,27 @@ function handleProxy(req, res, body, bodyBuffer, config, reqId) {
 	const stripped = stripAssistantThinking(body);
 	if (stripped.modified) debug("  stripped thinking blocks from assistant history");
 
+	// DIRECTIONAL strip (FOURTH measured body exception — thinking, the
+	// `<provider>:` selector and the `[1m]` variant suffix are the other three;
+	// invariant 1 in CLAUDE.md carries the list): a session that mixed backends
+	// can carry server_tool_use
+	// blocks the Claude API rejects outright — GLM emits them for its own
+	// built-in tools with `call_…` ids and names outside Anthropic's closed
+	// set, both measured 400s (sanitize.js isForeignServerToolUse). Run ONLY
+	// on the claude route: the same history is legal input to the backend that
+	// produced it, and rewriting it there would be the mid-turn rewriting
+	// invariant 2 declines.
+	let sanitized = stripped;
+	if (provider?.id === "claude") {
+		const toolSanitized = stripForeignServerToolUse(stripped.body);
+		if (toolSanitized.modified) {
+			debug(
+				`  stripped ${toolSanitized.stripped} block(s) of foreign server_tool_use + paired results from history (${toolSanitized.dropped} message(s) emptied and dropped)`,
+			);
+			sanitized = { body: toolSanitized.body, modified: true };
+		}
+	}
+
 	// The `<provider>:` selector is cc-proxy's LOCAL lens — no backend has ever
 	// heard of it, so it is stripped here and the bare vendor id goes upstream.
 	// This is the second deliberate exception to the byte-for-byte body rule
@@ -318,9 +339,9 @@ function handleProxy(req, res, body, bodyBuffer, config, reqId) {
 	// nothing else. Decided here, before the stream/non-stream branch, because
 	// the streaming path never parses the body itself.
 	//
-	// Build an OUTBOUND object rather than assigning into `stripped.body`:
-	// stripAssistantThinking() returns the caller's own object when it changed
-	// nothing (sanitize.js), so `stripped.body === body` in the common case and
+	// Build an OUTBOUND object rather than assigning into `sanitized.body`:
+	// the sanitizers return the caller's own object when they changed nothing
+	// (sanitize.js), so `sanitized.body === body` in the common case and
 	// an in-place write would edit the inbound body under everything that reads
 	// it afterwards. Nothing does today — `inboundModel` is captured above and
 	// the body is parsed fresh per request — but the failure it invites is
@@ -336,9 +357,9 @@ function handleProxy(req, res, body, bodyBuffer, config, reqId) {
 	// test/sanitize.test.js "returns the SAME object when nothing was stripped".
 	// Break that and these lines silently start copying instead of aliasing.
 	const rewritten = typeof upstreamModel === "string" && upstreamModel !== body.model;
-	const outboundBody = rewritten ? { ...stripped.body, model: upstreamModel } : stripped.body;
+	const outboundBody = rewritten ? { ...sanitized.body, model: upstreamModel } : sanitized.body;
 	const outboundBuffer =
-		stripped.modified || rewritten ? Buffer.from(JSON.stringify(outboundBody)) : bodyBuffer;
+		sanitized.modified || rewritten ? Buffer.from(JSON.stringify(outboundBody)) : bodyBuffer;
 
 	// The routing DECISION is made on a normalized id (a `<provider>:` lens and a
 	// `[1m]`-style variant suffix are both stripped for lookup purposes), while

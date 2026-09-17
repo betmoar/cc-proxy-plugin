@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { describe, it } from "node:test";
-import { stripAssistantThinking } from "../src/sanitize.js";
+import { stripAssistantThinking, stripForeignServerToolUse } from "../src/sanitize.js";
 
 describe("stripAssistantThinking", () => {
 	it("removes thinking blocks from assistant messages", () => {
@@ -219,5 +219,310 @@ describe("identity of the returned body (what handleProxy relies on)", () => {
 			[{ type: "text", text: "a", cache_control: { type: "ephemeral" } }],
 			"the surviving block keeps its breakpoint verbatim",
 		);
+	});
+});
+
+describe("stripForeignServerToolUse", () => {
+	const glmHistory = {
+		messages: [
+			{ role: "user", content: "look at this image" },
+			{
+				role: "assistant",
+				content: [
+					{
+						type: "server_tool_use",
+						id: "call_d88edcb2ba6d4d789afd7a0e",
+						name: "analyze_image",
+						input: {},
+					},
+				],
+			},
+			{
+				role: "assistant",
+				content: [
+					{
+						type: "tool_result",
+						tool_use_id: "call_d88edcb2ba6d4d789afd7a0e",
+						content: [{ type: "text", text: "MCP error 400" }],
+					},
+				],
+			},
+		],
+	};
+
+	it("strips a GLM-emitted server_tool_use (call_ id, foreign name) and its paired tool_result", () => {
+		const { body: out, modified, stripped } = stripForeignServerToolUse(glmHistory);
+		assert.equal(modified, true);
+		assert.equal(stripped, 2);
+		for (const msg of out.messages) {
+			for (const block of msg.content ?? []) {
+				assert.notEqual(block.type, "server_tool_use");
+				assert.notEqual(block.type, "tool_result");
+			}
+		}
+		// Original untouched
+		assert.equal(glmHistory.messages[1].content.length, 1);
+	});
+
+	it("keeps an Anthropic-shaped server_tool_use (srvtoolu_ id, known name)", () => {
+		const body = {
+			messages: [
+				{
+					role: "assistant",
+					content: [
+						{
+							type: "server_tool_use",
+							id: "srvtoolu_1a09XkCDmad3v3CD2BC2CCDE",
+							name: "web_search",
+							input: { query: "x" },
+						},
+					],
+				},
+			],
+		};
+		const { body: out, modified, stripped } = stripForeignServerToolUse(body);
+		assert.equal(modified, false);
+		assert.equal(stripped, 0);
+		assert.equal(out, body);
+	});
+
+	it("strips a valid name carrying a foreign id (the id pattern is its own rejection axis)", () => {
+		const body = {
+			messages: [
+				{
+					role: "assistant",
+					content: [
+						{
+							type: "server_tool_use",
+							id: "call_f61ff72df53a4ceebb9d73a5",
+							name: "web_search",
+							input: {},
+						},
+					],
+				},
+			],
+		};
+		const { modified, stripped } = stripForeignServerToolUse(body);
+		assert.equal(modified, true);
+		assert.equal(stripped, 1);
+	});
+
+	it("strips a known-name-id pair only when BOTH are valid — mixed blocks drop selectively", () => {
+		const body = {
+			messages: [
+				{
+					role: "assistant",
+					content: [
+						{ type: "server_tool_use", id: "srvtoolu_abc", name: "web_search", input: {} },
+						{ type: "server_tool_use", id: "call_xyz", name: "analyze_image", input: {} },
+						{ type: "text", text: "kept" },
+					],
+				},
+			],
+		};
+		const { body: out, modified, stripped } = stripForeignServerToolUse(body);
+		assert.equal(modified, true);
+		assert.equal(stripped, 1);
+		assert.deepEqual(
+			out.messages[0].content.map((b) => b.type),
+			["server_tool_use", "text"],
+		);
+		assert.equal(out.messages[0].content[0].id, "srvtoolu_abc");
+	});
+
+	it("returns the SAME object when nothing was stripped (the aliasing contract server.js leans on)", () => {
+		const body = { messages: [{ role: "user", content: "hi" }] };
+		const { body: out, modified } = stripForeignServerToolUse(body);
+		assert.equal(modified, false);
+		assert.equal(out, body);
+	});
+
+	it("handles body without messages / null / undefined", () => {
+		assert.equal(stripForeignServerToolUse({ model: "x" }).modified, false);
+		assert.equal(stripForeignServerToolUse(null).modified, false);
+		assert.equal(stripForeignServerToolUse(undefined).modified, false);
+	});
+
+	it("DROPS a message the strip empties — `content: []` is its own 400", () => {
+		// The issue #67 transcript shape: the foreign block and its result each
+		// sit alone in a message, so filtering blocks alone leaves two husks and
+		// the request 400s again on a different field. The bug survived a
+		// block-level assertion ("no server_tool_use reached upstream") because
+		// that is true of the husk too — the observable that separates them is
+		// the MESSAGE COUNT.
+		const { body: out, modified, stripped, dropped } = stripForeignServerToolUse(glmHistory);
+		assert.equal(modified, true);
+		assert.equal(stripped, 2);
+		assert.equal(dropped, 2);
+		assert.deepEqual(
+			out.messages.map((m) => m.role),
+			["user"],
+		);
+		for (const msg of out.messages) {
+			assert.notEqual(
+				Array.isArray(msg.content) && msg.content.length,
+				0,
+				"an emptied message must not be forwarded",
+			);
+		}
+	});
+
+	it("keeps a message the strip only thins, husking nothing", () => {
+		const body = {
+			messages: [
+				{
+					role: "assistant",
+					content: [
+						{ type: "server_tool_use", id: "call_x", name: "analyze_image", input: {} },
+						{ type: "text", text: "kept" },
+					],
+				},
+			],
+		};
+		const { body: out, dropped } = stripForeignServerToolUse(body);
+		assert.equal(dropped, 0);
+		assert.equal(out.messages.length, 1);
+		assert.deepEqual(
+			out.messages[0].content.map((b) => b.type),
+			["text"],
+		);
+	});
+
+	it("leaves an ALREADY-empty message exactly as it arrived", () => {
+		// The drop is scoped to what this function removed. An empty message the
+		// client sent is the client's business — widening to "delete every empty
+		// message" would make the strip edit history it never touched, which is
+		// the mid-turn rewriting invariant 2 declines.
+		const body = {
+			messages: [
+				{ role: "assistant", content: [] },
+				{
+					role: "assistant",
+					content: [{ type: "server_tool_use", id: "call_x", name: "analyze_image", input: {} }],
+				},
+			],
+		};
+		const { body: out, dropped } = stripForeignServerToolUse(body);
+		assert.equal(dropped, 1);
+		assert.equal(out.messages.length, 1);
+		assert.deepEqual(out.messages[0].content, []);
+	});
+
+	it("pairs a result by ID, not by the block type spelling", () => {
+		// A SERVER tool's result is not spelled `tool_result`: Anthropic's own
+		// family is web_search_tool_result / web_fetch_tool_result /
+		// bash_code_execution_tool_result, and the next vendor picks its own
+		// spelling. Keying the sweep on `type === "tool_result"` leaves every
+		// other spelling behind as the orphan the sweep exists to prevent.
+		const body = {
+			messages: [
+				{
+					role: "assistant",
+					content: [
+						{ type: "server_tool_use", id: "call_x", name: "analyze_image", input: {} },
+						{ type: "web_search_tool_result", tool_use_id: "call_x", content: [] },
+						{ type: "text", text: "kept" },
+					],
+				},
+			],
+		};
+		const { body: out, stripped } = stripForeignServerToolUse(body);
+		assert.equal(stripped, 2);
+		assert.deepEqual(
+			out.messages[0].content.map((b) => b.type),
+			["text"],
+		);
+	});
+
+	it("leaves a result whose tool_use_id belongs to a KEPT block", () => {
+		const body = {
+			messages: [
+				{
+					role: "assistant",
+					content: [
+						{ type: "server_tool_use", id: "srvtoolu_ok", name: "web_search", input: {} },
+						{ type: "web_search_tool_result", tool_use_id: "srvtoolu_ok", content: [] },
+						{ type: "server_tool_use", id: "call_x", name: "analyze_image", input: {} },
+					],
+				},
+			],
+		};
+		const { body: out, stripped } = stripForeignServerToolUse(body);
+		assert.equal(stripped, 1);
+		assert.deepEqual(
+			out.messages[0].content.map((b) => b.type),
+			["server_tool_use", "web_search_tool_result"],
+		);
+	});
+
+	it("strips a foreign block that carries NO id — the early return is not the id set", () => {
+		// `isForeignServerToolUse` calls a missing/non-string id foreign, but such a
+		// block adds nothing to `foreignIds`. Keying the early return on the SET
+		// forwarded it verbatim to Claude: the rejection the sanitizer exists to
+		// prevent, reached through the shortcut meant to skip work. Two different
+		// questions — "is there anything to strip" vs "which results are orphaned".
+		const body = {
+			messages: [
+				{ role: "user", content: "hi" },
+				{
+					role: "assistant",
+					content: [
+						{ type: "server_tool_use", name: "analyze_image", input: {} },
+						{ type: "text", text: "kept" },
+					],
+				},
+			],
+		};
+		const { body: out, modified, stripped } = stripForeignServerToolUse(body);
+		assert.equal(modified, true);
+		assert.equal(stripped, 1);
+		assert.deepEqual(
+			out.messages[1].content.map((b) => b.type),
+			["text"],
+		);
+	});
+
+	it("collects foreign ids from any role, matching the pass that removes them", () => {
+		// The removal pass strips a foreign server_tool_use wherever it sits, so a
+		// collection pass restricted to `assistant` left the paired result behind
+		// as the orphan this function exists to remove.
+		const body = {
+			messages: [
+				{
+					role: "user",
+					content: [
+						{ type: "server_tool_use", id: "call_x", name: "analyze_image", input: {} },
+						{ type: "text", text: "kept" },
+					],
+				},
+				{
+					role: "user",
+					content: [
+						{ type: "tool_result", tool_use_id: "call_x", content: "r" },
+						{ type: "text", text: "kept too" },
+					],
+				},
+			],
+		};
+		const { body: out, stripped } = stripForeignServerToolUse(body);
+		assert.equal(stripped, 2, "the block AND its result must go");
+		assert.deepEqual(
+			out.messages.flatMap((m) => m.content.map((b) => b.type)),
+			["text", "text"],
+		);
+	});
+
+	it("leaves plain tool_use blocks alone (call_ ids are legal there)", () => {
+		const body = {
+			messages: [
+				{
+					role: "assistant",
+					content: [{ type: "tool_use", id: "call_whatever", name: "Read", input: {} }],
+				},
+			],
+		};
+		const { body: out, modified } = stripForeignServerToolUse(body);
+		assert.equal(modified, false);
+		assert.equal(out, body);
 	});
 });
