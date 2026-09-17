@@ -2226,4 +2226,41 @@ describe("foreign server_tool_use strip (mixed-backend history routed to Claude)
 			);
 		}
 	});
+
+	// The annotation is the ONLY signal a user ever sees that their transcript
+	// was rewritten, and nothing above can see it: every assertion in this suite
+	// reads the UPSTREAM BODY, which is byte-identical whether the line reports
+	// the strip or stays silent. Mutating `toolStrip` to the empty string left
+	// the whole suite green (measured), including the couplings lock — that lock
+	// pins the log TEMPLATE, so it survives a template that interpolates a value
+	// nothing ever sets. Both halves are asserted for the same reason the
+	// `(routed as …)` pair is: it must appear when the strip fired, and must not
+	// appear otherwise, because scripts/status.js parses these lines.
+	it("routing log reports the strip, and only when it fired", async () => {
+		await wire();
+		const logged = [];
+		const orig = console.log;
+		console.log = (...a) => logged.push(a.join(" "));
+		try {
+			await post(proxy.port, { model: "claude-opus-5", messages: glmHistory });
+			await post(proxy.port, {
+				model: "claude-opus-5",
+				messages: [{ role: "user", content: "nothing to strip here" }],
+			});
+		} finally {
+			console.log = orig;
+		}
+		const routes = logged.filter((l) => / -> /.test(l));
+		assert.equal(routes.length, 2, "one routing line per request");
+		assert.match(
+			routes[0],
+			/\(stripped 2 foreign tool block\(s\), 2 message\(s\) dropped\)$/,
+			"a strip that rewrote the history must say so on the routing line",
+		);
+		assert.doesNotMatch(
+			routes[1],
+			/stripped/,
+			"an untouched history must not be annotated — the line is parsed, not just read",
+		);
+	});
 });
