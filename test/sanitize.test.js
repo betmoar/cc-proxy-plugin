@@ -412,6 +412,54 @@ describe("stripForeignServerToolUse", () => {
 		);
 	});
 
+	it("sweeps the paired result of a NON-STRING id (the two guards must agree)", () => {
+		// The leak: `isForeignServerToolUse` calls ANY non-string id foreign, but
+		// the id-collection loop only recorded STRING ids. So `id: 123` stripped
+		// the block and left its result behind as exactly the orphan this sweep
+		// exists to prevent — with `modified` and `stripped` both reporting a
+		// clean strip over a still-poisoned transcript, which is the worst shape
+		// a wrong result can take. The two guards are one edit apart; they have
+		// to match on the same terms.
+		for (const id of [123, null, true]) {
+			const body = {
+				messages: [
+					{ role: "user", content: "look" },
+					{ role: "assistant", content: [{ type: "server_tool_use", id, name: "analyze_image" }] },
+					{
+						role: "user",
+						content: [{ type: "web_search_tool_result", tool_use_id: id, content: [] }],
+					},
+					{ role: "user", content: "now claude" },
+				],
+			};
+			const { body: out } = stripForeignServerToolUse(body);
+			const flat = out.messages.flatMap((m) => (Array.isArray(m.content) ? m.content : []));
+			assert.equal(
+				flat.some((b) => "tool_use_id" in b),
+				false,
+				`id ${JSON.stringify(id)}: the paired result leaked upstream as an orphan`,
+			);
+		}
+	});
+
+	it("an id-less foreign block does not sweep unrelated blocks", () => {
+		// The other half of the symmetry: `undefined` must never enter the id set,
+		// or every block WITHOUT a `tool_use_id` matches it.
+		const body = {
+			messages: [
+				{ role: "assistant", content: [{ type: "server_tool_use", name: "analyze_image" }] },
+				{ role: "user", content: [{ type: "text", text: "unrelated" }] },
+			],
+		};
+		const { body: out, stripped } = stripForeignServerToolUse(body);
+		assert.equal(stripped, 1, "only the foreign block itself");
+		assert.deepEqual(
+			out.messages.map((m) => m.content[0].type),
+			["text"],
+			"the id-less sibling survives",
+		);
+	});
+
 	it("leaves a result whose tool_use_id matches NOTHING in the history", () => {
 		// An orphan-to-nothing is not this function's business: it did not create
 		// it, and removing it would be a rewrite no measurement asked for. Only

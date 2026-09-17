@@ -322,12 +322,21 @@ function handleProxy(req, res, body, bodyBuffer, config, reqId) {
 	// produced it, and rewriting it there would be the mid-turn rewriting
 	// invariant 2 declines.
 	let sanitized = stripped;
+	// Reported on the ROUTING LINE, not only under PROXY_DEBUG: this strip
+	// deletes conversation content the model itself produced — tool calls and
+	// their results — and it changes the message COUNT. That is a categorically
+	// bigger edit than the thinking-strip beside it, and a user whose history
+	// was rewritten with no signal anywhere cannot tell it from the model
+	// behaving oddly. Same shape as `via` below, for the same reason: an
+	// invisible normalization becomes visible on the line every session already
+	// writes. Appending keeps `status.js` parseRoutingLines() happy (it filters
+	// on a leading `[` and a " -> "), which the couplings table requires.
+	let toolStrip = "";
 	if (provider?.id === "claude") {
 		const toolSanitized = stripForeignServerToolUse(stripped.body);
 		if (toolSanitized.modified) {
-			debug(
-				`  stripped ${toolSanitized.stripped} block(s) of foreign server_tool_use + paired results from history (${toolSanitized.dropped} message(s) emptied and dropped)`,
-			);
+			toolStrip = ` (stripped ${toolSanitized.stripped} foreign tool block(s), ${toolSanitized.dropped} message(s) dropped)`;
+			debug(`  ${toolStrip.trim()}`);
 			sanitized = { body: toolSanitized.body, modified: true };
 		}
 	}
@@ -372,7 +381,7 @@ function handleProxy(req, res, body, bodyBuffer, config, reqId) {
 	const routedAs = routingIdOf(inboundModel);
 	const via = routedAs === inboundModel ? "" : ` (routed as ${routedAs})`;
 	console.log(
-		`[${new Date().toISOString()}] {${reqId}} ${logSafe(inboundModel)} -> ${provider.id}${via} ${logSafe(req.url)}`,
+		`[${new Date().toISOString()}] {${reqId}} ${logSafe(inboundModel)} -> ${provider.id}${via} ${logSafe(req.url)}${toolStrip}`,
 	);
 	debug(
 		"  metadata:",

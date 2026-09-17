@@ -256,6 +256,29 @@ const CASES = [
 		bodyMatch: /at least 1 item|non-?empty/i,
 	},
 	{
+		// The sibling of the case above, one level up, and the claim the
+		// all-emptied BAIL-OUT rests on (src/sanitize.js stripForeignServerToolUse
+		// — `newMessages.length === 0` returns the body untouched). If an empty
+		// messages ARRAY were accepted, that bail-out would be pointless caution;
+		// if it is rejected, forwarding `messages: []` would manufacture the very
+		// 400 the strip exists to prevent. Z.ai's Anthropic skin answers 400
+		// "[1214][Input cannot be empty]" (measured 2026-09-17), but the bail-out
+		// guards the CLAUDE route, so the claim has to be pinned against Anthropic
+		// itself — hence this case rather than the Z.ai measurement alone. The
+		// wording is left loose on purpose: what matters is the REJECTION, and
+		// Z.ai renaming 1214 -> 1211 mid-release is the standing reminder that a
+		// vendor's exact string is the least stable part of any such claim.
+		name: "anthropic rejects an EMPTY messages array",
+		claim: "src/sanitize.js — why an all-emptied strip bails out instead of forwarding",
+		url: "https://api.anthropic.com/v1/messages",
+		auth: (k) => ({ "x-api-key": k }),
+		key: "ANTHROPIC_API_KEY",
+		model: "claude-opus-5",
+		body: (model) => ({ model, max_tokens: 4, messages: [] }),
+		expect: 400,
+		bodyMatch: /at least 1 item|cannot be empty|non-?empty|too_short/i,
+	},
+	{
 		name: "qwen plan accepts a bare id",
 		claim: "src/router.js — 'POST token-plan… model=glm-5.2 → 200'",
 		url: "https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic/v1/messages",

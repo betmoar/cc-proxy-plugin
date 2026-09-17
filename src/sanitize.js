@@ -144,9 +144,12 @@ export function isForeignServerToolUse(block) {
  * `[assistant[server_tool_use call_a], user "hi"]` drops message 0 outright.
  * Carried to its end, a transcript consisting ONLY of foreign blocks and their
  * results empties the array completely — and `messages: []` is its own
- * rejection ("Input cannot be empty", measured against Z.ai's Anthropic skin
- * 2026-09-17), which is the same trade-one-400-for-another this function's
- * message-dropping exists to avoid, one level up. So the array-emptying case
+ * rejection — the same trade-one-400-for-another this function's
+ * message-dropping exists to avoid, one level up. (Z.ai's Anthropic skin
+ * answers `400 [1214][Input cannot be empty]`, measured 2026-09-17; the case
+ * that matters is Anthropic itself, since this guards the CLAUDE route, and it
+ * is pinned by "anthropic rejects an EMPTY messages array" in
+ * scripts/probe-vendors.mjs rather than by this sentence.) So the array-emptying case
  * bails out and returns the body UNMODIFIED: the caller forwards the original
  * history and the vendor's own 400 is the answer, which is strictly better
  * than a 400 the proxy manufactured.
@@ -184,7 +187,17 @@ export function stripForeignServerToolUse(body) {
 		for (const block of msg.content) {
 			if (block && block.type === "server_tool_use" && isForeignServerToolUse(block)) {
 				foundForeign = true;
-				if (typeof block.id === "string") foreignIds.add(block.id);
+				// Collect the id WHATEVER ITS TYPE, and match it below on the same
+				// terms. `typeof block.id === "string"` here was stricter than the
+				// predicate that decided the block was foreign in the first place —
+				// which calls ANY non-string id foreign — so a block with `id: 123`
+				// was stripped while its paired result was left behind as exactly the
+				// orphan this sweep exists to prevent, with `modified`/`stripped`
+				// both reporting success. The two guards have to agree or the
+				// function reports a clean strip over a poisoned transcript.
+				// `undefined` is excluded deliberately: a block with NO id would
+				// otherwise match every result that also lacks a `tool_use_id`.
+				if (block.id !== undefined) foreignIds.add(block.id);
 			}
 		}
 	}
@@ -204,7 +217,18 @@ export function stripForeignServerToolUse(body) {
 				stripped++;
 				return false;
 			}
-			if (block && typeof block.tool_use_id === "string" && foreignIds.has(block.tool_use_id)) {
+			// Symmetric with the collection loop above: match on the VALUE, not on
+			// its type. A Set compares with SameValueZero, so `123` finds `123`.
+			// The `in` test keeps a block with no `tool_use_id` at all from
+			// matching, which a bare `foreignIds.has(block.tool_use_id)` would do
+			// the moment the set held `undefined` (it never does — see above — but
+			// the two guards are one edit apart and must not drift again).
+			if (
+				block &&
+				typeof block === "object" &&
+				"tool_use_id" in block &&
+				foreignIds.has(block.tool_use_id)
+			) {
 				stripped++;
 				return false;
 			}
@@ -225,7 +249,8 @@ export function stripForeignServerToolUse(body) {
 	}
 	if (!modified) return { body, modified: false, stripped: 0, dropped: 0 };
 	// Dropping every message would forward `messages: []`, which is rejected in
-	// its own right ("Input cannot be empty") — the same trade this function's
+	// its own right (probe: "anthropic rejects an EMPTY messages array") — the
+	// same trade this function's
 	// message-dropping exists to avoid, just one level up. Hand back the
 	// ORIGINAL history instead and let the vendor answer: a 400 the proxy did
 	// not manufacture is the honest outcome, and it carries the vendor's own
