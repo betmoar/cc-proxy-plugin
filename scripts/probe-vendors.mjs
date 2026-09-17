@@ -92,7 +92,7 @@ const CASES = [
 		key: "GLM_API_KEY",
 		model: "glm-5.2[1m]",
 		expect: 400,
-		bodyMatch: /1214|does not exist/i,
+		bodyMatch: /121[14]|does not exist|unknown model/i,
 	},
 	{
 		name: "z.ai rejects a suffixed NEW model the same way (glm-5.3)",
@@ -102,7 +102,23 @@ const CASES = [
 		key: "GLM_API_KEY",
 		model: "glm-5.3[1m]",
 		expect: 400,
-		bodyMatch: /1214|does not exist/i,
+		bodyMatch: /121[14]|does not exist|unknown model/i,
+	},
+	{
+		// The rename-detector for the rejection the [1m] strip rests on: a WHOLLY
+		// FAKE id must draw the same error a suffixed id does. When Z.ai renamed
+		// that code 1214 -> 1211 (measured 2026-09-17) the two suffix cases above
+		// went red on their body pattern while the DECISION was untouched — this
+		// case is what separates "the code was renamed" from "the vendor started
+		// accepting the suffix", which is the only one of the two that matters.
+		name: "z.ai rejects a wholly fake id the same way it rejects a suffix",
+		claim: "src/router.js — the suffix is not a spelling any backend knows",
+		url: "https://api.z.ai/api/anthropic/v1/messages",
+		auth: (k) => ({ "x-api-key": k }),
+		key: "GLM_API_KEY",
+		model: "glm-5.2-totally-fake",
+		expect: 400,
+		bodyMatch: /121[14]|does not exist|unknown model/i,
 	},
 	{
 		name: "qwen plan accepts a bare id",

@@ -49,8 +49,8 @@ describe("modelPicker row generation (issue #62)", () => {
 			);
 		}
 		// Guard against the assertion above passing vacuously on an empty set.
-		assert.equal(rows.filter((r) => r.model.endsWith("[1m]")).length, 10);
-		assert.equal(rows.length, 17);
+		assert.equal(rows.filter((r) => r.model.endsWith("[1m]")).length, 12);
+		assert.equal(rows.length, 19);
 	});
 
 	// behavesAs is what makes CC stop calling the id unknown, which is what

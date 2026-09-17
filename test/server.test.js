@@ -886,7 +886,7 @@ describe("server end-to-end routing", () => {
 		// The bytes the BACKEND actually received — the project's rule is that a
 		// forwarding change with no failing test is untested, and every other
 		// suffix assertion is unit-level against resolve(). Measured 2026-08-14:
-		// Z.ai 400s on `glm-5.2[1m]` ([1214][modelCode: does not exist]) and the
+		// Z.ai 400s on `glm-5.2[1m]` ([1211][Unknown Model]) and the
 		// Qwen plan 400s the same way, so sending the suffix upstream would route
 		// correctly and fail at the vendor. This is the assertion that catches a
 		// regression to forwarding it.

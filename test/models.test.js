@@ -64,13 +64,13 @@ describe("models.js pure helpers", () => {
 
 	it("DEEPSEEK_PRICING holds the curated per-1M-token prices for both live models", () => {
 		// Curated (no pricing API exists). Pins the two documented ids + their prices
-		// so a silent edit or a dropped model is caught.
-		assert.deepEqual(Object.keys(DEEPSEEK_PRICING).sort(), [
-			"deepseek-v4-flash",
-			"deepseek-v4-pro",
-		]);
-		assert.equal(DEEPSEEK_PRICING["deepseek-v4-pro"].out, 0.87);
-		assert.equal(DEEPSEEK_PRICING["deepseek-v4-flash"].out, 0.28);
+		// so a silent edit or a dropped model is caught. Re-read 2026-09-17: the
+		// flash line is keyed by its CURRENT name (`deepseek-v4-flash` is a
+		// delisted alias onto it), and the figures are the OFF-PEAK half of the
+		// now-active peak/off-peak table.
+		assert.deepEqual(Object.keys(DEEPSEEK_PRICING).sort(), ["deepseek-flash", "deepseek-v4-pro"]);
+		assert.equal(DEEPSEEK_PRICING["deepseek-v4-pro"].out, 1.98);
+		assert.equal(DEEPSEEK_PRICING["deepseek-flash"].out, 0.6);
 	});
 
 	it("DEFAULT_QWEN_MODELS is the offline fallback for the live plan catalog", () => {

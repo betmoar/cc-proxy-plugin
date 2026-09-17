@@ -127,6 +127,21 @@ export const ROUTES = {
 		{ provider: "qwen", status: 200 },
 		{ provider: "deepseek", status: 400 },
 	],
+	// The vendor's CURRENT name for its flash line (the id above renames onto
+	// it). Probed 2026-09-17: DeepSeek native 200, the plan 400s it ("Model not
+	// exist.") — the mirror of deepseek-v4.1-flash below, which is the same
+	// model under the plan's own spelling.
+	"deepseek-flash": [
+		{ provider: "deepseek", status: 200 },
+		{ provider: "qwen", status: 400 },
+	],
+	// Plan-only spelling of that same flash line. DeepSeek native rejects it by
+	// NAME ("The supported API model names are deepseek-flash, deepseek-v4-pro"),
+	// so there is no native route to prefer and the plan is the only one.
+	"deepseek-v4.1-flash": [
+		{ provider: "qwen", status: 200 },
+		{ provider: "deepseek", status: 400 },
+	],
 	// Z.ai ONLY. Probed 2026-08-14: the Qwen plan 400s it ("Model not exist.")
 	// and OpenRouter does not list it, so unlike glm-5.2 there is no second
 	// route to rank — a plan-only user cannot reach this id at all and falls to
@@ -182,6 +197,10 @@ export const ROUTES = {
 	"qwen3.7-max": [{ provider: "qwen", status: 200 }],
 	"qwen3.7-plus": [{ provider: "qwen", status: 200 }],
 	"qwen3.6-flash": [{ provider: "qwen", status: 200 }],
+	// Probed 2026-09-17. Routes by the `qwen3.` shape anyway; the entry exists
+	// so the id is ranked rather than left to the predicate alone, same as its
+	// siblings above.
+	"qwen3.8-flash": [{ provider: "qwen", status: 200 }],
 
 	"claude-fable-5": [{ provider: "claude", status: 200 }],
 	"claude-opus-5": [{ provider: "claude", status: 200 }],
