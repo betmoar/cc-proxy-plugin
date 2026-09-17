@@ -471,6 +471,21 @@ notes referencing "backlog item N" still resolve.
     Re-probe before each release (`POST /v1/messages`, 1 token, per cell). The
     matrix in item 8 is the reference shape. There is no test that can catch
     this — that is the point of writing it down.
+
+    **First recorded instance, 2026-09-17 (0.10.3).** A third failure mode, and
+    the one this item did not name: an id that starts **200-ing** where it used
+    to be refused. `glm-5.3` was `qwen:400` (probed 2026-08-14); the plan began
+    serving it, and because `rankRoutes()` filters non-200 the proxy went on
+    telling plan-only users the current flagship had NO route, while
+    `buildRows()` withheld its picker row. Unlike the 403 case this does not
+    degrade safely — nothing falls back, because the table says there is nowhere
+    to fall back to, and the user cannot even select the id to find out
+    otherwise. It was found by the drift pass, but only after that pass was
+    taught to confirm list omissions against the request path: the false `STALE`
+    line it printed for `qwen3.8-max-preview` had made the whole block skimmable.
+    A permanently-noisy drift report is how a silent rot stays silent. The
+    routing half is now pinned by a tiebreak assertion rather than a route count,
+    which is the shape that survives the vendor flipping it back.
 13. **`docs/models.html` regressions are invisible to CI, and one already got
     through.** The artifact is generated against a LIVE proxy, so the gate can
     only ever compare a committed file to the static catalog. An adversarial
