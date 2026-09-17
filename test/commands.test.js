@@ -1,5 +1,5 @@
 import { strict as assert } from "node:assert";
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -45,13 +45,27 @@ function fakeRoot() {
 
 // A slash command runs under the USER'S LOGIN SHELL, which on macOS is zsh —
 // so testing the body under bash alone tests a shell most of these users never
-// reach. Two defects hid in exactly that gap and were each green in bash:
-// `set -- $args` splits to one word in zsh (killing every non-empty argument),
-// and a heredoc inside `$(…)` is mis-parsed by bash 3.2, which is /bin/bash on
-// every macOS while CI runs bash 5. Every case below therefore runs in both.
-// `sh` is included because it is neither: a third parser, and the cheapest
-// guard against a fix that leans on one shell's extension.
-const SHELLS = ["bash", "zsh", "sh"];
+// reach. Three defects hid in exactly that gap, each green in the shell it was
+// written against: `set -- $args` splits to one word in zsh (killing every
+// non-empty argument), a heredoc inside `$(…)` is mis-parsed by bash 3.2
+// (/bin/bash on every macOS, while CI runs bash 5), and `read -d` is a
+// bash/zsh extension dash rejects outright ("Illegal option -d" — CI caught
+// that one, on the shell neither developer machine runs as /bin/sh).
+//
+// So: every case runs under every shell PRESENT. Discovered, not hardcoded —
+// GitHub's ubuntu runner has no zsh, and a test that fails because a shell is
+// absent reports the machine, not the defect. `sh` is always present and is a
+// different parser on each platform (dash on Ubuntu, bash-as-sh on macOS),
+// which is the point: it is the cheapest guard against leaning on one shell's
+// extension.
+const SHELLS = ["bash", "zsh", "sh"].filter((sh) => {
+	try {
+		execFileSync("command", ["-v", sh], { shell: true, stdio: "ignore" });
+		return true;
+	} catch {
+		return false;
+	}
+});
 
 /** Splice `args` where the harness splices `$ARGUMENTS`, run under `shell` in `dir`. */
 function runSpliced(body, args, dir, shell = "bash") {
@@ -86,6 +100,20 @@ function runSpliced(body, args, dir, shell = "bash") {
 		);
 	});
 }
+
+// A filtered list can silently become empty (a PATH problem, a renamed binary)
+// and every describe below would then simply not exist — a vacuous pass, which
+// is the failure mode this whole file was written to prevent. bash and sh are
+// present on every platform this runs on, so fewer than two means the
+// discovery broke, not the machine.
+describe("shell discovery", () => {
+	it("found at least bash and sh to test against", () => {
+		assert.ok(
+			SHELLS.length >= 2,
+			`only found ${SHELLS.join(", ") || "no shells"} — the splice tests would pass vacuously`,
+		);
+	});
+});
 
 for (const shell of SHELLS) {
 	describe(`commands/bench.md argument splice (${shell})`, () => {

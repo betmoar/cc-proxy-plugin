@@ -62,10 +62,16 @@ EOF
 # /bin/bash on every macOS. Measured there — `speed 'glm-5.2` died with
 # "unexpected EOF while looking for matching `''" and exit 2, while bash 5
 # (what CI runs) accepted it, so the suite was green on the one platform the
-# defect could not reach. `read` returns 1 at EOF without its NUL delimiter,
-# which is the normal case here, hence `|| true`.
+# defect could not reach.
+#
+# Plain `read -r`, with NO `-d`: the delimiter flag is a bash/zsh extension
+# that dash — Ubuntu's /bin/sh — rejects outright ("read: Illegal option -d",
+# measured), and a slash argument is a single line anyway, which is exactly
+# what an unadorned `read` consumes. `read` returns non-zero on a final line
+# with no trailing newline, and on an EMPTY argument it reads nothing at all,
+# so `|| true` is what keeps both cases from aborting under `set -e`.
 args=""
-IFS= read -r -d '' args <<'CC_PROXY_ARGS' || true
+IFS= read -r args <<'CC_PROXY_ARGS' || true
 $ARGUMENTS
 CC_PROXY_ARGS
 # `set -f` first, because unquoted word-splitting also GLOBS: measured in a
@@ -86,7 +92,12 @@ set -f
 set -- $(printf '%s' "$args")
 set +f
 sub="${1:-grades}"
-shift 2>/dev/null || true
+# Guard on $#, do NOT rely on `shift 2>/dev/null || true`: shifting an empty
+# argv is a FATAL shell error in dash (Ubuntu's /bin/sh), not a command that
+# fails, so neither the redirect nor the `|| true` catches it and the body dies
+# with exit 2 on the no-argument path — the plain `/cc-proxy:bench` case.
+# Measured across bash/zsh/dash: only the $# test survives all three.
+[ "$#" -gt 0 ] && shift
 case "$sub" in
   speed) node "$root/scripts/bench-speed.js" "$@" ;;
   grades) node "$root/scripts/bench-grades.js" ;;
