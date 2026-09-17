@@ -56,16 +56,34 @@ EOF
 # the terminator could end it early, which a one-line slash argument cannot
 # contain.) Locked by test/commands.test.js, which runs this block with each
 # of those arguments spliced in.
-args=$(cat <<'CC_PROXY_ARGS'
+#
+# The heredoc is read by `read`, NOT by `args=$(cat <<'Q' … )`: a heredoc
+# nested inside command substitution is mis-parsed by bash 3.2, which is
+# /bin/bash on every macOS. Measured there — `speed 'glm-5.2` died with
+# "unexpected EOF while looking for matching `''" and exit 2, while bash 5
+# (what CI runs) accepted it, so the suite was green on the one platform the
+# defect could not reach. `read` returns 1 at EOF without its NUL delimiter,
+# which is the normal case here, hence `|| true`.
+args=""
+IFS= read -r -d '' args <<'CC_PROXY_ARGS' || true
 $ARGUMENTS
 CC_PROXY_ARGS
-)
 # `set -f` first, because unquoted word-splitting also GLOBS: measured in a
 # directory holding two files, `bench speed *` split to three words
 # (`speed aaa.txt bbb.txt`) instead of two. Splitting is what we want; pathname
 # expansion is not, and the argv it builds is passed straight to a script.
+#
+# Split through a COMMAND SUBSTITUTION, not `set -- $args`: a slash command
+# runs under the user's login shell, which on macOS is ZSH (the same trap
+# commands/models.md documents), and zsh does not word-split an unquoted
+# parameter. Measured: with args="speed --report", `set -- $args` gives bash
+# two words and zsh ONE, so `$1` was the whole string, `case` matched no
+# branch, and `/cc-proxy:bench speed` was dead for every macOS user. zsh DOES
+# split an unquoted command substitution, so this form gives two words in
+# bash, zsh and dash alike. The trailing newline `read` leaves on $args is
+# absorbed by that same splitting.
 set -f
-set -- $args
+set -- $(printf '%s' "$args")
 set +f
 sub="${1:-grades}"
 shift 2>/dev/null || true

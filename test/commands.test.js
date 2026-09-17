@@ -43,14 +43,24 @@ function fakeRoot() {
 	return dir;
 }
 
-/** Splice `args` where the harness splices `$ARGUMENTS`, run under bash in `dir`. */
-function runSpliced(body, args, dir) {
+// A slash command runs under the USER'S LOGIN SHELL, which on macOS is zsh —
+// so testing the body under bash alone tests a shell most of these users never
+// reach. Two defects hid in exactly that gap and were each green in bash:
+// `set -- $args` splits to one word in zsh (killing every non-empty argument),
+// and a heredoc inside `$(…)` is mis-parsed by bash 3.2, which is /bin/bash on
+// every macOS while CI runs bash 5. Every case below therefore runs in both.
+// `sh` is included because it is neither: a third parser, and the cheapest
+// guard against a fix that leans on one shell's extension.
+const SHELLS = ["bash", "zsh", "sh"];
+
+/** Splice `args` where the harness splices `$ARGUMENTS`, run under `shell` in `dir`. */
+function runSpliced(body, args, dir, shell = "bash") {
 	const out = path.join(dir, "argv.jsonl");
 	fs.rmSync(out, { force: true });
 	const spliced = body.split("$ARGUMENTS").join(args);
 	return new Promise((resolve) => {
 		execFile(
-			"bash",
+			shell,
 			["-c", spliced],
 			{
 				cwd: dir,
@@ -77,60 +87,76 @@ function runSpliced(body, args, dir) {
 	});
 }
 
-describe("commands/bench.md argument splice", () => {
-	const body = bashBlock("bench.md");
+for (const shell of SHELLS) {
+	describe(`commands/bench.md argument splice (${shell})`, () => {
+		const body = bashBlock("bench.md");
 
-	it("routes `speed --report` to bench-speed with --report", async () => {
-		const dir = fakeRoot();
-		const r = await runSpliced(body, "speed --report", dir);
-		assert.equal(r.code, 0, r.stderr);
-		assert.deepEqual(r.calls, [["bench-speed", "--report"]]);
-	});
+		// The zsh defect: `set -- $args` left $1 as the WHOLE string, so `case`
+		// matched no branch and the command died — for every non-empty argument,
+		// on the shell macOS users actually run.
+		it("routes `speed --report` to bench-speed with --report", async () => {
+			const dir = fakeRoot();
+			const r = await runSpliced(body, "speed --report", dir, shell);
+			assert.equal(r.code, 0, r.stderr);
+			assert.deepEqual(r.calls, [["bench-speed", "--report"]]);
+		});
 
-	it("defaults to grades with no argument", async () => {
-		const dir = fakeRoot();
-		const r = await runSpliced(body, "", dir);
-		assert.equal(r.code, 0, r.stderr);
-		assert.deepEqual(r.calls, [["bench-grades"]]);
-	});
+		it("defaults to grades with no argument", async () => {
+			const dir = fakeRoot();
+			const r = await runSpliced(body, "", dir, shell);
+			assert.equal(r.code, 0, r.stderr);
+			assert.deepEqual(r.calls, [["bench-grades"]]);
+		});
 
-	// The measured failure: a pipe in the argument ran `set --` in a subshell,
-	// left $1 empty, and the default branch fired a billed grades run.
-	it("a `|` in the argument is a word, not a pipeline — grades never runs", async () => {
-		const dir = fakeRoot();
-		const r = await runSpliced(body, "speed --report | cat", dir);
-		assert.deepEqual(r.calls, [["bench-speed", "--report", "|", "cat"]]);
-	});
+		// The measured failure: a pipe in the argument ran `set --` in a subshell,
+		// left $1 empty, and the default branch fired a billed grades run.
+		it("a `|` in the argument is a word, not a pipeline — grades never runs", async () => {
+			const dir = fakeRoot();
+			const r = await runSpliced(body, "speed --report | cat", dir, shell);
+			assert.deepEqual(r.calls, [["bench-speed", "--report", "|", "cat"]]);
+		});
 
-	it("a `>` in the argument is a word, not a redirection — no file is created", async () => {
-		const dir = fakeRoot();
-		const target = path.join(dir, "clobbered.txt");
-		const r = await runSpliced(body, `speed > ${target}`, dir);
-		assert.equal(fs.existsSync(target), false, "the argument truncated a file");
-		assert.deepEqual(r.calls, [["bench-speed", ">", target]]);
-	});
+		it("a `>` in the argument is a word, not a redirection — no file is created", async () => {
+			const dir = fakeRoot();
+			const target = path.join(dir, "clobbered.txt");
+			const r = await runSpliced(body, `speed > ${target}`, dir, shell);
+			assert.equal(fs.existsSync(target), false, "the argument truncated a file");
+			assert.deepEqual(r.calls, [["bench-speed", ">", target]]);
+		});
 
-	it("an unbalanced quote is a word, not a syntax error", async () => {
-		const dir = fakeRoot();
-		const r = await runSpliced(body, "speed 'glm-5.2", dir);
-		assert.equal(r.code, 0, r.stderr);
-		assert.deepEqual(r.calls, [["bench-speed", "'glm-5.2"]]);
-	});
+		// bash 3.2 (/bin/bash on macOS) mis-parses a heredoc inside `$(…)` and
+		// died here with "unexpected EOF"; bash 5, which CI runs, did not.
+		it("an unbalanced quote is a word, not a syntax error", async () => {
+			const dir = fakeRoot();
+			const r = await runSpliced(body, "speed 'glm-5.2", dir, shell);
+			assert.equal(r.code, 0, r.stderr);
+			assert.deepEqual(r.calls, [["bench-speed", "'glm-5.2"]]);
+		});
 
-	it("a `$(…)` in the argument is not executed", async () => {
-		const dir = fakeRoot();
-		const r = await runSpliced(body, "speed $(echo INJECTED)", dir);
-		assert.deepEqual(r.calls, [["bench-speed", "$(echo", "INJECTED)"]]);
-	});
+		it("a `$(…)` in the argument is not executed", async () => {
+			const dir = fakeRoot();
+			const r = await runSpliced(body, "speed $(echo INJECTED)", dir, shell);
+			assert.deepEqual(r.calls, [["bench-speed", "$(echo", "INJECTED)"]]);
+		});
 
-	it("an unknown sub-command is refused", async () => {
-		const dir = fakeRoot();
-		const r = await runSpliced(body, "bogus", dir);
-		assert.equal(r.code, 1);
-		assert.match(r.stderr, /unknown sub-command/);
-		assert.deepEqual(r.calls, []);
+		// Splitting must not GLOB: the argv goes straight to a script.
+		it("a `*` in the argument is not expanded against the cwd", async () => {
+			const dir = fakeRoot();
+			fs.writeFileSync(path.join(dir, "aaa.txt"), "");
+			fs.writeFileSync(path.join(dir, "bbb.txt"), "");
+			const r = await runSpliced(body, "speed *.txt", dir, shell);
+			assert.deepEqual(r.calls, [["bench-speed", "*.txt"]]);
+		});
+
+		it("an unknown sub-command is refused", async () => {
+			const dir = fakeRoot();
+			const r = await runSpliced(body, "bogus", dir, shell);
+			assert.equal(r.code, 1);
+			assert.match(r.stderr, /unknown sub-command/);
+			assert.deepEqual(r.calls, []);
+		});
 	});
-});
+}
 
 describe("commands without arguments splice nothing", () => {
 	// status.md and models.md take no arguments; a `$ARGUMENTS`/`$1` in their
