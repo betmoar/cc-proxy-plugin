@@ -74,16 +74,38 @@ export const ANTHROPIC_SERVER_TOOLS = new Set([
  * only faithful move is to drop the block, exactly like the thinking-strip
  * drops history the new backend cannot have produced.
  *
- * A recognized name is NOT sufficient on its own (a GLM id can ride a valid
- * name), and the id pattern is checked too — a block fails the trip if EITHER
- * is foreign, mirroring the two measured rejections.
+ * THE ID PATTERN IS THE ONLY AXIS THIS STRIPS ON, and that is a decision about
+ * which failure you would rather have, not an oversight. The name set is a
+ * dated SNAPSHOT of a list Anthropic extends; the id shape is a format they
+ * would have to break their own API to change. Rejecting on the name too — the
+ * first cut of this fix did — means that the day Anthropic ships a ninth server
+ * tool, this proxy SILENTLY DELETES Claude's own tool calls out of history
+ * routed to Claude. No error, no log line the user reads, just a turn that
+ * quietly lost a block; the user cannot tell that from the model behaving
+ * oddly. Id-only inverts that: a vendor who someday adopts `srvtoolu_`-shaped
+ * ids under its own tool names passes through and draws Anthropic's own 400,
+ * loudly, with the vendor's message attached — which arrives as a bug report
+ * naming its own cause. A wrong guess that screams is repairable; one that
+ * whispers is not. (Narrowing the name check to "only when the id is also
+ * foreign" was proposed twice in review and is VACUOUS: a foreign id already
+ * strips at the return below, so that version deletes the name axis in more
+ * words.)
+ *
+ * The GLM blocks that motivated #67 are caught either way — their ids are
+ * `call_…`, which is what was measured. `ANTHROPIC_SERVER_TOOLS` stays
+ * exported and stays current: it is the probe's drift guard
+ * (`scripts/probe-vendors.mjs`), which is what notices the enumeration moving.
+ * It is no longer a rejection axis here.
  *
  * @param {any} block
  * @returns {boolean}
+ * @doctest isForeignServerToolUse({"type":"server_tool_use","id":"call_abc","name":"analyze_image"}) -> true
+ * @doctest isForeignServerToolUse({"type":"server_tool_use","id":"srvtoolu_abc","name":"web_search"}) -> false
+ * @doctest isForeignServerToolUse({"type":"server_tool_use","id":"srvtoolu_x9","name":"a_tool_anthropic_ships_next_year"}) -> false
+ * @doctest isForeignServerToolUse({"type":"server_tool_use","name":"web_search"}) -> true
  */
-function isForeignServerToolUse(block) {
+export function isForeignServerToolUse(block) {
 	if (!block || typeof block !== "object") return false;
-	if (typeof block.name !== "string" || !ANTHROPIC_SERVER_TOOLS.has(block.name)) return true;
 	return typeof block.id !== "string" || !/^srvtoolu_[a-zA-Z0-9_]+$/.test(block.id);
 }
 

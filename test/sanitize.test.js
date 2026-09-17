@@ -250,7 +250,7 @@ describe("stripForeignServerToolUse", () => {
 		],
 	};
 
-	it("strips a GLM-emitted server_tool_use (call_ id, foreign name) and its paired tool_result", () => {
+	it("strips a GLM-emitted server_tool_use (call_ id) and its paired tool_result", () => {
 		const { body: out, modified, stripped } = stripForeignServerToolUse(glmHistory);
 		assert.equal(modified, true);
 		assert.equal(stripped, 2);
@@ -264,7 +264,7 @@ describe("stripForeignServerToolUse", () => {
 		assert.equal(glmHistory.messages[1].content.length, 1);
 	});
 
-	it("keeps an Anthropic-shaped server_tool_use (srvtoolu_ id, known name)", () => {
+	it("keeps an Anthropic-shaped server_tool_use (srvtoolu_ id)", () => {
 		const body = {
 			messages: [
 				{
@@ -307,7 +307,36 @@ describe("stripForeignServerToolUse", () => {
 		assert.equal(stripped, 1);
 	});
 
-	it("strips a known-name-id pair only when BOTH are valid — mixed blocks drop selectively", () => {
+	it("keeps a block with a valid id under a name we have never seen (id-only, issue #67)", () => {
+		// THE DECISION, pinned. ANTHROPIC_SERVER_TOOLS is a dated snapshot of a
+		// list Anthropic extends; the id shape is a format they would have to
+		// break their own API to change. Rejecting on the name too — the first
+		// cut did — means the day they ship a ninth server tool, this proxy
+		// silently deletes Claude's own tool calls out of Claude-bound history,
+		// with no error anywhere. Id-only lets an unknown-but-well-formed block
+		// through to draw Anthropic's own 400, which arrives as a bug report
+		// naming its own cause. Re-add the name axis and this test fails.
+		const body = {
+			messages: [
+				{
+					role: "assistant",
+					content: [
+						{
+							type: "server_tool_use",
+							id: "srvtoolu_01ABC",
+							name: "a_tool_anthropic_ships_next_year",
+							input: {},
+						},
+					],
+				},
+			],
+		};
+		const { body: out, modified } = stripForeignServerToolUse(body);
+		assert.equal(modified, false, "an unknown NAME is not grounds to strip — only a foreign id is");
+		assert.equal(out, body, "unmodified bodies must be returned by reference");
+	});
+
+	it("strips on the id axis alone — a foreign id drops even under a known name", () => {
 		const body = {
 			messages: [
 				{
