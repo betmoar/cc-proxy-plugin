@@ -43,6 +43,17 @@ notes referencing "backlog item N" still resolve.
    start with a thinking block"**: gate the strip to non-`claude` providers and
    accept that a GLM→Claude mid-session switch then fails (the signatures are
    indistinguishable without state, and state is out — invariant 2).
+
+   Tracked as **[issue #71](https://github.com/betmoar/cc-proxy-plugin/issues/71)**
+   (2026-09-17): this is the oldest open entry here and had outlived several
+   sessions of handoff notes that listed it from memory, which is exactly the
+   "an unknown that outlives the session belongs in the register" rule at the top
+   of this file. The issue carries the trigger, the directional fix, and the
+   acceptance list. SETTLED there and not to be re-litigated: the
+   cache-economics argument for gating is dead — the strip is deterministic
+   (measured `in=10, read=4416` on a repeat Z.ai turn with a stripped block deep
+   in the prefix), so it cannot cost a cache hit. Only the 400-if-it-fires reason
+   survives.
 2. ~~**Content-encoding blind spot**~~ — DONE (0.5.1). The buffered path forces
    `accept-encoding: identity` upstream; see the Traps bullet. Numbering kept so
    older notes referencing "backlog item N" still resolve.
