@@ -44,6 +44,12 @@ const CALLABLE = {};
 	CALLABLE.parseModelSelector = router.parseModelSelector;
 	CALLABLE.rankRoutes = routes.rankRoutes;
 	CALLABLE.tierOf = routes.tierOf;
+	// The #67 strip's ONLY rejection axis. Executed here because the comment
+	// above it argues a design choice — id-only over id-or-name — and the third
+	// example is the whole argument: a tool name Anthropic has not shipped yet
+	// must NOT be foreign. If someone re-adds the name check, that line fails.
+	const sanitize = await import("../src/sanitize.js");
+	CALLABLE.isForeignServerToolUse = sanitize.isForeignServerToolUse;
 	const picker = await import("../src/model-picker.js");
 	CALLABLE.labelFor = picker.labelFor;
 	CALLABLE.formatWindow = picker.formatWindow;
@@ -193,8 +199,8 @@ describe("documented examples actually hold", () => {
 	it("executes exactly the examples the source carries", () => {
 		assert.equal(
 			doctests.length,
-			63,
-			`expected 63 @doctest examples, found ${doctests.length}. Adding some? Bump this number in the same commit. Removing some? Say why in the commit message — dropping an example is dropping a guarantee.`,
+			67,
+			`expected 67 @doctest examples, found ${doctests.length}. Adding some? Bump this number in the same commit. Removing some? Say why in the commit message — dropping an example is dropping a guarantee.`,
 		);
 	});
 

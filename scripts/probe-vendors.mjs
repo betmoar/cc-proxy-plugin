@@ -21,6 +21,22 @@
 //   2  inconclusive: something could not be reached (offline, DNS, timeout)
 //   3  nothing ran at all (no keys) — no claim was checked
 //
+// THE `api.anthropic.com` CASES SKIP ON A NORMAL DEV MACHINE, AND THAT IS THE
+// EXPECTED STEADY STATE — not a gap anyone should try to close. cc-proxy does
+// not use `ANTHROPIC_API_KEY`: the claude route authenticates by passing the
+// user's OAuth credential THROUGH (invariant 3), and CLAUDE.md forbids setting
+// that variable at all, because it shadows the OAuth login it would replace.
+// Nor is there a keyless spelling of these cases — auth runs before body
+// validation, so every credential-free form answers 401 and the 400 they exist
+// to measure never happens (measured 2026-09-17: no header → "x-api-key header
+// is required"; a bogus key → "API key is invalid."; an OAuth bearer, with and
+// without `anthropic-beta: oauth-2025-04-20` → "OAuth access token is
+// invalid."). They are written for someone who ALREADY has a key for other
+// reasons; here they are the standing SKIP the summary counts, and the claims
+// they would pin rest on the dated 2026-09-14 session measurement instead. Read
+// a SKIP on these four as "this machine cannot be the one to check it", never
+// as a TODO.
+//
 // A single 0/1 split was the first shape, and the review that caught it was
 // right: `--json` exists precisely because something else will eventually read
 // this, and an exit code that cannot separate "checked and fine" from "checked
@@ -30,6 +46,7 @@
 import { loadEnv } from "../src/env.js";
 import { DEFAULT_QWEN_MODELS } from "../src/models.js";
 import { ROUTES } from "../src/routes.js";
+import { ANTHROPIC_SERVER_TOOLS } from "../src/sanitize.js";
 import { isDirectRun } from "./direct-run.js";
 
 // loadEnv() runs in the CLI guard at the bottom, NOT at import time: the test
@@ -74,6 +91,26 @@ function caseUrl(c) {
 // checked-in proof that the collector walks more than one directory.
 //
 // @doctest stripVariantSuffix("glm-5.2[1m]") -> "glm-5.2"
+// The DRIFT GUARD for `ANTHROPIC_SERVER_TOOLS` (src/sanitize.js). That set is a
+// snapshot of a vendor's "closed" enumeration, and a snapshot of someone else's
+// list is a claim with a clock on it: the day Anthropic adds a server tool, a
+// block CLAUDE ITSELF produced stops matching our copy. Nothing offline can
+// notice that, and a bodyMatch naming three of the eight names cannot either —
+// it still matches after the vendor adds a ninth.
+//
+// So the pattern is BUILT FROM THE SET: it pins the enumeration Anthropic
+// prints, in full and in order, and fails the moment the two disagree. The
+// separator is the one measured 2026-09-14 (comma-space, no "or" before the
+// last item); a vendor rewording alone trips this too, which is the correct
+// outcome for a manual gate whose exit 1 means "go re-measure".
+// The trailing lookahead is the half that does the work: without it the pattern
+// is a PREFIX match, so appending a ninth name — the drift most likely to
+// happen, and the one that silently strips Claude's own blocks — still matched
+// and the guard reported OK (measured while writing it).
+const SERVER_TOOL_ENUMERATION = new RegExp(
+	`Input should be\\s*${[...ANTHROPIC_SERVER_TOOLS].map((n) => `'${n}'`).join(",\\s*")}(?!,\\s*')`,
+);
+
 const CASES = [
 	{
 		name: "z.ai accepts a bare id",
@@ -119,6 +156,143 @@ const CASES = [
 		model: "glm-5.2-totally-fake",
 		expect: 400,
 		bodyMatch: /121[14]|does not exist|unknown model/i,
+	},
+	{
+		// The ONE axis the foreign server_tool_use strip rests on (src/sanitize.js
+		// isForeignServerToolUse): the id pattern. Z.ai emits server_tool_use for
+		// its own built-in tools with call_-shaped ids, and Anthropic rejects
+		// those — this case pins that rejection.
+		//
+		// Anthropic rejects a foreign NAME too, and that is deliberately NOT a
+		// strip axis: the name set is a dated snapshot of a list Anthropic
+		// extends, so rejecting on it would silently delete Claude's own future
+		// tools out of Claude-bound history. The next case is therefore a DRIFT
+		// GUARD on the enumeration, not a second rejection axis — it fails when
+		// Anthropic's list stops matching ANTHROPIC_SERVER_TOOLS, which is the
+		// only thing that can notice a "closed" set being extended.
+		//
+		// Both cases pin the REJECTING side (what Anthropic does with a foreign
+		// block); the emitting side — that Z.ai produces analyze_image blocks at
+		// all — is model-driven and cannot be forced deterministically from a
+		// 4-token turn, so it stays a dated measurement (2026-09-14, session
+		// 71dbf659) rather than a case here.
+		name: "anthropic rejects a foreign server_tool_use id",
+		claim: "src/sanitize.js — 'call_… id, not Anthropic's srvtoolu_…'",
+		url: "https://api.anthropic.com/v1/messages",
+		// A KEYED case: auth runs before body validation, so a keyless request
+		// answers 401 and the 400 this case exists to measure never happens.
+		// (The first cut sent no header on the reasoning that the proxy injects
+		// the user's OAuth token — true of the PROXY's own hop, irrelevant to a
+		// direct probe, and it turned the manual gate into a guaranteed exit 1
+		// for anyone who has ANTHROPIC_API_KEY set.)
+		auth: (k) => ({ "x-api-key": k }),
+		key: "ANTHROPIC_API_KEY",
+		model: "claude-opus-5",
+		// user → assistant → user, not assistant-first: a first message that is
+		// not `user`, and a LAST message that is `assistant` (a prefill, removed
+		// on current models), are each their own 400 — either would answer this
+		// case with the right status for the wrong reason.
+		body: (model) => ({
+			model,
+			max_tokens: 4,
+			messages: [
+				{ role: "user", content: "hi" },
+				{
+					role: "assistant",
+					content: [
+						{
+							type: "server_tool_use",
+							id: "call_d88edcb2ba6d4d789afd7a0e",
+							name: "web_search",
+							input: {},
+						},
+					],
+				},
+				{ role: "user", content: "hi" },
+			],
+		}),
+		expect: 400,
+		bodyMatch: /srvtoolu_/i,
+	},
+	{
+		name: "anthropic's server-tool name set still matches ANTHROPIC_SERVER_TOOLS",
+		claim: "src/sanitize.js ANTHROPIC_SERVER_TOOLS — the snapshot AND its drift guard",
+		url: "https://api.anthropic.com/v1/messages",
+		auth: (k) => ({ "x-api-key": k }),
+		key: "ANTHROPIC_API_KEY",
+		model: "claude-opus-5",
+		body: (model) => ({
+			model,
+			max_tokens: 4,
+			messages: [
+				{ role: "user", content: "hi" },
+				{
+					role: "assistant",
+					content: [
+						{
+							type: "server_tool_use",
+							id: "srvtoolu_d88edcb2ba6d4d789afd7a0e",
+							name: "analyze_image",
+							input: {},
+						},
+					],
+				},
+				{ role: "user", content: "hi" },
+			],
+		}),
+		expect: 400,
+		// Two duties in one case: the 400 proves a foreign NAME is rejected on its
+		// own axis (why a rename cannot repair a poisoned transcript), and the
+		// full enumeration proves our copy of the set is still the vendor's.
+		bodyMatch: SERVER_TOOL_ENUMERATION,
+	},
+	{
+		// The claim the message-DROP rests on (src/sanitize.js
+		// stripForeignServerToolUse): filtering a message's only block and
+		// forwarding the husk swaps one 400 for another, so the strip has to
+		// remove the message too. Without this case that is an assertion about
+		// someone else's validator sitting in a comment — the exact shape the
+		// #34 reversal taught this repo not to trust.
+		name: "anthropic rejects an EMPTIED content array",
+		claim: "src/sanitize.js — why an emptied message is dropped, not forwarded",
+		url: "https://api.anthropic.com/v1/messages",
+		auth: (k) => ({ "x-api-key": k }),
+		key: "ANTHROPIC_API_KEY",
+		model: "claude-opus-5",
+		body: (model) => ({
+			model,
+			max_tokens: 4,
+			messages: [
+				{ role: "user", content: "hi" },
+				{ role: "assistant", content: [] },
+				{ role: "user", content: "hi" },
+			],
+		}),
+		expect: 400,
+		bodyMatch: /at least 1 item|non-?empty/i,
+	},
+	{
+		// The sibling of the case above, one level up, and the claim the
+		// all-emptied BAIL-OUT rests on (src/sanitize.js stripForeignServerToolUse
+		// — `newMessages.length === 0` returns the body untouched). If an empty
+		// messages ARRAY were accepted, that bail-out would be pointless caution;
+		// if it is rejected, forwarding `messages: []` would manufacture the very
+		// 400 the strip exists to prevent. Z.ai's Anthropic skin answers 400
+		// "[1214][Input cannot be empty]" (measured 2026-09-17), but the bail-out
+		// guards the CLAUDE route, so the claim has to be pinned against Anthropic
+		// itself — hence this case rather than the Z.ai measurement alone. The
+		// wording is left loose on purpose: what matters is the REJECTION, and
+		// Z.ai renaming 1214 -> 1211 mid-release is the standing reminder that a
+		// vendor's exact string is the least stable part of any such claim.
+		name: "anthropic rejects an EMPTY messages array",
+		claim: "src/sanitize.js — why an all-emptied strip bails out instead of forwarding",
+		url: "https://api.anthropic.com/v1/messages",
+		auth: (k) => ({ "x-api-key": k }),
+		key: "ANTHROPIC_API_KEY",
+		model: "claude-opus-5",
+		body: (model) => ({ model, max_tokens: 4, messages: [] }),
+		expect: 400,
+		bodyMatch: /at least 1 item|cannot be empty|non-?empty|too_short/i,
 	},
 	{
 		name: "qwen plan accepts a bare id",
@@ -591,21 +765,57 @@ function shapeRoutedIds(providerId) {
  * @param {string} providerId
  * @param {string[]} vendorListed - ids the vendor's own /models endpoint returns
  * @param {string} endpointLabel - for the STALE line
+ * @param {Map<string, number>} [servedStatuses] - request-path status per OMITTED id,
+ *   from driftReport()'s confirmation pass. Absent/empty = unconfirmed, which still
+ *   reports (marked as such) rather than going quiet.
  * @returns {string[]}
  */
-export function diffCatalogs(providerId, vendorListed, endpointLabel) {
+export function diffCatalogs(providerId, vendorListed, endpointLabel, servedStatuses = new Map()) {
 	const lines = [];
 	const ours = shapeRoutedIds(providerId);
 	const theirs = new Set(vendorListed);
 	// ROUTES records non-200 statuses DELIBERATELY (complete, not curated): the
-	// qwen rows for glm-5.3 (400) and glm-5.1/glm-5 (403) document that the plan
-	// REFUSES them — so the vendor list omitting those ids is agreement, not
-	// staleness. A STALE line fires only for an id we say the provider SERVES
-	// (status 200) that its own list cannot see.
+	// qwen rows for glm-5.1/glm-5 (403) document that the plan REFUSES them — so
+	// the vendor list omitting those ids is agreement, not staleness. A STALE
+	// line fires only for an id we say the provider SERVES (status 200) that its
+	// own list cannot see.
+	//
+	// A list omission is WEAK evidence, and this loop used to forget it. Issue
+	// #37's core finding — the reason probeServedModel() exists and reads the
+	// response body — is that a vendor's catalog is not ground truth about what
+	// its request path serves; the two disagreed in BOTH directions here on
+	// 2026-09-17. `qwen3.8-max-preview` is absent from
+	// `/compatible-mode/v1/models` and answers 200 echoing its own name, so a
+	// bare STALE line accused a row that was correct; meanwhile the same list had
+	// started serving `glm-5.3`, which ROUTES still recorded as 400, and no STALE
+	// line could ever have said so (the check only looks one way). A standing
+	// false positive is worse than silence: it trains a reader to skim the drift
+	// block, which is where the true line eventually appears.
+	//
+	// So an omission is CONFIRMED against the request path before it is called
+	// stale. The confirmation is INJECTED rather than fetched here, because this
+	// function is exported and unit-tested as a pure comparison — doing the I/O
+	// inline would make `pnpm check` spend real quota, which is the one thing
+	// this whole script is kept out of CI to avoid. driftReport() probes the
+	// omitted ids and passes the statuses in; an empty map keeps the old
+	// behaviour, so a caller that cannot probe still reports rather than going
+	// quiet.
 	for (const id of ours) {
 		const route = ROUTES[id]?.find((r) => r.provider === providerId);
-		if (!theirs.has(id) && route?.status === 200) {
-			lines.push(`STALE  ${endpointLabel} omits ${id} (ROUTES says ${providerId}:200)`);
+		if (theirs.has(id) || route?.status !== 200) continue;
+		const servedStatus = servedStatuses.get(id);
+		if (servedStatus === 200) {
+			lines.push(
+				`INFO   ${endpointLabel} omits ${id}, but the request path SERVES it (200) — ROUTES is right, the list is partial`,
+			);
+		} else if (typeof servedStatus === "number") {
+			lines.push(
+				`STALE  ${endpointLabel} omits ${id} and the request path answers ${servedStatus} (ROUTES says ${providerId}:200)`,
+			);
+		} else {
+			lines.push(
+				`STALE  ${endpointLabel} omits ${id} (ROUTES says ${providerId}:200, unconfirmed)`,
+			);
 		}
 	}
 	// Vendor lists ids our ROUTES does not cover at all. Not a defect — unlisted
@@ -713,6 +923,40 @@ async function driftReport() {
 	let unreachableLegs = 0;
 	driftReportRan = true;
 
+	/**
+	 * Confirm every id a vendor's list OMITS against the request path, so
+	 * diffCatalogs can tell "our row is stale" from "their list is partial".
+	 * Only omitted-and-200 rows are probed — one 4-token turn each, on a gate
+	 * that already spends real quota — so a list that agrees with ROUTES costs
+	 * nothing extra.
+	 *
+	 * An unreachable confirmation is NOT silently treated as "serves it": it is
+	 * left out of the map, which diffCatalogs reports as `unconfirmed`, and the
+	 * leg is counted so the run cannot exit 0 on a half-measured drift pass.
+	 *
+	 * @param {string} providerId
+	 * @param {string[]} listedIds
+	 * @param {{url: string, auth: (k: string) => Record<string, string>, key: string}} probeTarget
+	 * @returns {Promise<Map<string, number>>}
+	 */
+	async function confirmOmissions(providerId, listedIds, probeTarget) {
+		const theirs = new Set(listedIds);
+		/** @type {Map<string, number>} */
+		const statuses = new Map();
+		for (const [id, routeList] of Object.entries(ROUTES)) {
+			const route = routeList.find((r) => r.provider === providerId);
+			if (!route || route.status !== 200 || theirs.has(id)) continue;
+			const served = await probeServedModel({ ...probeTarget, id });
+			if (served.error) {
+				unreachableLegs++;
+				lines.push(`UNREACHABLE  ${providerId} ${id} omission check: ${served.error}`);
+				continue;
+			}
+			statuses.set(id, served.status);
+		}
+		return statuses;
+	}
+
 	// GLM: the Anthropic-skin list (the one /v1/models republishes) — the
 	// endpoint the issue measured omitting glm-5.3. SCOPE: only this list; the
 	// issue's other two Z.ai endpoints (/api/paas/v4/models, /api/v1/models)
@@ -729,7 +973,12 @@ async function driftReport() {
 			lines.push(`UNREACHABLE  glm /api/anthropic/v1/models: ${listed.error}`);
 		} else {
 			reached++;
-			lines.push(...diffCatalogs("glm", listed.ids, "glm /api/anthropic/v1/models"));
+			const confirmed = await confirmOmissions("glm", listed.ids, {
+				url: "https://api.z.ai/api/anthropic/v1/messages",
+				auth: (k) => ({ "x-api-key": k }),
+				key: "GLM_API_KEY",
+			});
+			lines.push(...diffCatalogs("glm", listed.ids, "glm /api/anthropic/v1/models", confirmed));
 		}
 		// Alias checks on the multi-version glm ids where the issue measured
 		// aliasing (glm-5.2/5.1/5 -> glm-5.3 on Z.ai).
@@ -765,7 +1014,15 @@ async function driftReport() {
 			lines.push(`UNREACHABLE  qwen /compatible-mode/v1/models: ${listed.error}`);
 		} else {
 			reached++;
-			lines.push(...diffCatalogs("qwen", listed.ids, "qwen /compatible-mode/v1/models"));
+			// The plan's Anthropic skin, NOT the compatible-mode path the list came
+			// from: it is the path cc-proxy actually forwards to, so it is the one
+			// whose answer decides whether a ROUTES row is true.
+			const confirmed = await confirmOmissions("qwen", listed.ids, {
+				url: "https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic/v1/messages",
+				auth: (k) => ({ "x-api-key": k }),
+				key: "DASHSCOPE_API_KEY",
+			});
+			lines.push(...diffCatalogs("qwen", listed.ids, "qwen /compatible-mode/v1/models", confirmed));
 		}
 	}
 

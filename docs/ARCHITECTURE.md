@@ -26,9 +26,11 @@ each is locked by a named test (the list is in [CLAUDE.md](../CLAUDE.md)).
 
 1. **Transparent pipe.** Auth and headers only. The full inbound path,
    query string included, reaches upstream; bodies are forwarded byte for byte
-   except for three strips (thinking blocks, the `<provider>:` selector, the
-   `[1m]` suffix) that share one shape: a spelling the client uses that no
-   backend knows.
+   except for four strips. Three share one shape — a spelling the client uses
+   that no backend knows: thinking blocks, the `<provider>:` selector, the
+   `[1m]` suffix. The fourth inverts it: foreign `server_tool_use` blocks are
+   history a backend PRODUCED that the destination rejects, so the strip runs
+   on the claude route only.
 2. **Stateless.** No breakers, no on-disk state, no in-proxy waiting. A rate
    limit gets a `Retry-After` and the client backs off.
 3. **Credential isolation.** An inbound `Authorization` or `x-api-key` never
@@ -254,7 +256,7 @@ cc-proxy-plugin/                     the plugin IS the repo root; the marketplac
 │   ├── proxy.js                     upstreamRequestOptions() and forward(), the streaming path
 │   ├── router.js                    resolve(), the selector and [1m] strips
 │   ├── routes.js                    the hand-probed ROUTES matrix and rankRoutes()
-│   ├── sanitize.js                  the deterministic thinking-strip
+│   ├── sanitize.js                  the deterministic thinking-strip + foreign server_tool_use
 │   └── server.js                    dispatcher, buffered path, probes, auth gate, media tunnel
 ├── hooks/
 │   ├── hooks.json                   SessionStart runs session-start.js with a 10 s timeout

@@ -316,7 +316,7 @@ describe("cross-file couplings", () => {
 		// its line wrapping.
 		assert.match(
 			src,
-			/console\.log\(\s*`\[\$\{new Date\(\)\.toISOString\(\)\}\] \{\$\{reqId\}\} \$\{logSafe\(inboundModel\)\} -> \$\{provider\.id\}\$\{via\} \$\{logSafe\(req\.url\)\}`\s*,?\s*\)/,
+			/console\.log\(\s*`\[\$\{new Date\(\)\.toISOString\(\)\}\] \{\$\{reqId\}\} \$\{logSafe\(inboundModel\)\} -> \$\{provider\.id\}\$\{via\} \$\{logSafe\(req\.url\)\}\$\{toolStrip\}`\s*,?\s*\)/,
 			"the routing log template in src/server.js changed — update scripts/status.js parseRoutingLines() and this test together",
 		);
 
@@ -326,6 +326,9 @@ describe("cross-file couplings", () => {
 			`[${stamp}] {a1b2c3d4} glm-5.2[1m] -> qwen (routed as glm-5.2) /v1/messages`,
 			`[${stamp}] {a1b2c3d4} qwen:deepseek-v4-pro -> qwen (routed as deepseek-v4-pro) /v1/messages`,
 			`[${stamp}] unknown -> claude /v1/messages/count_tokens`,
+			// 0.10.3's foreign-tool-strip annotation — the second thing appended to
+			// this line, and the reason the row is a lock rather than prose.
+			`[${stamp}] {a1b2c3d4} claude-opus-5 -> claude /v1/messages (stripped 2 foreign tool block(s), 2 message(s) dropped)`,
 		];
 		assert.deepEqual(
 			parseRoutingLines(lines.join("\n")),

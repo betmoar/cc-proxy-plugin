@@ -77,11 +77,24 @@ describe("modelPicker row generation (issue #62)", () => {
 		const glmOnly = reachableIds({ GLM_API_KEY: "g" });
 		assert.ok(glmOnly.every((id) => id.startsWith("glm-")));
 		assert.equal(glmOnly.length, 10);
-		// Qwen alone reaches its own ids AND the two foreign ones the plan serves.
+		// Qwen alone reaches its own ids AND the foreign ones the plan serves.
 		const qwenOnly = reachableIds({ DASHSCOPE_API_KEY: "q" });
 		assert.ok(qwenOnly.includes("deepseek-v4-flash-0731"), "the plan serves this dated build");
 		assert.ok(qwenOnly.includes("glm-5.2"), "the plan serves glm-5.2 (ROUTES says 200)");
-		assert.ok(!qwenOnly.includes("glm-5.3"), "the plan 400s glm-5.3 — no route, no row");
+		// glm-5.3 flipped 2026-09-17: the plan 400'd it on 2026-08-14 and now
+		// answers 200 (body echoes `"model":"glm-5.3"`). This is the USER-VISIBLE
+		// half of that stale row — the picker was withholding a row for the current
+		// flagship from every plan-only holder, who then had no way to select a
+		// model their own gateway serves. A row appears iff ROUTES has a 200 route,
+		// so the entry and this assertion move together.
+		assert.ok(
+			qwenOnly.includes("glm-5.3"),
+			"the plan serves glm-5.3 since 2026-09-17 — a plan-only user must get the row",
+		);
+		// The rows the plan genuinely refuses stay absent, so this test still says
+		// "reachable", not "everything in ROUTES".
+		assert.ok(!qwenOnly.includes("glm-5.1"), "the plan 403s glm-5.1 — no route, no row");
+		assert.ok(!qwenOnly.includes("deepseek-flash"), "the plan 400s deepseek-flash — no row");
 	});
 
 	// The label is what the user picks from; it must match how the same model is

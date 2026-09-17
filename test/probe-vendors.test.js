@@ -153,6 +153,50 @@ describe("probe-vendors case table", () => {
 		assert.ok(control, "control case not found");
 		assert.doesNotMatch(control, /\n\s*key:/, "the control must run without a key gate");
 	});
+
+	// The `api.anthropic.com` cases skip on every cc-proxy machine and ALWAYS
+	// WILL: this project sets no `ANTHROPIC_API_KEY` (the claude route passes the
+	// user's OAuth credential through — invariant 3 — and CLAUDE.md forbids the
+	// variable outright, since it shadows that login), and there is no keyless
+	// spelling, because auth precedes body validation and every credential-free
+	// form answers 401 (measured 2026-09-17, four spellings including an OAuth
+	// bearer).
+	//
+	// That reads in the output as `SKIP … ANTHROPIC_API_KEY not set`, which looks
+	// exactly like a key someone forgot to add — a reviewer of #69 (this one)
+	// closed a report by naming it as the gap left to close, when it is the
+	// designed steady state. A dated measurement standing in for a probe is a
+	// legitimate position; mistaking it for an oversight invites someone to
+	// "fix" it by setting the one variable the proxy must never see.
+	//
+	// So the explanation is pinned to the case that needs it: add a fifth
+	// Anthropic case without a word about why it cannot run here, and this fails.
+	it("the anthropic cases explain WHY they permanently skip on this project", () => {
+		const anthropicCases = table.match(/url: "https:\/\/api\.anthropic\.com/g) ?? [];
+		assert.ok(
+			anthropicCases.length >= 4,
+			`expected the anthropic cases, found ${anthropicCases.length}`,
+		);
+		const gated = table.match(/key: "ANTHROPIC_API_KEY"/g) ?? [];
+		assert.equal(
+			gated.length,
+			anthropicCases.length,
+			"an api.anthropic.com case must stay key-gated: keyless, auth answers 401 before body validation",
+		);
+		// In the HEADER, not in one case's comment: the reader who misreads a SKIP
+		// is reading the run's output and then the top of this file, not case 7.
+		const header = SOURCE.slice(0, SOURCE.indexOf("const CASES = ["));
+		assert.match(
+			header,
+			/invariant 3|OAuth/,
+			"the header must say cc-proxy authenticates the claude route by OAuth passthrough",
+		);
+		assert.match(
+			header,
+			/never as a TODO|not a gap/i,
+			"the header must say a SKIP on these is the expected steady state, not a gap to close",
+		);
+	});
 });
 
 // The release-tag guard (issue #41): `pnpm version` on a feature branch tags
@@ -343,12 +387,70 @@ describe("diffCatalogs()", () => {
 	});
 
 	it("a non-200 ROUTES row omitted by the vendor is AGREEMENT, not staleness", () => {
-		// qwen rows for glm-5.3 (400) and glm-5.1/5 (403) document refusal; the
-		// vendor list omitting them must not print STALE.
+		// qwen rows for glm-5.1/glm-5 (403) and deepseek-flash (400) document
+		// refusal; the vendor list omitting them must not print STALE.
+		//
+		// glm-5.3 was in this list until 2026-09-17, when a probe found the plan
+		// SERVING it and its ROUTES row went 400 -> 200 — so it now reports
+		// legitimately and naming it here asserted the stale data, not the rule.
+		// Read literal ids from ROUTES rather than hardcoding: this test states
+		// "non-200 rows never go STALE", and pinning it to ids whose status the
+		// vendor can change made it fail for being RIGHT.
+		const nonTwoHundred = Object.keys(ROUTES).filter((id) =>
+			ROUTES[id].some((r) => r.provider === "qwen" && r.status !== 200),
+		);
+		assert.ok(nonTwoHundred.length >= 2, `expected refused qwen rows, got ${nonTwoHundred}`);
 		const lines = diffCatalogs("qwen", ["qwen3.8-max"], "qwen test-endpoint");
 		const stale = lines.filter((l) => l.startsWith("STALE"));
+		for (const id of nonTwoHundred) {
+			// Only ids with NO 200 qwen route: a row can carry both (none today).
+			if (ROUTES[id].some((r) => r.provider === "qwen" && r.status === 200)) continue;
+			assert.ok(
+				!stale.some((l) => l.includes(` ${id} `) || l.endsWith(` ${id}`)),
+				`non-200 row reported STALE: ${id}`,
+			);
+		}
+	});
+
+	// The confirmation pass (2026-09-17). A list omission is weak evidence —
+	// issue #37's whole finding — so an omitted id is checked against the REQUEST
+	// PATH before it is called stale. `qwen3.8-max-preview` is the standing case:
+	// absent from the plan's list, answers 200 echoing its own name, so ROUTES is
+	// right and the list is partial. It printed a false STALE for weeks, and a
+	// drift block that always has a line in it is a drift block nobody reads.
+	it("an omitted id the request path SERVES is INFO, not STALE", () => {
+		const confirmed = new Map([["qwen3.8-max-preview", 200]]);
+		const lines = diffCatalogs("qwen", ["qwen3.8-max"], "qwen t", confirmed);
+		assert.ok(
+			lines.some((l) => l.startsWith("INFO") && l.includes("qwen3.8-max-preview")),
+			`expected INFO for a served-but-unlisted id, got: ${lines.join(" | ")}`,
+		);
+		assert.ok(
+			!lines.some((l) => l.startsWith("STALE") && l.includes("qwen3.8-max-preview")),
+			"a served id must never be reported STALE",
+		);
+	});
+
+	it("an omitted id the request path REFUSES is STALE, with the status", () => {
+		const confirmed = new Map([["qwen3.8-max-preview", 400]]);
+		const lines = diffCatalogs("qwen", ["qwen3.8-max"], "qwen t", confirmed);
+		assert.ok(
+			lines.some(
+				(l) => l.startsWith("STALE") && l.includes("qwen3.8-max-preview") && l.includes("400"),
+			),
+			`expected STALE naming the request-path status, got: ${lines.join(" | ")}`,
+		);
+	});
+
+	// An unreachable confirmation must not read as "the vendor serves it". The
+	// quiet failure would be a network blip silently downgrading every STALE line
+	// to INFO — drift hidden by the very pass added to sharpen it.
+	it("an unconfirmed omission still reports, marked as unconfirmed", () => {
+		const lines = diffCatalogs("qwen", ["qwen3.8-max"], "qwen t");
+		const stale = lines.filter((l) => l.startsWith("STALE"));
+		assert.ok(stale.length > 0, "an unconfirmed omission must still be reported");
 		for (const l of stale) {
-			assert.ok(!/glm-5\.3|glm-5\.1|glm-5(?!\.)/.test(l), `non-200 row reported STALE: ${l}`);
+			assert.match(l, /unconfirmed/, `an unprobed STALE must say so: ${l}`);
 		}
 	});
 

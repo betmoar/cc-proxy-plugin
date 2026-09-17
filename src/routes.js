@@ -142,13 +142,28 @@ export const ROUTES = {
 		{ provider: "qwen", status: 200 },
 		{ provider: "deepseek", status: 400 },
 	],
-	// Z.ai ONLY. Probed 2026-08-14: the Qwen plan 400s it ("Model not exist.")
-	// and OpenRouter does not list it, so unlike glm-5.2 there is no second
-	// route to rank — a plan-only user cannot reach this id at all and falls to
-	// their default backend, which is correct and not a bug to route around.
+	// TWO routes since 2026-09-17. Was Z.ai-ONLY: the plan answered 400 "Model
+	// not exist." on 2026-08-14, and both the entry and its test said a
+	// plan-only user simply could not reach this id. The plan now SERVES it —
+	// 200, body echoes `"model":"glm-5.3"`, and its `/compatible-mode/v1/models`
+	// lists it — so that sentence had become a route this proxy refused to take
+	// on a user's behalf: `rankRoutes` filters non-200, so a plan-only holder was
+	// told the flagship was unreachable while their own gateway served it.
+	//
+	// This is backlog item 12 firing exactly as written ("ROUTES rots silently
+	// and no test can catch it"): nothing in the hermetic suite can see a vendor
+	// add a model, and the row was three days stale before `probe:vendors` said
+	// so — via the catalog-drift pass, not any case. The predicted repair is the
+	// one taken here, and routes.test.js names it too ("a future probe finds the
+	// plan serving it … the ROUTES entry gains a second route — the intended
+	// workflow, not a break").
+	//
+	// Native (glm) still wins the tie, same as glm-5.2 below: the plan injects a
+	// +79-token preamble, so the two are not interchangeable, and the tiebreak
+	// ranks native above tier regardless.
 	"glm-5.3": [
 		{ provider: "glm", status: 200 },
-		{ provider: "qwen", status: 400 },
+		{ provider: "qwen", status: 200 },
 	],
 	// Same shape as glm-5.3, and measured the same way (2026-09-08, through the
 	// proxy so the auth shape is the real one): Z.ai answers 200 and echoes

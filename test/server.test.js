@@ -2045,3 +2045,222 @@ describe("dispatcher containment (a bad request never ends the process)", () => 
 		assert.equal(after.status, 200, "one throwing request must not take the process down");
 	});
 });
+
+describe("foreign server_tool_use strip (mixed-backend history routed to Claude)", () => {
+	let claude;
+	let glmStub;
+	let proxy;
+
+	afterEach(async () => {
+		await close(claude?.server, glmStub?.server, proxy?.server);
+		claude = glmStub = proxy = undefined;
+	});
+
+	async function wire() {
+		claude = await startBackend(() => ({
+			status: 200,
+			headers: { "content-type": "application/json" },
+			body: NORMAL_200,
+		}));
+		glmStub = await startBackend(() => ({
+			status: 200,
+			headers: { "content-type": "application/json" },
+			body: NORMAL_200,
+		}));
+		const providers = buildProviders({ GLM_API_KEY: "g" }, "claude");
+		providers.find((p) => p.id === "claude").baseUrl = claude.baseUrl;
+		providers.find((p) => p.id === "glm").baseUrl = glmStub.baseUrl;
+		proxy = await startProxy({ port: 0, providers });
+	}
+
+	// The exact block shape Z.ai's Anthropic-compatible endpoint emitted on
+	// 2026-09-14 (session 71dbf659): analyze_image, call_ id, and a paired
+	// tool_result carrying the MCP error from the failed call.
+	const glmHistory = [
+		{ role: "user", content: "look at this image" },
+		{
+			role: "assistant",
+			content: [
+				{
+					type: "server_tool_use",
+					id: "call_d88edcb2ba6d4d789afd7a0e",
+					name: "analyze_image",
+					input: {},
+				},
+			],
+		},
+		{
+			role: "assistant",
+			content: [
+				{
+					type: "tool_result",
+					tool_use_id: "call_d88edcb2ba6d4d789afd7a0e",
+					content: [{ type: "text", text: "MCP error 400" }],
+				},
+			],
+		},
+		{ role: "user", content: "now switch to claude" },
+	];
+
+	it("claude route: the foreign block and its tool_result never reach upstream", async () => {
+		await wire();
+		const res = await post(proxy.port, { model: "claude-opus-5", messages: glmHistory });
+		assert.equal(res.status, 200);
+		const sent = JSON.parse(claude.calls[0].body);
+		for (const msg of sent.messages) {
+			if (Array.isArray(msg.content)) {
+				for (const block of msg.content) {
+					assert.notEqual(block.type, "server_tool_use", "foreign server_tool_use leaked");
+					assert.notEqual(block.type, "tool_result", "orphaned tool_result leaked");
+				}
+			}
+		}
+	});
+
+	it("claude route: no message reaches upstream with an EMPTY content array", async () => {
+		// The strip's own second 400: `content: []` is rejected ("List should
+		// have at least 1 item after validation"), and in the #67 transcript the
+		// foreign block and its result each sit alone in a message — so a strip
+		// that only filters BLOCKS forwards two husks and the session dies just
+		// the same, one field over. Asserting on the message count is the only
+		// observable that separates the two; the block-level assertion in the
+		// test above passes against the husk.
+		await wire();
+		const res = await post(proxy.port, { model: "claude-opus-5", messages: glmHistory });
+		assert.equal(res.status, 200);
+		const sent = JSON.parse(claude.calls[0].body);
+		for (const msg of sent.messages) {
+			assert.notEqual(
+				Array.isArray(msg.content) && msg.content.length,
+				0,
+				`empty content array forwarded: ${JSON.stringify(msg)}`,
+			);
+		}
+		assert.deepEqual(
+			sent.messages.map((m) => m.role),
+			["user", "user"],
+			"the two emptied messages must be gone, not husked",
+		);
+	});
+
+	it("claude route: an Anthropic-shaped server_tool_use survives the strip", async () => {
+		await wire();
+		const res = await post(proxy.port, {
+			model: "claude-opus-5",
+			messages: [
+				{
+					role: "assistant",
+					content: [
+						{ type: "server_tool_use", id: "srvtoolu_1a09XkCD", name: "web_search", input: {} },
+					],
+				},
+			],
+		});
+		assert.equal(res.status, 200);
+		const sent = JSON.parse(claude.calls[0].body);
+		assert.equal(sent.messages[0].content[0].type, "server_tool_use");
+		assert.equal(sent.messages[0].content[0].id, "srvtoolu_1a09XkCD");
+	});
+
+	it("glm route: the SAME history is forwarded untouched (it is GLM's own context)", async () => {
+		await wire();
+		const res = await post(proxy.port, { model: "glm-5.3", messages: glmHistory });
+		assert.equal(res.status, 200);
+		assert.equal(claude.calls.length, 0, "must not touch the claude backend");
+		const sent = JSON.parse(glmStub.calls[0].body);
+		assert.equal(
+			sent.messages[1].content[0].id,
+			"call_d88edcb2ba6d4d789afd7a0e",
+			"GLM history must reach GLM byte-for-byte",
+		);
+	});
+
+	it("streaming path: the strip fires there too", async () => {
+		claude = await startBackend(() => ({
+			status: 200,
+			headers: { "content-type": "text/event-stream" },
+			body: 'event: message_start\ndata: {"type":"message_start"}\n\n',
+		}));
+		glmStub = await startBackend(() => ({
+			status: 200,
+			headers: { "content-type": "text/event-stream" },
+			body: 'event: message_start\ndata: {"type":"message_start"}\n\n',
+		}));
+		const providers = buildProviders({ GLM_API_KEY: "g" }, "claude");
+		providers.find((p) => p.id === "claude").baseUrl = claude.baseUrl;
+		providers.find((p) => p.id === "glm").baseUrl = glmStub.baseUrl;
+		proxy = await startProxy({ port: 0, providers });
+		const res = await post(proxy.port, {
+			model: "claude-opus-5",
+			stream: true,
+			messages: glmHistory,
+		});
+		assert.equal(res.status, 200);
+		const sent = JSON.parse(claude.calls[0].body);
+		const flat = sent.messages.flatMap((m) => (Array.isArray(m.content) ? m.content : []));
+		assert.equal(
+			flat.some((b) => b.type === "server_tool_use"),
+			false,
+		);
+		// The MESSAGE COUNT, not just the block absence — the same assertion the
+		// buffered sibling above carries, and for the same reason: a block-only
+		// check passes against the husk defect (messages emptied to `content: []`
+		// and forwarded), which is its own 400. The streaming and buffered paths
+		// are separate code, so the weaker assertion here would have left half
+		// the feature pinned by a test that cannot see the bug.
+		assert.equal(
+			sent.messages.length,
+			2,
+			"the two messages the strip empties must be dropped, not forwarded empty",
+		);
+		assert.equal(
+			flat.some((b) => typeof b.tool_use_id === "string"),
+			false,
+			"the paired result must not survive as an orphan",
+		);
+		for (const m of sent.messages) {
+			assert.notEqual(
+				Array.isArray(m.content) ? m.content.length : -1,
+				0,
+				"no message may reach upstream with an empty content array",
+			);
+		}
+	});
+
+	// The annotation is the ONLY signal a user ever sees that their transcript
+	// was rewritten, and nothing above can see it: every assertion in this suite
+	// reads the UPSTREAM BODY, which is byte-identical whether the line reports
+	// the strip or stays silent. Mutating `toolStrip` to the empty string left
+	// the whole suite green (measured), including the couplings lock — that lock
+	// pins the log TEMPLATE, so it survives a template that interpolates a value
+	// nothing ever sets. Both halves are asserted for the same reason the
+	// `(routed as …)` pair is: it must appear when the strip fired, and must not
+	// appear otherwise, because scripts/status.js parses these lines.
+	it("routing log reports the strip, and only when it fired", async () => {
+		await wire();
+		const logged = [];
+		const orig = console.log;
+		console.log = (...a) => logged.push(a.join(" "));
+		try {
+			await post(proxy.port, { model: "claude-opus-5", messages: glmHistory });
+			await post(proxy.port, {
+				model: "claude-opus-5",
+				messages: [{ role: "user", content: "nothing to strip here" }],
+			});
+		} finally {
+			console.log = orig;
+		}
+		const routes = logged.filter((l) => / -> /.test(l));
+		assert.equal(routes.length, 2, "one routing line per request");
+		assert.match(
+			routes[0],
+			/\(stripped 2 foreign tool block\(s\), 2 message\(s\) dropped\)$/,
+			"a strip that rewrote the history must say so on the routing line",
+		);
+		assert.doesNotMatch(
+			routes[1],
+			/stripped/,
+			"an untouched history must not be annotated — the line is parsed, not just read",
+		);
+	});
+});

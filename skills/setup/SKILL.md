@@ -164,7 +164,9 @@ If yes, merge this **top-level** key into `~/.claude/settings.json` (it is *not*
 }
 ```
 
-`<PROXY_DIR>` is the plugin tree located in step 1 (e.g. `~/.claude/plugins/cache/betmoar/cc-proxy/<version>`). The statusline command runs outside plugin context, so `${CLAUDE_PLUGIN_ROOT}` is unavailable — an absolute path is required here, and it *is* version-pinned (a statusline pointing at an older cache dir still renders; it does not affect which proxy runs). If the user already has a `statusLine` configured, show them the command and let them decide rather than overwriting it.
+`<PROXY_DIR>` is the plugin tree located in step 1 (e.g. `~/.claude/plugins/cache/betmoar/cc-proxy/<version>`). The statusline command runs outside plugin context, so the CLAUDE_PLUGIN_ROOT variable is unavailable there — an absolute path is required here, and it *is* version-pinned (a statusline pointing at an older cache dir still renders; it does not affect which proxy runs). If the user already has a `statusLine` configured, show them the command and let them decide rather than overwriting it.
+
+(That sentence names the variable WITHOUT the `${…}` spelling on purpose. Substitution is textual and does not care whether an occurrence is a command or prose about the command: written the braced way, this line rendered as "so `/Users/…/cc-proxy/0.10.2` is unavailable" — a real, present path described as missing, which is worse than no warning at all. Measured 2026-09-17; `test/docs.test.js` now denies the braced form in this file outside a fenced block.)
 
 ### 5. Start the proxy now
 
