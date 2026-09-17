@@ -765,21 +765,57 @@ function shapeRoutedIds(providerId) {
  * @param {string} providerId
  * @param {string[]} vendorListed - ids the vendor's own /models endpoint returns
  * @param {string} endpointLabel - for the STALE line
+ * @param {Map<string, number>} [servedStatuses] - request-path status per OMITTED id,
+ *   from driftReport()'s confirmation pass. Absent/empty = unconfirmed, which still
+ *   reports (marked as such) rather than going quiet.
  * @returns {string[]}
  */
-export function diffCatalogs(providerId, vendorListed, endpointLabel) {
+export function diffCatalogs(providerId, vendorListed, endpointLabel, servedStatuses = new Map()) {
 	const lines = [];
 	const ours = shapeRoutedIds(providerId);
 	const theirs = new Set(vendorListed);
 	// ROUTES records non-200 statuses DELIBERATELY (complete, not curated): the
-	// qwen rows for glm-5.3 (400) and glm-5.1/glm-5 (403) document that the plan
-	// REFUSES them — so the vendor list omitting those ids is agreement, not
-	// staleness. A STALE line fires only for an id we say the provider SERVES
-	// (status 200) that its own list cannot see.
+	// qwen rows for glm-5.1/glm-5 (403) document that the plan REFUSES them — so
+	// the vendor list omitting those ids is agreement, not staleness. A STALE
+	// line fires only for an id we say the provider SERVES (status 200) that its
+	// own list cannot see.
+	//
+	// A list omission is WEAK evidence, and this loop used to forget it. Issue
+	// #37's core finding — the reason probeServedModel() exists and reads the
+	// response body — is that a vendor's catalog is not ground truth about what
+	// its request path serves; the two disagreed in BOTH directions here on
+	// 2026-09-17. `qwen3.8-max-preview` is absent from
+	// `/compatible-mode/v1/models` and answers 200 echoing its own name, so a
+	// bare STALE line accused a row that was correct; meanwhile the same list had
+	// started serving `glm-5.3`, which ROUTES still recorded as 400, and no STALE
+	// line could ever have said so (the check only looks one way). A standing
+	// false positive is worse than silence: it trains a reader to skim the drift
+	// block, which is where the true line eventually appears.
+	//
+	// So an omission is CONFIRMED against the request path before it is called
+	// stale. The confirmation is INJECTED rather than fetched here, because this
+	// function is exported and unit-tested as a pure comparison — doing the I/O
+	// inline would make `pnpm check` spend real quota, which is the one thing
+	// this whole script is kept out of CI to avoid. driftReport() probes the
+	// omitted ids and passes the statuses in; an empty map keeps the old
+	// behaviour, so a caller that cannot probe still reports rather than going
+	// quiet.
 	for (const id of ours) {
 		const route = ROUTES[id]?.find((r) => r.provider === providerId);
-		if (!theirs.has(id) && route?.status === 200) {
-			lines.push(`STALE  ${endpointLabel} omits ${id} (ROUTES says ${providerId}:200)`);
+		if (theirs.has(id) || route?.status !== 200) continue;
+		const servedStatus = servedStatuses.get(id);
+		if (servedStatus === 200) {
+			lines.push(
+				`INFO   ${endpointLabel} omits ${id}, but the request path SERVES it (200) — ROUTES is right, the list is partial`,
+			);
+		} else if (typeof servedStatus === "number") {
+			lines.push(
+				`STALE  ${endpointLabel} omits ${id} and the request path answers ${servedStatus} (ROUTES says ${providerId}:200)`,
+			);
+		} else {
+			lines.push(
+				`STALE  ${endpointLabel} omits ${id} (ROUTES says ${providerId}:200, unconfirmed)`,
+			);
 		}
 	}
 	// Vendor lists ids our ROUTES does not cover at all. Not a defect — unlisted
@@ -887,6 +923,40 @@ async function driftReport() {
 	let unreachableLegs = 0;
 	driftReportRan = true;
 
+	/**
+	 * Confirm every id a vendor's list OMITS against the request path, so
+	 * diffCatalogs can tell "our row is stale" from "their list is partial".
+	 * Only omitted-and-200 rows are probed — one 4-token turn each, on a gate
+	 * that already spends real quota — so a list that agrees with ROUTES costs
+	 * nothing extra.
+	 *
+	 * An unreachable confirmation is NOT silently treated as "serves it": it is
+	 * left out of the map, which diffCatalogs reports as `unconfirmed`, and the
+	 * leg is counted so the run cannot exit 0 on a half-measured drift pass.
+	 *
+	 * @param {string} providerId
+	 * @param {string[]} listedIds
+	 * @param {{url: string, auth: (k: string) => Record<string, string>, key: string}} probeTarget
+	 * @returns {Promise<Map<string, number>>}
+	 */
+	async function confirmOmissions(providerId, listedIds, probeTarget) {
+		const theirs = new Set(listedIds);
+		/** @type {Map<string, number>} */
+		const statuses = new Map();
+		for (const [id, routeList] of Object.entries(ROUTES)) {
+			const route = routeList.find((r) => r.provider === providerId);
+			if (!route || route.status !== 200 || theirs.has(id)) continue;
+			const served = await probeServedModel({ ...probeTarget, id });
+			if (served.error) {
+				unreachableLegs++;
+				lines.push(`UNREACHABLE  ${providerId} ${id} omission check: ${served.error}`);
+				continue;
+			}
+			statuses.set(id, served.status);
+		}
+		return statuses;
+	}
+
 	// GLM: the Anthropic-skin list (the one /v1/models republishes) — the
 	// endpoint the issue measured omitting glm-5.3. SCOPE: only this list; the
 	// issue's other two Z.ai endpoints (/api/paas/v4/models, /api/v1/models)
@@ -903,7 +973,12 @@ async function driftReport() {
 			lines.push(`UNREACHABLE  glm /api/anthropic/v1/models: ${listed.error}`);
 		} else {
 			reached++;
-			lines.push(...diffCatalogs("glm", listed.ids, "glm /api/anthropic/v1/models"));
+			const confirmed = await confirmOmissions("glm", listed.ids, {
+				url: "https://api.z.ai/api/anthropic/v1/messages",
+				auth: (k) => ({ "x-api-key": k }),
+				key: "GLM_API_KEY",
+			});
+			lines.push(...diffCatalogs("glm", listed.ids, "glm /api/anthropic/v1/models", confirmed));
 		}
 		// Alias checks on the multi-version glm ids where the issue measured
 		// aliasing (glm-5.2/5.1/5 -> glm-5.3 on Z.ai).
@@ -939,7 +1014,15 @@ async function driftReport() {
 			lines.push(`UNREACHABLE  qwen /compatible-mode/v1/models: ${listed.error}`);
 		} else {
 			reached++;
-			lines.push(...diffCatalogs("qwen", listed.ids, "qwen /compatible-mode/v1/models"));
+			// The plan's Anthropic skin, NOT the compatible-mode path the list came
+			// from: it is the path cc-proxy actually forwards to, so it is the one
+			// whose answer decides whether a ROUTES row is true.
+			const confirmed = await confirmOmissions("qwen", listed.ids, {
+				url: "https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic/v1/messages",
+				auth: (k) => ({ "x-api-key": k }),
+				key: "DASHSCOPE_API_KEY",
+			});
+			lines.push(...diffCatalogs("qwen", listed.ids, "qwen /compatible-mode/v1/models", confirmed));
 		}
 	}
 

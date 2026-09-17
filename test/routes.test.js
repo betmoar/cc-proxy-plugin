@@ -213,21 +213,28 @@ describe("discovery ↔ routing coherence", () => {
 		}
 	});
 
-	// glm-5.3, promoted 2026-08-14. Pins the two facts that make it different
-	// from every other glm id, both probed live the same day: it is Z.ai-ONLY
-	// (the Qwen plan answers "Model not exist.", OpenRouter does not list it),
-	// and it is the vendor's current flagship, so glm-5.2 demoted under it.
+	// glm-5.3, promoted 2026-08-14, second route added 2026-09-17. The previous
+	// version of this test asserted the id was Z.ai-ONLY and said so in its name,
+	// on a 2026-08-14 probe where the plan answered 400 "Model not exist." It
+	// also wrote down what to do when that changed: "If a future probe finds the
+	// plan serving it, this test fails and the ROUTES entry gains a second route
+	// — which is the intended workflow, not a break." The probe found exactly
+	// that (2026-09-17: the plan answers 200 and echoes `"model":"glm-5.3"`, and
+	// now lists the id), so this is that workflow completing, not a regression.
 	//
-	// The single-route shape is the load-bearing half: a plan-only user cannot
-	// reach this id at all and correctly falls to their default backend. If a
-	// future probe finds the plan serving it, this test fails and the ROUTES
-	// entry gains a second route — which is the intended workflow, not a break.
-	it("glm-5.3 is Z.ai-only, and outranks glm-5.2 on grade", async () => {
+	// What it pins NOW is the tiebreak rather than the route count: two plan
+	// routes, native first. That is the assertion with a decision behind it —
+	// swapping Z.ai for the plan buys nothing and costs the +79-token preamble,
+	// so glm-5.3 must resolve native for a user holding both keys, exactly like
+	// glm-5.2. A bare `["glm"]` would pass again the day the plan drops the id
+	// and would not notice the ORDER silently inverting, which is the failure
+	// that actually costs a user money.
+	it("glm-5.3 has two routes and resolves native, and outranks glm-5.2 on grade", async () => {
 		const { MODEL_GRADES, CONTEXT_WINDOW } = await import("../src/models.js");
 		assert.deepEqual(
 			rankRoutes("glm-5.3").map((r) => r.provider),
-			["glm"],
-			"the Qwen plan 400s glm-5.3 — a second route here would be unprobed fiction",
+			["glm", "qwen"],
+			"the plan serves glm-5.3 since 2026-09-17; native must still win the tie (+79-token plan preamble)",
 		);
 		assert.equal(MODEL_GRADES["glm-5.3"], "Flagship");
 		assert.equal(
