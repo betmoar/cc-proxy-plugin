@@ -2,6 +2,21 @@
 
 All notable changes to cc-proxy are recorded here. Versions follow [semver](https://semver.org/); `package.json` is the single source of truth and propagates to `.claude-plugin/plugin.json` via `scripts/sync-version.mjs`.
 
+## [0.10.3] — 2026-09-17
+
+### Fixed
+- **A mixed-backend session could no longer switch to Claude (#67).** Z.ai's Anthropic-compatible endpoint emits `server_tool_use` blocks for its own built-in tools (`analyze_image`, measured 2026-09-14) with OpenAI-shaped `call_…` ids. Once such a block was in the history, every later turn routed to Claude died with a 400 on the whole transcript — first on the id pattern, then, after renaming, on the name (closed set, no GLM→Anthropic mapping). `stripForeignServerToolUse()` removes those blocks and their paired results on the **claude route only**: the same history is legal input to the backend that produced it, and rewriting it there would be the mid-turn rewriting invariant 2 declines. A block is foreign if its name is outside Anthropic's set **or** its id fails `^srvtoolu_[a-zA-Z0-9_]+$`; both axes were measured rejections.
+- **The strip removes emptied MESSAGES, not just blocks.** In the #67 transcript the foreign block and its result each sit alone in a message, so filtering blocks alone left two husks — and `content: []` is itself rejected (`List should have at least 1 item after validation`), trading one 400 for another. Safe because consecutive same-role messages are legal and `messages[0]` can never be emptied (a paired result needs a `server_tool_use` before it); a message that *arrived* empty is left alone. Every block-level assertion passes against the husk, so the tests assert the message count instead.
+- Results pair by `tool_use_id` alone, not by `type === "tool_result"` — a server tool's result is spelled `web_search_tool_result` / `web_fetch_tool_result` / `bash_code_execution_tool_result`, and keying on the type would leave whichever spelling the next vendor picks as the orphan the sweep exists to prevent.
+- An **id-less** foreign block used to reach Claude untouched: `isForeignServerToolUse` called a missing id foreign, but such a block adds nothing to `foreignIds`, so the `foreignIds.size === 0` early return handed the body back unchanged. "Is there anything to strip" is now a different question from "which results are orphaned".
+- The drift guard on `ANTHROPIC_SERVER_TOOLS` builds its probe pattern from the set itself; it previously matched three of eight names and stayed green after a vendor added a ninth.
+
+### Changed
+- **Invariant 1 now lists FOUR body exceptions.** The fourth inverts the shape of the first three: not a spelling the CLIENT uses that no backend knows, but history a BACKEND produced that the destination rejects wholesale — which is why it is directional where the others are universal.
+
+### Closed
+- **Backlog 24** — `${CLAUDE_PLUGIN_ROOT}` in the setup skill is now measured, not just documented. Invoking `/cc-proxy:setup` against the live binary (CC 2.1.263) showed the braced form resolving to an absolute, version-correct path in both command positions, so the 0.10.2 change was right. The same run found the hazard the item did not anticipate: substitution is textual and has no notion of prose-versus-command, so the sentence *explaining* that the variable is unavailable to the statusline was substituted too, and reached the model as "so `/Users/…/cc-proxy/0.10.2` is unavailable" — a real path described as missing. Prose now names the variable bare, and `docs.test.js` denies the braced spelling outside a fenced block. This generalises to any `${VAR}` a plugin skill mentions in prose.
+
 ## [0.10.2] — 2026-09-17
 
 An audit of the whole tree (four domains, 47 findings, every P1/P2 reproduced
