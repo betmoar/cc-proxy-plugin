@@ -593,14 +593,24 @@ notes referencing "backlog item N" still resolve.
     require `git merge-base --is-ancestor HEAD origin/main`. Low priority
     while the CI check exists. Done-when: either the guard checks ancestry or
     the header grid records the limitation and points at release.yml.
-24. **`${CLAUDE_PLUGIN_ROOT}` in the setup skill is documented, not measured**
-    (audit 0.10.2, F83). The plugin reference says the braced form is
-    substituted in a plugin skill's markdown and that `$VAR` without braces is
-    never substituted; 0.10.2 changed `skills/setup/SKILL.md` to the braced
-    form on that basis. Nothing in this repo has run the skill against the
-    live `claude` binary since. Done-when: one dated measurement in
-    `docs/MAINTAINING.md` says step 3b resolved to an absolute path, or the
-    skill carries the four-candidate resolver block from `commands/models.md`.
+24. ~~**`${CLAUDE_PLUGIN_ROOT}` in the setup skill is documented, not measured**~~
+    — **DONE** (0.10.3). Measured 2026-09-17 by invoking `/cc-proxy:setup`
+    against the live binary (CC 2.1.263, plugin 0.10.2) and diffing the source
+    against what the harness delivered. The braced form IS substituted: step 3b
+    arrived as `node "/Users/…/cc-proxy/0.10.2/scripts/render-model-picker.js"`,
+    step 5 likewise — absolute, and pinned to the running version. So F83's
+    change was right and the four-candidate resolver is not needed here. Full
+    before/after in `docs/MAINTAINING.md`.
+
+    The same run found what the item did not think to ask: substitution is
+    TEXTUAL and has no notion of prose-versus-command, so the sentence in step 4
+    explaining that the variable is unavailable to the statusline was
+    substituted too, and rendered as "so `/Users/…/cc-proxy/0.10.2` is
+    unavailable" — a real, present path described as missing. That reads as a
+    broken install to anyone following it. The prose now names the variable
+    bare, and `docs.test.js` denies the braced spelling outside a fenced block.
+    Worth generalising: any `${VAR}` a plugin skill's markdown mentions in prose
+    has this hazard, not just this one.
 
 ## Reversed decisions
 

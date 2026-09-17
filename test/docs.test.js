@@ -180,4 +180,35 @@ describe("documentation structure", () => {
 			}
 		}
 	});
+
+	// A plugin skill's markdown is SUBSTITUTED before the model reads it, and
+	// the substitution is textual — it does not care whether an occurrence is a
+	// command to run or prose explaining the variable. Measured 2026-09-17 by
+	// invoking the skill and diffing source against what arrived: both command
+	// occurrences resolved to the right absolute path (which is what closed
+	// backlog 24), and so did the sentence saying the variable is UNAVAILABLE
+	// in the statusline context — it rendered as "so `/Users/…/cc-proxy/0.10.2`
+	// is unavailable", a real path described as missing. A reader chasing that
+	// goes looking for a broken install.
+	//
+	// So: the braced spelling belongs only inside a fenced code block, where it
+	// is a command. Prose names the variable bare. Fences are stripped before
+	// the scan rather than matched, because a ``` inside a fence would end the
+	// match early and silently shrink what this checks.
+	it("the setup skill uses ${CLAUDE_PLUGIN_ROOT} only inside code fences", () => {
+		const prose = read("skills/setup/SKILL.md").replace(/```[\s\S]*?```/g, "");
+		const offenders = prose
+			.split("\n")
+			.map((line, i) => [i + 1, line])
+			.filter(([, line]) => line.includes("${CLAUDE_PLUGIN_ROOT}"));
+		assert.deepEqual(
+			offenders.map(([n]) => n),
+			[],
+			`skills/setup/SKILL.md names \${CLAUDE_PLUGIN_ROOT} in PROSE at line(s) ${offenders
+				.map(([n]) => n)
+				.join(
+					", ",
+				)} — the harness substitutes it there too, so a sentence about the variable turns into a sentence about one concrete path. Write it bare (CLAUDE_PLUGIN_ROOT) outside a fenced block.`,
+		);
+	});
 });

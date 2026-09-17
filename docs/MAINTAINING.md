@@ -101,6 +101,51 @@ block comment, and `resolve()`'s numbered step list. Every one was caught by a
 reviewer, none by a test, the last only after approval. That is why the three
 lock mechanisms above exist.
 
+### A plugin skill's markdown is substituted before the model reads it
+
+Measured 2026-09-17 (Claude Code 2.1.263, cc-proxy 0.10.2) by invoking
+`/cc-proxy:setup` and diffing `skills/setup/SKILL.md` against what arrived in
+context. This is what closed backlog 24, which had asked only the first
+question.
+
+**The braced form works.** Both command occurrences resolved to an absolute,
+version-correct path:
+
+| | |
+| --- | --- |
+| source, step 3b | `node "${CLAUDE_PLUGIN_ROOT}/scripts/render-model-picker.js"` |
+| delivered | `node "/Users/…/.claude/plugins/cache/betmoar/cc-proxy/0.10.2/scripts/render-model-picker.js"` |
+
+So F83's 0.10.2 change was correct, and the four-candidate resolver block from
+`commands/models.md` is not needed in a skill. Note the asymmetry with a slash
+command: `CLAUDE_PLUGIN_ROOT` is NOT in a command's bash environment (checked
+the same day: `echo "${CLAUDE_PLUGIN_ROOT:-UNSET}"` from `/cc-proxy:status`
+printed `UNSET`), which is exactly why `commands/*.md` need that resolver and
+`skills/*.md` do not. Two different layers, two different mechanisms.
+
+**And the hazard the item did not anticipate.** Substitution is textual. It has
+no notion of "this occurrence is a command" versus "this occurrence is prose
+about the command", so step 4's sentence explaining the variable is unavailable
+to the statusline was substituted too:
+
+| | |
+| --- | --- |
+| source | "runs outside plugin context, so `${CLAUDE_PLUGIN_ROOT}` is unavailable" |
+| delivered | "runs outside plugin context, so `/Users/…/cc-proxy/0.10.2` is unavailable" |
+
+A real, present path described as missing — which reads as a broken install to
+anyone following the step, and could send them hunting for a different
+directory. Backticks do not protect it; nothing about markdown does. The
+warning ate itself, and reading the source file would never reveal it, because
+the rot is injected at render time.
+
+Prose therefore names the variable bare (`CLAUDE_PLUGIN_ROOT`), and
+`docs.test.js` "the setup skill uses ${CLAUDE_PLUGIN_ROOT} only inside code
+fences" denies the braced spelling outside a fenced block. It strips fences
+before scanning rather than matching them, because a nested ``` would end a
+match early and silently shrink what is checked. **This generalises to any
+`${VAR}` a plugin skill mentions in prose**, not just this one.
+
 ### Plumbing and `~/.env`
 
 Since 0.10.2 the SessionStart hook and `scripts/start-proxy.js` load `~/.env`
