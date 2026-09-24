@@ -58,6 +58,34 @@ export function writeGradesFile(dir, filePath, data) {
 }
 
 /**
+ * Vendor names that carry NO version, mapped to the versioned build they serve.
+ * `deepseek-flash` is DeepSeek-V4.1-Flash (api-docs.deepseek.com, re-read
+ * 2026-09-25), but the name alone reads as version [0] and joins nothing:
+ * benchlm and OpenRouter both spell the model with its version
+ * (`deepseek/deepseek-v4.1-flash`), so the curated id got no score, no price,
+ * and the LAST rung of its vendor (issue #72). The vendor re-points these names
+ * when it ships, so this row moves with every release of the line; the target
+ * is also a real plan-served id (`deepseek-v4.1-flash`), which is why the two
+ * share one rung.
+ * @type {Record<string, string>}
+ */
+export const UNVERSIONED_ALIASES = {
+	"deepseek-flash": "deepseek-v4.1-flash",
+};
+
+/**
+ * The bare id: the OpenRouter vendor prefix and a `<provider>:` lens stripped,
+ * then an unversioned vendor name resolved to the build it serves.
+ * @param {string} s
+ * @returns {string}
+ */
+function bareIdOf(s) {
+	const tail = String(s).includes("/") ? String(s).split("/").pop() : String(s);
+	const bare = String(tail).replace(/^[a-z]+:/, "");
+	return Object.hasOwn(UNVERSIONED_ALIASES, bare) ? UNVERSIONED_ALIASES[bare] : bare;
+}
+
+/**
  * Fold a model name or id to a comparison key: lowercase, and every separator
  * dropped. "DeepSeek V4 Pro", "deepseek-v4-pro" and "deepseek/deepseek-v4-pro"
  * all fold to "deepseekv4pro".
@@ -69,15 +97,14 @@ export function writeGradesFile(dir, filePath, data) {
  * plan's copy of one DeepSeek model, so it must fold onto the bare row rather
  * than claim a rung of its own (leaving it unstripped pushed the real second
  * model down a grade — `deepseek-v4-flash` fell from Strong to Specialist).
+ * An unversioned vendor name folds onto its build (UNVERSIONED_ALIASES).
  *
  * @param {string} s
  * @returns {string}
  */
 export function normalizeName(s) {
-	const tail = String(s).includes("/") ? String(s).split("/").pop() : String(s);
 	return (
-		String(tail)
-			.replace(/^[a-z]+:/, "")
+		bareIdOf(s)
 			// A DATED build folds onto its bare sibling: `deepseek-v4-flash-0731` is
 			// a snapshot of `deepseek-v4-flash`, which is exactly how src/models.js
 			// grades it ("graded as its bare sibling ... which it is a dated snapshot
@@ -128,14 +155,14 @@ export function vendorOf(id) {
 /**
  * Sort key for an id WITHIN its vendor: the version numbers in the id, most
  * significant first. `glm-5.2` → [5,2]; `qwen3.8-max` → [3,8]; `deepseek-v4-pro`
- * → [4]. Higher sorts first.
+ * → [4]; `deepseek-flash` → [4,1], through UNVERSIONED_ALIASES. Higher sorts
+ * first.
  *
  * @param {string} id
  * @returns {number[]}
  */
 export function versionKey(id) {
-	const tail = String(id).includes("/") ? String(id).split("/").pop() : String(id);
-	const m = String(tail).match(/(\d+(?:\.\d+)*)/);
+	const m = bareIdOf(id).match(/(\d+(?:\.\d+)*)/);
 	return m ? m[1].split(".").map(Number) : [0];
 }
 

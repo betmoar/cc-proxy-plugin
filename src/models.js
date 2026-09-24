@@ -24,10 +24,10 @@ import { tierOf } from "./routes.js";
  *
  * DELIBERATELY A DIFFERENT AXIS FROM `tier`. `tier` is what a route COSTS
  * (1 oauth-plan … 4 reseller); `grade` is what the model can DO. They are not
- * correlated and must never be read off one another: `deepseek/deepseek-v4-pro`
- * is tier 4 (expensive, resold) and Flagship (same weights as native), while a
- * plan-served flagship is tier 2 and Flagship. Publishing them as one field
- * would make one of those a lie.
+ * correlated and must never be read off one another: `google/gemini-3.7-flash`
+ * is tier 4 (expensive, resold) and Flagship, while `qwen:deepseek-v4.1-flash`
+ * is tier 2 and Flagship. Publishing them as one field would make one of those
+ * a lie.
  *
  * THREE VALUES, AND ONLY THREE: `Flagship` | `Strong` | `Specialist`. An id
  * absent from this table (and from the refresh) has NO grade — the field is
@@ -87,17 +87,32 @@ export const MODEL_GRADES = {
 	"glm-4.6": "Specialist",
 	"glm-4.5": "Specialist",
 	"glm-4.5-air": "Specialist",
-	// DeepSeek (native)
-	"deepseek-v4-pro": "Flagship",
-	// The vendor's current name for its flash line; the delisted alias
-	// `deepseek-v4-flash` is deliberately NOT graded (see CONTEXT_WINDOW).
-	// Strong, not Flagship: the vendor's own line-up puts Pro above Flash, and
-	// the price gap says the same (cache-miss input $0.15 vs $0.66 per 1M,
-	// off-peak). Flash is the cheap tier, and tier is not this axis.
-	"deepseek-flash": "Strong",
+	// DeepSeek (native). RE-GRADED 2026-09-25 (issue #72): the line-up flipped.
+	// `deepseek-flash` is DeepSeek-V4.1-Flash (released 2026-09-10), the newest
+	// release, and the vendor's own launch post says it leads V4-Pro ("Tests by
+	// multiple parties put V4.1-Flash ahead of V4-Pro on performance") — vendor-
+	// reported: DeepSWE v1.1 74.2 vs 62.7, Terminal-Bench 2.1 90.6 vs 87.9, while
+	// Pro still leads GPQA Diamond (92.4 vs 90.9) and text-only HLE (42.7 vs
+	// 39.1). Newest release takes the rung, the rule that demoted glm-5.2 and put
+	// gemini-3.7-flash on Flagship; a flash name is a price class, not a rung.
+	// The delisted alias `deepseek-v4-flash` is deliberately NOT graded (see
+	// CONTEXT_WINDOW).
+	"deepseek-flash": "Flagship",
+	// BEING PHASED OUT. DeepSeek announced every `deepseek-v4-pro` request would
+	// route to V4.1-Flash from 2026-09-14 04:00 UTC "until V4.1-Pro launches";
+	// the cutover was postponed (pricing page, 2026-09-17: Pro "continues after
+	// September 14 with billing unchanged … until further notice"). Still served
+	// as itself on 2026-09-25 — 200, body echoes `"model":"deepseek-v4-pro"`,
+	// and native /models lists it. `pnpm probe:vendors` carries that as a case,
+	// so the day it stops, the probe fails before a user does; then this entry,
+	// its CONTEXT_WINDOW, DEEPSEEK_PRICING and ROUTES rows go together.
+	"deepseek-v4-pro": "Strong",
 	// OpenRouter (curated allowlist)
-	"deepseek/deepseek-v4-pro": "Flagship",
-	"deepseek/deepseek-v4-flash": "Strong",
+	"deepseek/deepseek-v4-pro": "Strong",
+	// V4-Flash, which DeepSeek RETIRED at the V4.1 launch (its old native name
+	// now answers as `deepseek-flash`); third in the line behind V4.1-Flash and
+	// V4-Pro, so Specialist — a superseded generation, as glm-4.x above.
+	"deepseek/deepseek-v4-flash": "Specialist",
 	"tencent/hy3": "Specialist",
 	"moonshotai/kimi-k2.7-code": "Specialist",
 	"moonshotai/kimi-k3": "Specialist",
@@ -144,11 +159,12 @@ export const MODEL_GRADES = {
 	// Plan-served spelling of DeepSeek's flash line, graded as the bare
 	// `deepseek-flash` it serves — identical reasoning to deepseek-v4-flash-0731
 	// below: a route is not a capability.
-	"deepseek-v4.1-flash": "Strong",
+	"deepseek-v4.1-flash": "Flagship",
 	// Plan-served DeepSeek build — graded as its bare sibling deepseek-v4-flash,
-	// which it is a dated snapshot of. Capability, not cost: reaching it through
-	// the plan is cheaper, but that is the tier's business, not the grade's.
-	"deepseek-v4-flash-0731": "Strong",
+	// which it is a dated snapshot of: the retired V4-Flash, so Specialist since
+	// issue #72. Capability, not cost: reaching it through the plan is cheaper,
+	// but that is the tier's business, not the grade's.
+	"deepseek-v4-flash-0731": "Specialist",
 	// Claude (curated, OAuth)
 	"claude-fable-5": "Flagship",
 	"claude-opus-5": "Flagship",
@@ -334,7 +350,8 @@ export const CONTEXT_WINDOW = {
 	// REFUTES the 1310720 OpenRouter advertises for its resold `z-ai/glm-5.3-flash`
 	// — a reseller's number is evidence about the reseller's route, not this one.
 	"glm-5.3-flash": 1048576,
-	// DeepSeek (api-docs.deepseek.com/quick_start/pricing)
+	// DeepSeek (api-docs.deepseek.com/quick_start/pricing). V4-Pro is being
+	// phased out; see its MODEL_GRADES entry.
 	"deepseek-v4-pro": 1000000,
 	// Re-read 2026-09-17: the vendor RENAMED its flash line to `deepseek-flash`
 	// (model version DeepSeek-V4.1-Flash) and delisted the old `deepseek-v4-flash`
@@ -1004,6 +1021,7 @@ async function fetchOpenRouterModels(openrouter, timeoutMs) {
  * @type {Record<string, { in: number, out: number, cached: number }>}
  */
 export const DEEPSEEK_PRICING = {
+	// Being phased out — see its MODEL_GRADES entry before trusting this row.
 	"deepseek-v4-pro": { in: 0.66, out: 1.98, cached: 0.022 },
 	"deepseek-flash": { in: 0.15, out: 0.6, cached: 0.003 },
 };

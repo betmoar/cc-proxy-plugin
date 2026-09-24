@@ -2,6 +2,16 @@
 
 All notable changes to cc-proxy are recorded here. Versions follow [semver](https://semver.org/); `package.json` is the single source of truth and propagates to `.claude-plugin/plugin.json` via `scripts/sync-version.mjs`.
 
+## [0.10.4] — 2026-09-25
+
+### Changed
+- **DeepSeek re-graded: `deepseek-flash` is Flagship, `deepseek-v4-pro` is Strong (#72).** `deepseek-flash` is DeepSeek-V4.1-Flash (2026-09-10), the newest release, and DeepSeek's launch post ranks it ahead of V4-Pro. The published numbers are the vendor's own: DeepSWE v1.1 74.2 vs 62.7, Terminal-Bench 2.1 90.6 vs 87.9, while Pro still leads GPQA Diamond (92.4 vs 90.9) and text-only HLE (42.7 vs 39.1). The old comment's premise, "the vendor's own line-up puts Pro above Flash", no longer held. `deepseek-v4.1-flash` (the plan's spelling) follows `deepseek-flash`; `deepseek/deepseek-v4-pro` follows `deepseek-v4-pro`. The retired V4-Flash (`deepseek/deepseek-v4-flash`, `deepseek-v4-flash-0731`) drops to Specialist, third in the line.
+- **`deepseek-v4-pro` is marked as being phased out.** DeepSeek announced a 2026-09-14 cutover routing it to V4.1-Flash, then postponed it "until further notice". Its grade, window, price and route entries say so, and two new `pnpm probe:vendors` cases watch for the change: V4-Pro still answering as itself, and the native API naming exactly `deepseek-flash, deepseek-v4-pro`.
+
+### Fixed
+- **`/cc-proxy:bench grades` ranked `deepseek-flash` last and gave it no score or price.** The name carries no version, so it read as version 0 and joined neither benchlm nor OpenRouter (`deepseek/deepseek-v4.1-flash`). `UNVERSIONED_ALIASES` in `scripts/bench-grades.js` maps it to `deepseek-v4.1-flash`, so it now shares one rung with that plan spelling and picks up its price. Live on 2026-09-25: Flagship, $0.15/$0.60. benchlm has no V4.1-Flash row yet, so it still has no score; the join is ready for when one appears. The refresh and `MODEL_GRADES` now agree on every DeepSeek id, and a test locks that.
+- **A render test's grade assertion depended on the machine it ran on.** `route aliases keep their model's grade` compared against a literal `Flagship`, which `gradeOf()` resolves through the developer's own `grades.json`. It now compares the alias against its bare id.
+
 ## [0.10.3] — 2026-09-17
 
 ### Fixed

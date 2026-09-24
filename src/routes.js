@@ -110,6 +110,8 @@ export const ROUTES = {
 	// the route a plan-holder WITHOUT a native DeepSeek key lands on — see the
 	// "native-first, then cheapest" sort in rankRoutes). glm-5.2 is unaffected:
 	// it already resolved native via the tiebreak (both backends tier 2).
+	// DeepSeek is phasing V4-Pro out (issue #72; see MODEL_GRADES in
+	// src/models.js) — when the probe case fails, re-probe all three routes.
 	"deepseek-v4-pro": [
 		{ provider: "qwen", status: 200 },
 		{ provider: "deepseek", status: 200 },
