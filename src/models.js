@@ -165,9 +165,16 @@ export const MODEL_GRADES = {
 	// issue #72. Capability, not cost: reaching it through the plan is cheaper,
 	// but that is the tier's business, not the grade's.
 	"deepseek-v4-flash-0731": "Specialist",
-	// Claude (curated, OAuth)
-	"claude-fable-5": "Flagship",
-	"claude-opus-5": "Flagship",
+	// Claude (curated, OAuth). Two lines at the top, as before: Anthropic calls
+	// Fable its most capable widely released model and Opus its flagship
+	// general model, and neither line's position is a price. Each line's newest
+	// release takes the rung (re-read 2026-09-25): Fable 5.1 succeeds Fable 5
+	// at the same price, Opus 5.5 succeeds Opus 5 at a lower one. The superseded
+	// two are still served, so they stay listed, one rung down.
+	"claude-fable-5-1": "Flagship",
+	"claude-opus-5-5": "Flagship",
+	"claude-fable-5": "Strong",
+	"claude-opus-5": "Strong",
 	"claude-sonnet-5": "Strong",
 };
 
@@ -521,8 +528,11 @@ function beats(candidate, incumbent) {
 
 /** Reachable Claude ids advertised on discovery. Not public-API-stable — re-confirm
  * before each release touching Claude compat. claude-haiku-* omitted (internal ops
- * pin); claude-mythos-5 omitted (Project Glasswing-gated — unreachable by default). */
+ * pin); claude-mythos-5 / -5-1 omitted (Project Glasswing-gated — unreachable by
+ * default). */
 export const DEFAULT_CLAUDE_MODELS = [
+	{ type: "model", id: "claude-fable-5-1", display_name: "Claude Fable 5.1", created_at: null },
+	{ type: "model", id: "claude-opus-5-5", display_name: "Claude Opus 5.5", created_at: null },
 	{ type: "model", id: "claude-fable-5", display_name: "Claude Fable 5", created_at: null },
 	{ type: "model", id: "claude-opus-5", display_name: "Claude Opus 5", created_at: null },
 	{ type: "model", id: "claude-sonnet-5", display_name: "Claude Sonnet 5", created_at: null },

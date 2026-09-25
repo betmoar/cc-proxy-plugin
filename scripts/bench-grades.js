@@ -158,11 +158,21 @@ export function vendorOf(id) {
  * → [4]; `deepseek-flash` → [4,1], through UNVERSIONED_ALIASES. Higher sorts
  * first.
  *
+ * Anthropic separates version parts with a HYPHEN (`claude-opus-5-5` is Opus
+ * 5.5), and read with the dot rule it came out [5] — tied with `claude-opus-5`,
+ * which then won the rung on the alphabetical tiebreak. Only 1–2 digit parts
+ * count, so a dated snapshot's `-20251001` is not read as a minor version.
+ *
  * @param {string} id
  * @returns {number[]}
  */
 export function versionKey(id) {
-	const m = bareIdOf(id).match(/(\d+(?:\.\d+)*)/);
+	const bare = bareIdOf(id);
+	if (/^claude-/.test(bare)) {
+		const c = bare.match(/-(\d{1,2}(?:-\d{1,2})*)(?=-\d{8}$|$|-[a-z])/);
+		return c ? c[1].split("-").map(Number) : [0];
+	}
+	const m = bare.match(/(\d+(?:\.\d+)*)/);
 	return m ? m[1].split(".").map(Number) : [0];
 }
 

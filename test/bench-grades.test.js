@@ -63,6 +63,13 @@ describe("versionKey", () => {
 		assert.deepEqual(versionKey("deepseek-v4-pro"), [4]);
 	});
 
+	it("reads Anthropic's hyphen-separated versions, ignoring a date stamp", () => {
+		assert.deepEqual(versionKey("claude-opus-5-5"), [5, 5]);
+		assert.deepEqual(versionKey("claude-fable-5-1"), [5, 1]);
+		assert.deepEqual(versionKey("claude-opus-5"), [5]);
+		assert.deepEqual(versionKey("claude-haiku-4-5-20251001"), [4, 5]);
+	});
+
 	it("reads an unversioned vendor name through the build it serves", () => {
 		assert.deepEqual(versionKey("deepseek-flash"), [4, 1]);
 		assert.deepEqual(versionKey("deepseek:deepseek-flash"), [4, 1]);
@@ -134,6 +141,14 @@ describe("gradeByVendorPosition", () => {
 		assert.equal(g.get("deepseek-v4.1-flash").grade, "Flagship", "same model, same rung");
 		assert.equal(g.get("deepseek-v4-pro").grade, "Strong", "not pushed to Specialist");
 		assert.equal(g.get("deepseek/deepseek-v4-pro").grade, "Strong");
+	});
+
+	// Within one Anthropic line the newer release must lead. Tied at [5], the
+	// alphabetical tiebreak put `claude-opus-5` above `claude-opus-5-5`.
+	it("ranks a newer release of an Anthropic line above the one it succeeds", () => {
+		const g = gradeByVendorPosition(["claude-opus-5", "claude-opus-5-5"]);
+		assert.equal(g.get("claude-opus-5-5").grade, "Flagship");
+		assert.equal(g.get("claude-opus-5").grade, "Strong");
 	});
 
 	it("uses a product-line order for Anthropic, which has no version to read", () => {
