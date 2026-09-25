@@ -238,7 +238,8 @@ export function formatWindow(tokens) {
  * The difference is load-bearing: a user who set up with a GLM key and later
  * removed it would otherwise have their nine stale GLM rows become "foreign"
  * and be preserved forever, unroutable, which is precisely issue #30's failure.
- * Ownership is a property of the id, not of the current env.
+ * Ownership is a property of the id, not of the current env — or, for an id
+ * no longer curated, of the description only buildRows() writes.
  *
  * A user who deliberately hand-writes a row for a curated id loses it on the
  * next regeneration. That is the accepted trade: the alternative is never being
@@ -260,8 +261,18 @@ export function isGeneratedRow(row) {
 	// Same shape as router.js stripVariantSuffix — interior `[^[\]]*`, so a
 	// malformed id is never rewritten into a real one.
 	const m = /^(.+)\[[^[\]]*\]$/.exec(model);
-	return Object.hasOwn(CONTEXT_WINDOW, m ? m[1] : model);
+	if (Object.hasOwn(CONTEXT_WINDOW, m ? m[1] : model)) return true;
+	// An id we STOPPED curating (the vendor renamed or retired it) is still ours
+	// if buildRows() wrote it: its description is our exact template. Without
+	// this, de-curation turns our row "foreign" and it is preserved forever —
+	// measured 2026-09-25, `deepseek-v4-flash[1m]` survived every setup after
+	// 0.10.2 dropped it. A user's row with their own description stays theirs.
+	const description = /** @type {{ description?: unknown }} */ (row).description;
+	return typeof description === "string" && GENERATED_DESCRIPTION.test(description);
 }
+
+/** The exact description buildRows() writes, e.g. "1M context, routed via cc-proxy". */
+const GENERATED_DESCRIPTION = /^\d+(?:\.\d+)?[KM] context, routed via cc-proxy$/;
 
 /**
  * Merge generated rows into a settings object, preserving everything foreign.
