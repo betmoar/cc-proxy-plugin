@@ -26,6 +26,18 @@ describe("normalizeName", () => {
 	it("strips the vendor prefix so a resold id joins its bare form", () => {
 		assert.equal(normalizeName("qwen/qwen3.7-max"), normalizeName("qwen3.7-max"));
 	});
+
+	// Issue #72: `deepseek-flash` carries no version, so it joined neither
+	// benchlm's row nor OpenRouter's `deepseek/deepseek-v4.1-flash` — no score,
+	// no price. It is V4.1-Flash, and must fold onto the versioned spelling.
+	it("folds an unversioned vendor name onto the build it serves", () => {
+		const key = normalizeName("deepseek-flash");
+		assert.equal(key, normalizeName("DeepSeek V4.1 Flash"), "benchlm's display name");
+		assert.equal(key, normalizeName("deepseek/deepseek-v4.1-flash"), "OpenRouter's id");
+		assert.equal(key, normalizeName("qwen:deepseek-v4.1-flash"), "the plan's spelling");
+		assert.equal(key, normalizeName("deepseek:deepseek-flash"), "through a lens");
+		assert.notEqual(key, normalizeName("deepseek-v4-flash"), "not the retired V4-Flash");
+	});
 });
 
 describe("vendorOf", () => {
@@ -49,6 +61,18 @@ describe("versionKey", () => {
 		assert.deepEqual(versionKey("glm-5.2"), [5, 2]);
 		assert.deepEqual(versionKey("qwen3.8-max"), [3, 8]);
 		assert.deepEqual(versionKey("deepseek-v4-pro"), [4]);
+	});
+
+	it("reads Anthropic's hyphen-separated versions, ignoring a date stamp", () => {
+		assert.deepEqual(versionKey("claude-opus-5-5"), [5, 5]);
+		assert.deepEqual(versionKey("claude-fable-5-1"), [5, 1]);
+		assert.deepEqual(versionKey("claude-opus-5"), [5]);
+		assert.deepEqual(versionKey("claude-haiku-4-5-20251001"), [4, 5]);
+	});
+
+	it("reads an unversioned vendor name through the build it serves", () => {
+		assert.deepEqual(versionKey("deepseek-flash"), [4, 1]);
+		assert.deepEqual(versionKey("deepseek:deepseek-flash"), [4, 1]);
 	});
 });
 
@@ -102,6 +126,45 @@ describe("gradeByVendorPosition", () => {
 		assert.equal(g.get("deepseek-v4-pro").grade, "Flagship");
 		assert.equal(g.get("deepseek/deepseek-v4-pro").grade, "Flagship");
 		assert.equal(g.get("deepseek-v4-flash").grade, "Strong", "not pushed to Specialist");
+	});
+
+	// Issue #72: read as version [0], `deepseek-flash` took the LAST rung —
+	// Specialist, under the V4-Pro it replaces. It is V4.1, the newest build.
+	it("ranks deepseek-flash as V4.1: Flagship, one rung shared with its plan spelling", () => {
+		const g = gradeByVendorPosition([
+			"deepseek-v4-pro",
+			"deepseek/deepseek-v4-pro",
+			"deepseek-flash",
+			"deepseek-v4.1-flash",
+		]);
+		assert.equal(g.get("deepseek-flash").grade, "Flagship");
+		assert.equal(g.get("deepseek-v4.1-flash").grade, "Flagship", "same model, same rung");
+		assert.equal(g.get("deepseek-v4-pro").grade, "Strong", "not pushed to Specialist");
+		assert.equal(g.get("deepseek/deepseek-v4-pro").grade, "Strong");
+	});
+
+	// Within one Anthropic line the newer release must lead. Tied at [5], the
+	// alphabetical tiebreak put `claude-opus-5` above `claude-opus-5-5`.
+	it("ranks a newer release of an Anthropic line above the one it succeeds", () => {
+		const g = gradeByVendorPosition(["claude-opus-5", "claude-opus-5-5"]);
+		assert.equal(g.get("claude-opus-5-5").grade, "Flagship");
+		assert.equal(g.get("claude-opus-5").grade, "Strong");
+	});
+
+	// The version leads across lines; the product line only breaks a tie. Line-
+	// first ranked every Opus above every Fable, so Fable 5.1 fell behind the
+	// Opus 5 it outscores (benchlm 2026-09-24: 83.0 vs 79.8).
+	it("ranks Anthropic by version first: Opus 5.5, then Fable 5.1, then the 5s", () => {
+		const g = gradeByVendorPosition([
+			"claude-fable-5-1",
+			"claude-opus-5-5",
+			"claude-fable-5",
+			"claude-opus-5",
+			"claude-sonnet-5",
+		]);
+		assert.equal(g.get("claude-opus-5-5").grade, "Flagship");
+		assert.equal(g.get("claude-fable-5-1").grade, "Strong");
+		assert.equal(g.get("claude-opus-5").grade, "Specialist");
 	});
 
 	it("uses a product-line order for Anthropic, which has no version to read", () => {
@@ -164,6 +227,23 @@ describe("gradeByVendorPosition", () => {
 	// Every id in MODEL_GRADES must therefore be attributable. This caught the
 	// Google gap — the six gemini ids were graded in the table while vendorOf()
 	// returned undefined for all of them.
+	// The refresh is meant to REFRESH the curated DeepSeek line, not reverse it:
+	// issue #72 found the two tables ranking V4-Pro and V4.1-Flash in opposite
+	// orders. Scoped to DeepSeek — other vendors' curated grades still differ
+	// from the refresh by deliberate judgment (glm-5.3-flash, the Gemini line,
+	// and Anthropic: the refresh gives only two rungs above Specialist per
+	// vendor, so claude-fable-5 / -opus-5 / -sonnet-5, curated Strong, refresh
+	// to Specialist — disclosed in the 0.10.4 CHANGELOG).
+	it("agrees with MODEL_GRADES on every DeepSeek id", async () => {
+		const { MODEL_GRADES } = await import("../src/models.js");
+		const ids = Object.keys(MODEL_GRADES).filter((id) => vendorOf(id) === "DeepSeek");
+		const g = gradeByVendorPosition(Object.keys(MODEL_GRADES));
+		const wrong = ids
+			.filter((id) => g.get(id)?.grade !== MODEL_GRADES[id])
+			.map((id) => `${id}: table ${MODEL_GRADES[id]}, bench ${g.get(id)?.grade}`);
+		assert.deepEqual(wrong, []);
+	});
+
 	it("attributes every id the built-in table grades", async () => {
 		const { MODEL_GRADES } = await import("../src/models.js");
 		for (const id of Object.keys(MODEL_GRADES)) {
@@ -215,6 +295,32 @@ describe("buildGrades", () => {
 		const out = buildGrades(BENCHLM, OPENROUTER, ["deepseek-v4-flash"]);
 		assert.equal("score" in out.models["deepseek-v4-flash"], false);
 		assert.equal("evidence" in out.models["deepseek-v4-flash"], false);
+	});
+
+	// Issue #72's measured symptom: grades.json had no `deepseek-flash` score or
+	// price. Payload rows are spelled the way benchlm and OpenRouter spell them.
+	it("scores and prices deepseek-flash from its V4.1 rows", () => {
+		const out = buildGrades(
+			{
+				models: [
+					{ model: "DeepSeek V4.1 Flash", overallScore: 70.5, evidenceStatus: "estimated" },
+					{ model: "DeepSeek V4 Flash", overallScore: 55, evidenceStatus: "supported" },
+				],
+			},
+			{
+				data: [
+					{
+						id: "deepseek/deepseek-v4.1-flash",
+						pricing: { prompt: "0.00000015", completion: "0.0000006" },
+					},
+				],
+			},
+			["deepseek-flash"],
+		);
+		const m = out.models["deepseek-flash"];
+		assert.equal(m.score, 70.5, "V4.1's score, not the retired V4-Flash's");
+		assert.equal(m.input_price, 0.15);
+		assert.equal(m.output_price, 0.6);
 	});
 
 	it("converts OpenRouter's per-token price to per-million", () => {

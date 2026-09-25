@@ -426,6 +426,36 @@ const CASES = [
 		bodyMatch: /"type"\s*:\s*"tool_use"/,
 	},
 	{
+		// DeepSeek is PHASING OUT V4-Pro (issue #72): the announced 2026-09-14
+		// cutover would have answered this id with V4.1-Flash, and was postponed
+		// "until further notice". The body's `model` is the tell — a rerouted
+		// request answers under the new name — so a FAIL here means the phase-out
+		// has landed and the deepseek-v4-pro rows in src/models.js and
+		// src/routes.js are describing a model the vendor no longer serves.
+		name: "deepseek still serves deepseek-v4-pro as itself",
+		claim: "src/models.js MODEL_GRADES — deepseek-v4-pro 'Still served as itself'",
+		url: "https://api.deepseek.com/anthropic/v1/messages",
+		auth: (k) => ({ "x-api-key": k }),
+		key: "DEEPSEEK_API_KEY",
+		model: "deepseek-v4-pro",
+		expect: 200,
+		bodyMatch: /"model"\s*:\s*"deepseek-v4-pro"/,
+	},
+	{
+		// The grade table and bench-grades' UNVERSIONED_ALIASES both assume the
+		// native API's whole line-up is these two names. An unknown id makes the
+		// vendor list it verbatim, so a V4.1-Pro launch or a Pro retirement shows
+		// up here as a changed sentence.
+		name: "deepseek names exactly deepseek-flash and deepseek-v4-pro",
+		claim: "scripts/bench-grades.js UNVERSIONED_ALIASES — the native line-up",
+		url: "https://api.deepseek.com/anthropic/v1/messages",
+		auth: (k) => ({ "x-api-key": k }),
+		key: "DEEPSEEK_API_KEY",
+		model: "cc-proxy-no-such-model",
+		expect: 400,
+		bodyMatch: /supported API model names are deepseek-flash, deepseek-v4-pro, but/,
+	},
+	{
 		// NEGATIVE claim behind the Gemini line (the `google/*` block of MODEL_GRADES in src/models.js, issue #42):
 		// Google publishes no Anthropic Messages endpoint, so Gemini reaches this
 		// proxy ONLY through OpenRouter. Probed by hand 2026-08-23 (four paths,

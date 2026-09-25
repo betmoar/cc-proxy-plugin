@@ -28,7 +28,13 @@ const execFile = promisify(execFileCb);
 describe("models.js pure helpers", () => {
 	it("DEFAULT_CLAUDE_MODELS holds only reachable Claude ids (no haiku, no mythos)", () => {
 		const ids = DEFAULT_CLAUDE_MODELS.map((m) => m.id);
-		assert.deepEqual(ids, ["claude-fable-5", "claude-opus-5", "claude-sonnet-5"]);
+		assert.deepEqual(ids, [
+			"claude-fable-5-1",
+			"claude-opus-5-5",
+			"claude-fable-5",
+			"claude-opus-5",
+			"claude-sonnet-5",
+		]);
 		for (const m of DEFAULT_CLAUDE_MODELS) {
 			assert.equal(m.type, "model");
 			assert.equal(m.created_at, null);
@@ -471,8 +477,8 @@ describe("collectModels fan-out", () => {
 			data.find((m) => m.id === "deepseek/deepseek-v4-pro").display_name,
 			"DeepSeek V4 Pro",
 		);
-		// full count: 2 glm + 6 openrouter + 3 claude, no drops
-		assert.equal(data.length, 11);
+		// full count: 2 glm + 6 openrouter + 5 claude, no drops
+		assert.equal(data.length, 13);
 		assert.deepEqual(_errors, []);
 	});
 

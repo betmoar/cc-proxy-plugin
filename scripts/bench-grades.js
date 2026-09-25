@@ -58,6 +58,34 @@ export function writeGradesFile(dir, filePath, data) {
 }
 
 /**
+ * Vendor names that carry NO version, mapped to the versioned build they serve.
+ * `deepseek-flash` is DeepSeek-V4.1-Flash (api-docs.deepseek.com, re-read
+ * 2026-09-25), but the name alone reads as version [0] and joins nothing:
+ * benchlm and OpenRouter both spell the model with its version
+ * (`deepseek/deepseek-v4.1-flash`), so the curated id got no score, no price,
+ * and the LAST rung of its vendor (issue #72). The vendor re-points these names
+ * when it ships, so this row moves with every release of the line; the target
+ * is also a real plan-served id (`deepseek-v4.1-flash`), which is why the two
+ * share one rung.
+ * @type {Record<string, string>}
+ */
+export const UNVERSIONED_ALIASES = {
+	"deepseek-flash": "deepseek-v4.1-flash",
+};
+
+/**
+ * The bare id: the OpenRouter vendor prefix and a `<provider>:` lens stripped,
+ * then an unversioned vendor name resolved to the build it serves.
+ * @param {string} s
+ * @returns {string}
+ */
+function bareIdOf(s) {
+	const tail = String(s).includes("/") ? String(s).split("/").pop() : String(s);
+	const bare = String(tail).replace(/^[a-z]+:/, "");
+	return Object.hasOwn(UNVERSIONED_ALIASES, bare) ? UNVERSIONED_ALIASES[bare] : bare;
+}
+
+/**
  * Fold a model name or id to a comparison key: lowercase, and every separator
  * dropped. "DeepSeek V4 Pro", "deepseek-v4-pro" and "deepseek/deepseek-v4-pro"
  * all fold to "deepseekv4pro".
@@ -69,15 +97,14 @@ export function writeGradesFile(dir, filePath, data) {
  * plan's copy of one DeepSeek model, so it must fold onto the bare row rather
  * than claim a rung of its own (leaving it unstripped pushed the real second
  * model down a grade — `deepseek-v4-flash` fell from Strong to Specialist).
+ * An unversioned vendor name folds onto its build (UNVERSIONED_ALIASES).
  *
  * @param {string} s
  * @returns {string}
  */
 export function normalizeName(s) {
-	const tail = String(s).includes("/") ? String(s).split("/").pop() : String(s);
 	return (
-		String(tail)
-			.replace(/^[a-z]+:/, "")
+		bareIdOf(s)
 			// A DATED build folds onto its bare sibling: `deepseek-v4-flash-0731` is
 			// a snapshot of `deepseek-v4-flash`, which is exactly how src/models.js
 			// grades it ("graded as its bare sibling ... which it is a dated snapshot
@@ -128,22 +155,33 @@ export function vendorOf(id) {
 /**
  * Sort key for an id WITHIN its vendor: the version numbers in the id, most
  * significant first. `glm-5.2` → [5,2]; `qwen3.8-max` → [3,8]; `deepseek-v4-pro`
- * → [4]. Higher sorts first.
+ * → [4]; `deepseek-flash` → [4,1], through UNVERSIONED_ALIASES. Higher sorts
+ * first.
+ *
+ * Anthropic separates version parts with a HYPHEN (`claude-opus-5-5` is Opus
+ * 5.5), and read with the dot rule it came out [5] — tied with `claude-opus-5`,
+ * which then won the rung on the alphabetical tiebreak. Only 1–2 digit parts
+ * count, so a dated snapshot's `-20251001` is not read as a minor version.
  *
  * @param {string} id
  * @returns {number[]}
  */
 export function versionKey(id) {
-	const tail = String(id).includes("/") ? String(id).split("/").pop() : String(id);
-	const m = String(tail).match(/(\d+(?:\.\d+)*)/);
+	const bare = bareIdOf(id);
+	if (/^claude-/.test(bare)) {
+		const c = bare.match(/-(\d{1,2}(?:-\d{1,2})*)(?=-\d{8}$|$|-[a-z])/);
+		return c ? c[1].split("-").map(Number) : [0];
+	}
+	const m = bare.match(/(\d+(?:\.\d+)*)/);
 	return m ? m[1].split(".").map(Number) : [0];
 }
 
 /**
- * Anthropic's line has no version ordering to read — `opus`/`sonnet`/`haiku`
- * are a product tier, not a sequence, and `fable` is its own thing. This is the
- * one place a human ordering is unavoidable; everywhere else the vendor's own
- * numbering does the work.
+ * Anthropic's product lines (`opus`/`fable`/`sonnet`/`haiku`) are a tier, not a
+ * sequence, so this human ordering breaks ties WITHIN one version only. The
+ * version decides first, as for every other vendor: line-first ranked
+ * `claude-opus-5` above `claude-fable-5-1` and put Fable 5.1 — benchlm 83.0,
+ * above Opus 5's 79.8 — on the Specialist rung.
  */
 const ANTHROPIC_LINE = ["opus", "fable", "sonnet", "haiku"];
 
@@ -215,18 +253,18 @@ export function gradeByVendorPosition(ids) {
 	const out = new Map();
 	for (const [vendor, list] of byVendor) {
 		const sorted = [...list].sort((a, b) => {
+			const x = versionKey(a);
+			const y = versionKey(b);
+			for (let i = 0; i < Math.max(x.length, y.length); i++) {
+				const d = (y[i] ?? 0) - (x[i] ?? 0);
+				if (d !== 0) return d;
+			}
 			if (vendor === "Anthropic") {
 				const rank = (/** @type {string} */ id) => {
 					const i = ANTHROPIC_LINE.findIndex((n) => id.includes(n));
 					return i === -1 ? ANTHROPIC_LINE.length : i;
 				};
 				const d = rank(a) - rank(b);
-				if (d !== 0) return d;
-			}
-			const x = versionKey(a);
-			const y = versionKey(b);
-			for (let i = 0; i < Math.max(x.length, y.length); i++) {
-				const d = (y[i] ?? 0) - (x[i] ?? 0);
 				if (d !== 0) return d;
 			}
 			// Same version → order by variant, not alphabetically.

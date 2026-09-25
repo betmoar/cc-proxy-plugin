@@ -97,7 +97,7 @@ const TIER_ORDER = { Flagship: 0, Strong: 1, Specialist: 2 };
 const tierRank = (t) => TIER_ORDER[t] ?? 99;
 // Strips a `<provider>:` route selector before the lookup: the grade table is
 // keyed on VENDOR ids, and an alias is the same model reached another way — so
-// `deepseek:deepseek-v4-pro` must grade Flagship like its bare form, not render
+// `deepseek:deepseek-v4-pro` must take its bare form's grade, not render
 // as ungraded. (Not `/`: an OpenRouter `vendor/model` id is its own key,
 // deliberately — see CONTEXT_WINDOW's "keyed on the EXACT id" note.)
 //
