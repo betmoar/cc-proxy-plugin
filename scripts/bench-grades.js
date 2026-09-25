@@ -177,10 +177,11 @@ export function versionKey(id) {
 }
 
 /**
- * Anthropic's line has no version ordering to read — `opus`/`sonnet`/`haiku`
- * are a product tier, not a sequence, and `fable` is its own thing. This is the
- * one place a human ordering is unavoidable; everywhere else the vendor's own
- * numbering does the work.
+ * Anthropic's product lines (`opus`/`fable`/`sonnet`/`haiku`) are a tier, not a
+ * sequence, so this human ordering breaks ties WITHIN one version only. The
+ * version decides first, as for every other vendor: line-first ranked
+ * `claude-opus-5` above `claude-fable-5-1` and put Fable 5.1 — benchlm 83.0,
+ * above Opus 5's 79.8 — on the Specialist rung.
  */
 const ANTHROPIC_LINE = ["opus", "fable", "sonnet", "haiku"];
 
@@ -252,18 +253,18 @@ export function gradeByVendorPosition(ids) {
 	const out = new Map();
 	for (const [vendor, list] of byVendor) {
 		const sorted = [...list].sort((a, b) => {
+			const x = versionKey(a);
+			const y = versionKey(b);
+			for (let i = 0; i < Math.max(x.length, y.length); i++) {
+				const d = (y[i] ?? 0) - (x[i] ?? 0);
+				if (d !== 0) return d;
+			}
 			if (vendor === "Anthropic") {
 				const rank = (/** @type {string} */ id) => {
 					const i = ANTHROPIC_LINE.findIndex((n) => id.includes(n));
 					return i === -1 ? ANTHROPIC_LINE.length : i;
 				};
 				const d = rank(a) - rank(b);
-				if (d !== 0) return d;
-			}
-			const x = versionKey(a);
-			const y = versionKey(b);
-			for (let i = 0; i < Math.max(x.length, y.length); i++) {
-				const d = (y[i] ?? 0) - (x[i] ?? 0);
 				if (d !== 0) return d;
 			}
 			// Same version → order by variant, not alphabetically.

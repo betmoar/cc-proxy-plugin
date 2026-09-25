@@ -165,14 +165,19 @@ export const MODEL_GRADES = {
 	// issue #72. Capability, not cost: reaching it through the plan is cheaper,
 	// but that is the tier's business, not the grade's.
 	"deepseek-v4-flash-0731": "Specialist",
-	// Claude (curated, OAuth). Two lines at the top, as before: Anthropic calls
-	// Fable its most capable widely released model and Opus its flagship
-	// general model, and neither line's position is a price. Each line's newest
-	// release takes the rung (re-read 2026-09-25): Fable 5.1 succeeds Fable 5
-	// at the same price, Opus 5.5 succeeds Opus 5 at a lower one. The superseded
-	// two are still served, so they stay listed, one rung down.
-	"claude-fable-5-1": "Flagship",
+	// Claude (curated, OAuth). ONE flagship: Opus 5.5 (2026-09-22), which
+	// Anthropic's launch post calls "the new leading model" and which leads
+	// Fable 5.1 on all nine rows of its comparison table (e.g. Terminal-Bench
+	// 4.0 66.4 vs 55.8, GDPval-AA 1846 vs 1735 — vendor-reported, at xhigh
+	// effort; Opus 5.5 defaults to medium). benchlm agrees on 2026-09-24:
+	// 86.98 (estimated) vs 83.00 (supported), rank 2 vs 3, with overlapping
+	// intervals. Anthropic's own caveat: "the gap … is narrower than these
+	// scores suggest" — which is why Fable 5.1 is the rung BELOW, not further.
+	// Before 5.5 this table ranked the Fable and Opus lines level; the newest
+	// release now leads regardless of line, the rule every other vendor here
+	// follows. Opus 5 / Fable 5 are superseded but still served.
 	"claude-opus-5-5": "Flagship",
+	"claude-fable-5-1": "Strong",
 	"claude-fable-5": "Strong",
 	"claude-opus-5": "Strong",
 	"claude-sonnet-5": "Strong",

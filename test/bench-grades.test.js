@@ -151,6 +151,22 @@ describe("gradeByVendorPosition", () => {
 		assert.equal(g.get("claude-opus-5").grade, "Strong");
 	});
 
+	// The version leads across lines; the product line only breaks a tie. Line-
+	// first ranked every Opus above every Fable, so Fable 5.1 fell behind the
+	// Opus 5 it outscores (benchlm 2026-09-24: 83.0 vs 79.8).
+	it("ranks Anthropic by version first: Opus 5.5, then Fable 5.1, then the 5s", () => {
+		const g = gradeByVendorPosition([
+			"claude-fable-5-1",
+			"claude-opus-5-5",
+			"claude-fable-5",
+			"claude-opus-5",
+			"claude-sonnet-5",
+		]);
+		assert.equal(g.get("claude-opus-5-5").grade, "Flagship");
+		assert.equal(g.get("claude-fable-5-1").grade, "Strong");
+		assert.equal(g.get("claude-opus-5").grade, "Specialist");
+	});
+
 	it("uses a product-line order for Anthropic, which has no version to read", () => {
 		const g = gradeByVendorPosition(["claude-sonnet-5", "claude-opus-5", "claude-fable-5"]);
 		assert.equal(g.get("claude-opus-5").grade, "Flagship");
