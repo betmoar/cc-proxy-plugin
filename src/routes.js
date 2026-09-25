@@ -219,8 +219,9 @@ export const ROUTES = {
 	// siblings above.
 	"qwen3.8-flash": [{ provider: "qwen", status: 200 }],
 
-	// Probed 2026-09-25 through the proxy (`claude -p --model <id>`, routing
-	// line in the log, answer returned); in use since 2026-09-02 / 09-23.
+	// All five probed 2026-09-25 through the proxy (`claude -p --model <id>`):
+	// each answered 200 with its own id in the response's `model` field, so
+	// none aliases onto its successor (Fable 5 → 5.1, Opus 5 → 5.5).
 	"claude-fable-5-1": [{ provider: "claude", status: 200 }],
 	"claude-opus-5-5": [{ provider: "claude", status: 200 }],
 	"claude-fable-5": [{ provider: "claude", status: 200 }],

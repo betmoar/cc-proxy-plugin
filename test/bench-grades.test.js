@@ -230,7 +230,10 @@ describe("gradeByVendorPosition", () => {
 	// The refresh is meant to REFRESH the curated DeepSeek line, not reverse it:
 	// issue #72 found the two tables ranking V4-Pro and V4.1-Flash in opposite
 	// orders. Scoped to DeepSeek — other vendors' curated grades still differ
-	// from the refresh by deliberate judgment (glm-5.3-flash, the Gemini line).
+	// from the refresh by deliberate judgment (glm-5.3-flash, the Gemini line,
+	// and Anthropic: the refresh gives only two rungs above Specialist per
+	// vendor, so claude-fable-5 / -opus-5 / -sonnet-5, curated Strong, refresh
+	// to Specialist — disclosed in the 0.10.4 CHANGELOG).
 	it("agrees with MODEL_GRADES on every DeepSeek id", async () => {
 		const { MODEL_GRADES } = await import("../src/models.js");
 		const ids = Object.keys(MODEL_GRADES).filter((id) => vendorOf(id) === "DeepSeek");
