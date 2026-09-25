@@ -2,6 +2,11 @@
 
 All notable changes to cc-proxy are recorded here. Versions follow [semver](https://semver.org/); `package.json` is the single source of truth and propagates to `.claude-plugin/plugin.json` via `scripts/sync-version.mjs`.
 
+## [Unreleased]
+
+### Fixed
+- **`/cc-proxy:setup` never removed a picker row for a model it stopped curating.** A row counted as cc-proxy's only if its id was still in `CONTEXT_WINDOW`. So when 0.10.2 dropped the retired `deepseek-v4-flash`, the row setup had written for it became "foreign", and every setup since kept it. Measured on a real `settings.json` on 2026-09-25: 20 rows where setup reported writing 19. A row now also counts as generated when its description is exactly the one setup writes (`<window> context, routed via cc-proxy`), so a de-curated row is dropped the same way as a row for a removed key (issue #30). A row a user wrote for the same id, with their own description, is still kept.
+
 ## [0.10.4] — 2026-09-25
 
 ### Added
